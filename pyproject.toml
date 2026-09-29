@@ -1,0 +1,35 @@
+[project]
+name = "obsidian-ingest"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Yousef El-Ghoul", email = "yousefelghoul03@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "yt-dlp>=2026.8.19",
+]
+
+[project.scripts]
+obsidian-ingest = "obsidian_ingest.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
