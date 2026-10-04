@@ -9,7 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-/run_output.txt
+/run_output_*.txt
+/videos.txt
 
 /.idea
 /.vscode/

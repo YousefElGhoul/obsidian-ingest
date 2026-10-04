@@ -10,6 +10,28 @@ class NativeFormat(StrEnum):
     VERTICAL_SHORT = "vertical_short"
 
 
+class ExclusionStatus(StrEnum):
+    COMPLETE = "complete"
+    DISABLED = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
+class ExcludedRange:
+    start: float
+    end: float
+    reason: str
+    provenance: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExclusionLookup:
+    ranges: tuple[ExcludedRange, ...]
+    status: ExclusionStatus
+    provenance: str
+    categories: tuple[str, ...]
+    retrieved_at: datetime | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Chapter:
     title: str

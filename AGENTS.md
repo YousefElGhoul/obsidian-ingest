@@ -24,8 +24,9 @@ The conceptual flow is:
 
 ```text
 URL -> detect provider -> provider-specific extraction -> normalized metadata
-    -> transcript/captions -> application content category
-    -> future segmentation -> useful knowledge classification
+    -> original transcript/captions + provider-supported exclusion annotations
+    -> retained source view -> application content category -> segmentation
+    -> future useful knowledge classification
     -> similarity/deduplication against Obsidian -> draft notes
 ```
 
@@ -63,11 +64,23 @@ extractor/providers/ owns provider implementation. Keep package initializers fre
 of eager provider loading; function-local provider imports avoid cycles between
 dispatch and the models consumed by providers.
 
+YouTube extraction lives in extractor/providers/youtube/; its sponsorblock.py owns
+SponsorBlock lookup and normalization using yt-dlp. Provider-supported exclusions
+become common timestamped ranges, not raw provider dictionaries. segmentation.py
+owns deterministic filtering, chapter alignment, source-index references, and
+baseline inspection. Keep inference transport/model details outside this domain.
+
 # Provenance and Safety
 
 Preserve source URLs, source timestamps, and original transcript wording. Current
 JSON3 events remain atomic; do not merge them into sentences or semantic chunks
 as part of extraction. Timing values use seconds.
+
+Filtering creates a retained view, never a rewritten source timeline. Account for
+every original segment as retained or explicitly excluded with range/reason
+provenance. Retained segments remain ordered and appear exactly once in chunks.
+Preserve original creator chapters even when exclusions create gaps. Processing
+windows and future microblocks are not semantic chunks or source atoms.
 
 Any future transcript cleanup must preserve raw material separately. Technical
 ASR repair may use title, description, chapters, and optional retrieved context,
@@ -82,8 +95,10 @@ canonical Obsidian notes. Preserve provenance in generated drafts.
 
 The implemented foundation is YouTube caption extraction, timestamped transcript
 output, source metadata normalization, and deterministic content categorization.
-The CLI currently prints transcripts; metadata is also available through Python
-functions. Do not assume the following stages already exist:
+The CLI prints transcripts and optionally inspects exclusion-aware, chapter-aligned
+baseline chunks; metadata is also available through Python functions. Baseline
+chunks are not model-validated semantic segmentation. Do not assume the following
+stages already exist:
 
 1. Extend provider-specific extraction to other sources when needed.
 2. Develop category-informed segmentation using real examples. Clips may need no
@@ -93,11 +108,13 @@ functions. Do not assume the following stages already exist:
 4. Retrieve similar existing notes with embeddings and deduplicate conservatively.
 5. Generate provenance-preserving draft notes for review.
 
-Possible future model roles include Jev or another decision/classification model
-and Nemotron or another note-writing model. These are candidates, not dependencies
-or fixed architectural choices. Keep models, API vendors, embedding providers,
-and optional technical-context retrieval replaceable. Do not implement later AI,
-chunking, normalization, or Obsidian stages unless explicitly requested.
+Laya through Impossibl is the initial planned decision/classification model;
+Nemotron is a possible note-writing model. Neither is currently integrated.
+Decision models evaluate semantic boundaries; Python validates decisions and
+constructs chunks from original retained segments. Models must not reproduce or
+rewrite source material to construct chunks. Keep models, API vendors, embedding
+providers, and optional technical-context retrieval replaceable. Do not implement
+later AI, normalization, or Obsidian stages unless explicitly requested.
 
 # Working and Verification
 

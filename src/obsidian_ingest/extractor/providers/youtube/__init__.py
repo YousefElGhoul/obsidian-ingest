@@ -8,11 +8,12 @@ import yt_dlp
 from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import (
     Chapter,
+    ExclusionLookup,
     NativeFormat,
     SourceMetadata,
     YouTubeMetadata,
 )
-from obsidian_ingest.extractor.transcript import TranscriptSegment
+from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 
 
 def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
@@ -93,14 +94,35 @@ def get_youtube_subtitles(url: str) -> tuple[str, str, bool, tuple[TranscriptSeg
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        language, is_generated, formats = choose_caption_track(info)
-        caption = choose_caption_format(formats)
-        response = ydl.urlopen(caption["url"])
-        captions = json.loads(response.read().decode("utf-8"))
-
-    segments = parse_json3(captions)
+        language, is_generated, segments = _read_captions(ydl, info)
 
     return video_id, language, is_generated, segments
+
+
+def _read_captions(
+    ydl: yt_dlp.YoutubeDL, info: dict
+) -> tuple[str, bool, tuple[TranscriptSegment, ...]]:
+    language, is_generated, formats = choose_caption_track(info)
+    caption = choose_caption_format(formats)
+    response = ydl.urlopen(caption["url"])
+    captions = json.loads(response.read().decode("utf-8"))
+    return language, is_generated, parse_json3(captions)
+
+
+def get_youtube_source(url: str) -> tuple[SourceMetadata, Transcript, ExclusionLookup]:
+    """Fetch one source snapshot for inspection without changing the raw transcript."""
+    from obsidian_ingest.extractor.providers.youtube.sponsorblock import fetch_exclusions
+
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if not info or info.get("_type") in {"playlist", "multi_video"}:
+            raise ValueError("Expected metadata for a single YouTube video")
+        metadata = normalize_youtube_metadata(info, url)
+        exclusions = fetch_exclusions(ydl, info)
+        language, generated, segments = _read_captions(ydl, info)
+    transcript = Transcript(metadata.source_id, language, language, generated, segments)
+    return metadata, transcript, exclusions
 
 
 def get_youtube_metadata(url: str) -> SourceMetadata:

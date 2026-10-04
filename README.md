@@ -1,8 +1,9 @@
 # Obsidian Ingest
 
 A personal, deterministic knowledge-ingestion CLI and Python learning project.
-Currently supports YouTube transcripts and normalized source metadata. AI,
-segmentation, deduplication, and Obsidian draft generation are future work.
+Currently supports YouTube transcripts, normalized source metadata, and
+SponsorBlock-aware chapter/whole-source baseline chunk inspection. Model-assisted
+semantic segmentation, deduplication, and Obsidian drafts are future work.
 See [AGENTS.md](AGENTS.md) for architecture and project guidance.
 
 ## Usage
@@ -24,6 +25,62 @@ print(metadata.title, category)
 
 Metadata fetching does not retrieve captions. Calling both metadata and transcript
 fetching currently performs separate extraction requests.
+
+## Baseline Chunk Inspection
+
+```bash
+uv run obsidian-ingest --inspect-chunks 'https://www.youtube.com/watch?v=VIDEO_ID'
+```
+
+This opt-in path obtains metadata and captions from one yt-dlp extraction snapshot
+and uses yt-dlp's SponsorBlock postprocessor to look up sponsor ranges. It does not
+download or cut media. The default transcript command remains unchanged and does
+not query SponsorBlock.
+
+Only `sponsor` is excluded by default. Introductions, self-promotion, interaction
+reminders, and other categories stay included. The explicit default category tuple
+and provider lookup are in `extractor/providers/youtube/sponsorblock.py`; Python
+callers can configure categories through `fetch_exclusions()` (an empty tuple
+disables lookup). HTTP 404 means no matching ranges. Other lookup errors, malformed
+responses, missing/invalid duration, or duration-mismatch warnings stop inspection;
+they are not silently treated as videos without sponsors. Lookup uses the existing
+yt-dlp transport and does not retry failures in this milestone.
+
+Caption events remain atomic: a segment is excluded only if its **start** is in
+`[range.start, range.end)`. A segment beginning before a sponsor and extending into
+it stays whole; one beginning inside and extending past it is excluded whole.
+This simple rule can retain some sponsor wording at boundaries or remove useful
+wording at the end. The report flags boundary crossings; no text is trimmed.
+yt-dlp may snap SponsorBlock range endpoints near the video start/end and checks
+the annotation's video duration. The inspector reports the ranges exposed by that
+postprocessor, not untouched SponsorBlock API intervals.
+
+`CLIP` and `SHORT_FORM` keep the retained source whole. `LONG_FORM`, `EXTENDED`, and
+unknown-duration sources use creator chapters when available, keeping unchaptered
+gaps. Without chapters they remain one baseline chunk. Oversized sections are not
+automatically split into arbitrary windows. Invalid, unordered, or overlapping
+chapter intervals and transcript timing fail explicitly.
+
+The report shows original millisecond timestamps, zero-based original index runs,
+retained text, unchanged creator chapters (including empty ones), excluded ranges
+and their segment attribution, and the lookup status/time. Chunk start/end spans
+can contain intentional gaps; they do not mean continuous retained coverage.
+Discarded text is absent from chunk output, but the original transcript remains
+available through the Python result:
+
+```python
+from obsidian_ingest.segmentation import format_segmentation, inspect_source
+
+result = inspect_source("https://www.youtube.com/watch?v=VIDEO_ID")
+print(format_segmentation(result))
+raw_transcript = result.filtered.original
+retained_indices = result.filtered.retained_indices
+```
+
+Chunks use half-open positions into `retained_indices`, not slices into the raw
+transcript. Filtering preserves timestamps, wording, and source order and accounts
+for every original segment. These are **baseline chunks**, not model-validated
+semantic chunks. No Laya, embeddings, classification, or note-writing calls occur.
 
 ## Metadata Assumptions
 
