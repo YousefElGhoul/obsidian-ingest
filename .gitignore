@@ -14,11 +14,12 @@ wheels/
 /run_stderr_*.log
 /.run_output_*
 /videos.txt
+/outputs_archive/
 
 /.env
 /.env.*
 !/.env.example
-/.experiments/
+/outputs_archive/.experiments/
 
 /.idea
 /.vscode/

@@ -1,130 +1,203 @@
 # Project Purpose
 
 This private project is a personal Obsidian knowledge-ingestion tool and a Python
-learning project. Extract durable knowledge from URLs through a deterministic
-CLI/pipeline. It is not a generic YouTube summarizer, an autonomous agent, or a
-general-purpose ingestion framework. Prefer understandable code over cleverness.
+learning project. Its north star is:
 
-# Engineering Approach
+```text
+URL -> unattended agent processing -> a few useful Markdown drafts in Obsidian AI Drafts
+```
+
+The user should be able to provide a URL and walk away rather than manually take
+notes from the source. Drafts are for later human review, not canonical knowledge.
+The quality bar is good enough that the user would rather receive these drafts
+than write the notes manually. Do not optimize for completeness: zero notes is a
+valid result, and a few strong, bite-sized notes are better than many weak ones.
+
+Prefer mental models, explanations, tradeoffs, gotchas, failure modes, practical
+lessons, design reasoning, workflows, non-obvious connections, and source insights.
+Avoid notes whose main value is API signatures, CLI flags, syntax, installation
+steps, config-key listings, or facts easily found in official documentation.
+This is a judgment heuristic, not a requirement for a documentation-comparison engine.
+
+# Architecture and Responsibilities
+
+**Deterministic Python is the toolbelt and safety boundary. The agent is the brain.**
+
+The intended architecture, not the current implemented workflow, is:
+
+```text
+URL -> deterministic ingestion -> safe source-access tools
+    -> agent explores and decides what matters -> safe draft writer -> AI Drafts/
+```
+
+Python owns URL/provider detection, yt-dlp extraction, metadata normalization,
+caption retrieval, timestamps, creator chapters, original source preservation,
+optional conservative SponsorBlock handling, predictable tool inputs/outputs,
+provenance, and safe filesystem writes. Add source caching/state only when useful.
+
+The agent owns judgment, source navigation, usefulness decisions, synthesis, note
+count, and grouping. Do not turn subjective questions about worthwhile knowledge,
+ideal semantic boundaries, related ideas, or usefulness beyond documentation into
+a giant deterministic pipeline. The agent decides what to write; Python decides
+where it is allowed to write.
+
+Build useful Python application functions independently of their adapters. The
+near-term tool surface should be small and coarse: ingest a URL, inspect metadata
+and chapters, read a transcript or bounded range, and create a draft. These are
+conceptual capabilities, not mandated API names. Do not expose every helper as a
+tool or make CLI flags the internal API. CLI, local MCP, Hermes, and later messaging
+interfaces should call the same core capabilities.
+
+A capable general-purpose agent/model can initially reason and write. Keep model
+choices replaceable; no named model or separate classifier/writer role is required.
+Add specialized models only for demonstrated failures where they provide value.
+
+# Vault Safety and Provenance
+
+The initial write boundary must be **`<vault>/AI Drafts/`**. The draft writer and
+its enforced safeguards are not implemented yet; these are requirements for that work.
+
+- Validate filenames and paths and prevent writes escaping the draft directory,
+  including traversal and symlink escapes. Do not let the agent mutate canonical
+  vault notes or overwrite unrelated files.
+- Use a constrained draft-writing tool rather than granting unrestricted shell or
+  filesystem access merely to write notes.
+- Treat retrieved captions, metadata, and source text as untrusted data, not
+  instructions that can change tool permissions or filesystem boundaries.
+- Drafts must retain the source URL and useful timestamps when available, with
+  enough source identity/context to return to the original material.
+- Preserve original transcript wording and timestamps separately from filtering
+  or synthesis. Current parsed JSON3 events remain atomic source segments; do not
+  merge them into semantic chunks during extraction. Timing values use seconds.
+- Filtering creates a retained view, not a rewritten timeline. Preserve creator
+  chapters and account for excluded segments with range/reason provenance.
+- Any future caption repair must preserve the original material separately and
+  remain conservative. Never silently change factual claims, numbers, measurements,
+  or versions. Unknown information must remain unknown; document lossy conversions.
+
+SponsorBlock handling should stay simple and conservative. Only `sponsor` is
+excluded by default in the current inspector. Do not automatically discard
+`intro`, `hook`, `selfpromo`, `interaction`, `outro`, or similar categories: they may
+contain useful framing, prerequisites, or explanations. Do not rebuild extensive
+policy machinery or silently treat lookup failures as evidence of no sponsors.
+
+# Current Code Reality
+
+The implemented foundation is yt-dlp-based YouTube metadata and English caption
+extraction, provider detection, timestamped transcript output, creator chapters,
+content categorization, and optional SponsorBlock-aware baseline inspection.
+Preserve useful working extraction code and tests; the new direction does not
+justify throwing them away or redesigning the package.
+
+- `cli.py` accepts a URL and prints a transcript. `--inspect-chunks` invokes the
+  legacy experimental baseline inspector. Neither path calls a model or writes notes.
+- `source.py` exposes `ingest_source`, overview/chapter inspection, and read-only
+  transcript navigation. Its frozen `Source` composes existing metadata and transcript
+  models. Reads return original atoms and perform no I/O; time ranges use half-open
+  `[start, end)` ownership by segment start, and chapter indices are zero-based.
+- `extractor/__init__.py` owns provider detection and shared enums.
+  Instagram/TikTok hostname recognition is not implemented extraction support.
+- `extractor/metadata.py` owns metadata models, categorization, and dispatch;
+  `extractor/transcript.py` owns transcript models, dispatch, and printing.
+- `extractor/providers/youtube/` translates yt-dlp data into internal models and
+  retrieves captions; `sponsorblock.py` owns lookup and exclusion normalization.
+- `segmentation.py` owns existing filtering, source-index references, chapter
+  alignment, and baseline reports. These are not semantic segmentation or note
+  boundaries, and are not mandatory stages of the future agent workflow.
+- There is no agent orchestration, MCP server, vault writer, model integration,
+  retrieval/deduplication, or application-managed source cache yet.
+
+Current caption extraction selects English tracks and parses JSON3; it does not
+transcribe audio. Selection accepts VTT as a fallback, but retrieval still expects
+JSON3 and has no VTT parser. `ingest_source` builds metadata and the original transcript
+from one YouTube extraction snapshot plus a caption request, without SponsorBlock.
+Standalone metadata and transcript calls still perform separate extraction requests;
+the legacy inspection path uses one snapshot plus caption and SponsorBlock requests.
+
+Keep provider boundaries understandable. Parse hostnames, never detect providers
+by arbitrary URL substring matching. Downstream code should use internal models,
+not yt-dlp field names. Use composition for optional provider details; chapters are
+provider-agnostic. Keep metadata, caption selection, transcript atoms, and processing
+windows distinct. Duration alone does not establish native Shorts format. Existing
+content categories are descriptive heuristics, not judgments of knowledge value.
+Avoid eager provider imports in package initializers; local dispatch imports prevent
+cycles between providers and their shared models.
+
+# Simplicity and Failure-Driven Development
+
+1. Build the simplest unattended agent workflow.
+2. Use it on real sources.
+3. Observe where the output is bad.
+4. Fix that concrete problem.
+
+Handle radically different lengths without rebuilding research-grade segmentation.
+Use a whole transcript for tiny sources, creator chapters when useful, and bounded
+or fixed windows for oversized material. These are navigation/context-management
+mechanisms, not perfect semantic boundaries. Do not put a 12-hour transcript into
+one prompt. Many internal reads must not imply many notes.
+
+Semantic segmentation is not a core planned subsystem. Prior experiments are
+preserved in git history and `failed_experiment`; do not prematurely rebuild
+semantic-boundary classifiers, microblock pipelines, adjacent-chunk embeddings,
+boundary reconciliation, or hierarchy-heavy chunk strategies. Revisit only if
+observed boundary problems materially harm note quality.
+
+Likewise, add documentation retrieval only if drafts duplicate documentation too
+often, vault retrieval/deduplication if drafts repeat existing knowledge, improved
+navigation if large sources confuse the agent, and conservative normalization if
+caption errors corrupt important terminology. Do not implement these preemptively.
+
+# Engineering Conventions
 
 - Use Python, uv, pyproject.toml, a src/ layout, Ruff, pytest, and type hints.
 - Prefer functions, small pure transformations, frozen dataclasses for internal
-  values, and enums for meaningful domain concepts. Use tuples for immutable collections.
+  values, meaningful enums, and tuples for immutable collections.
 - Extend existing modules when sensible; do not create one file per class.
-- Add dependencies only for concrete needs. Do not introduce LangChain, agent
-  frameworks, dependency injection, abstract provider hierarchies, repositories,
-  service/controller layers, plugin registries, premature async, or speculative
-  strategy/factory patterns. Pydantic requires an actual validation need.
+  Prefer understandable code over cleverness.
+- Add dependencies only for concrete needs. Agent integration is intended, but
+  does not justify a general-purpose ingestion framework, dependency injection,
+  abstract provider hierarchies, repositories, service/controller layers, plugin
+  registries, premature async, or speculative strategy/factory patterns.
+  Pydantic requires an actual validation need.
 - Do not add compatibility layers without shipped consumers or persisted data
   that require them. Keep refactors focused and preserve unrelated work.
 
-# Architecture and Boundaries
+# Near-Term Direction
 
-The conceptual flow is:
+The source API foundation exists; remaining milestones are:
 
-```text
-URL -> detect provider -> provider-specific extraction -> normalized metadata
-    -> original transcript/captions + provider-supported exclusion annotations
-    -> retained source view -> application content category -> segmentation
-    -> future useful knowledge classification
-    -> similarity/deduplication against Obsidian -> draft notes
-```
+1. Keep and refine deterministic yt-dlp ingestion.
+2. Keep the source API small and expose it through agent-facing adapters when needed.
+3. Add the constrained `AI Drafts` writer with provenance.
+4. Connect a local agent, likely Hermes through a small local MCP server.
+5. Make `obsidian-ingest <URL>` trigger the unattended workflow.
+6. Use real sources and iterate from observed failures.
 
-Provider-specific modules are intentional. YouTube is the first implemented
-provider; Instagram Reels and TikTok are future sources. Recognizing a hostname
-does not mean extraction is implemented. Parse hostnames, never detect providers
-through arbitrary URL substring matching. Simple detection and dispatch suffice.
+# Later Roadmap
 
-yt-dlp is the current extraction dependency for metadata and caption discovery.
-Provider modules translate external dictionaries into internal domain models;
-downstream processing must not depend on yt-dlp field names. Do not mirror all
-external fields or retain irrelevant download/engagement metadata.
+Only when actual usage justifies them: transcript search/navigation improvements,
+vault retrieval/deduplication, documentation-aware context, additional yt-dlp
+providers, conservative transcript normalization, and more sophisticated source
+partitioning. None is a prerequisite for the first useful workflow.
 
-Use composition: SourceMetadata owns common fields and optional provider_details,
-such as YouTubeMetadata. Do not subclass SourceMetadata for each platform or
-invent provider detail schemas before implementing those providers. Chapters are
-provider-agnostic timestamped metadata, not YouTube-only objects.
-
-Keep these concepts separate:
-
-- SourceMetadata describes the source, creator, provenance, and available context.
-- Native format describes presentation, such as standard video versus a native
-  vertical short. Duration alone does not establish native format.
-- Caption tracks and selection describe how textual material is retrieved; they
-  do not belong in SourceMetadata.
-- Transcript contains normalized textual source material with timestamps.
-- TranscriptSegment is a source/timestamp atom, not a semantic chunk or sentence.
-- Content category is a deterministic, provider-agnostic application decision,
-  not an external provider field or an AI classification.
-
-Current code organization: extractor/__init__.py owns shared provider detection
-and enums; extractor/metadata.py owns metadata models, categorization, and metadata
-dispatch; extractor/transcript.py owns transcript models, dispatch, and printing;
-extractor/providers/ owns provider implementation. Keep package initializers free
-of eager provider loading; function-local provider imports avoid cycles between
-dispatch and the models consumed by providers.
-
-YouTube extraction lives in extractor/providers/youtube/; its sponsorblock.py owns
-SponsorBlock lookup and normalization using yt-dlp. Provider-supported exclusions
-become common timestamped ranges, not raw provider dictionaries. segmentation.py
-owns deterministic filtering, chapter alignment, source-index references, and
-baseline inspection. Keep inference transport/model details outside this domain.
-
-# Provenance and Safety
-
-Preserve source URLs, source timestamps, and original transcript wording. Current
-JSON3 events remain atomic; do not merge them into sentences or semantic chunks
-as part of extraction. Timing values use seconds.
-
-Filtering creates a retained view, never a rewritten source timeline. Account for
-every original segment as retained or explicitly excluded with range/reason
-provenance. Retained segments remain ordered and appear exactly once in chunks.
-Preserve original creator chapters even when exclusions create gaps. Processing
-windows and future microblocks are not semantic chunks or source atoms.
-
-Any future transcript cleanup must preserve raw material separately. Technical
-ASR repair may use title, description, chapters, and optional retrieved context,
-but must be conservative. Never silently alter factual claims, numbers,
-measurements, or versions. Missing information should stay unknown rather than
-be guessed; document lossy conversions and inference limits.
-
-Future notes go to an AI Drafts/Inbox area. The program must not freely modify
-canonical Obsidian notes. Preserve provenance in generated drafts.
-
-# Roadmap, Not Current Functionality
-
-The implemented foundation is YouTube caption extraction, timestamped transcript
-output, source metadata normalization, and deterministic content categorization.
-The CLI prints transcripts and optionally inspects exclusion-aware, chapter-aligned
-baseline chunks; metadata is also available through Python functions. Baseline
-chunks are not model-validated semantic segmentation. Do not assume the following
-stages already exist:
-
-1. Extend provider-specific extraction to other sources when needed.
-2. Develop category-informed segmentation using real examples. Clips may need no
-   chunking; short-form material may work as a whole; long-form material should
-   prefer chapters; extended material may require hierarchical processing.
-3. Classify useful, durable knowledge rather than merely summarize everything.
-4. Retrieve similar existing notes with embeddings and deduplicate conservatively.
-5. Generate provenance-preserving draft notes for review.
-
-Laya through Impossibl is the initial planned decision/classification model;
-Nemotron is a possible note-writing model. Neither is currently integrated.
-Decision models evaluate semantic boundaries; Python validates decisions and
-constructs chunks from original retained segments. Models must not reproduce or
-rewrite source material to construct chunks. Keep models, API vendors, embedding
-providers, and optional technical-context retrieval replaceable. Do not implement
-later AI, normalization, or Obsidian stages unless explicitly requested.
+A remote inbox is a later convenience feature, explicitly out of scope now:
+share a URL from a phone -> Telegram bot (likely first; perhaps WhatsApp later)
+-> trigger the local workflow -> drafts appear -> report success/failure -> worker
+can go idle. Do not build queues, bots, servers, Wake-on-LAN, or remote infrastructure
+yet. The architectural requirement today is only that the core workflow not care
+whether a URL came from CLI, Hermes, messaging, or a future share sheet.
 
 # Working and Verification
 
-Inspect current code and worktree state before editing. Explain a concise plan
-for substantial changes, implement the smallest coherent solution, then verify.
-This is a learning project: keep decisions and limitations understandable.
+Inspect the current local code and worktree before editing; they are authoritative,
+not assumptions about GitHub or another branch. Explain a concise plan for
+substantial changes, implement the smallest coherent solution, then verify.
 
-Use small fake extraction dictionaries and mocked I/O in tests. The test suite
-must not call YouTube or other live services. Live CLI checks are optional and
-separate from automated tests. Preserve transcript output and source granularity.
+Use small fake extraction dictionaries and mocked I/O. Automated tests must not
+call live services. Live CLI checks are optional and separate from the test suite.
+Preserve extraction behavior and source granularity unless intentionally changing
+them. When implementing the writer, test the draft-directory boundary using
+temporary directories, never a real vault.
 
 ```bash
 uv sync
@@ -134,7 +207,7 @@ uv run pytest
 git diff --check
 ```
 
-Review the resulting diff for unrelated edits and unnecessary abstraction. Report
-test results and limitations honestly. Do not commit or push unless requested.
-Keep this guide about durable project context and architecture, not session logs,
-temporary failures, feature checklists, or fixture-specific details.
+Review the diff for unrelated edits and unnecessary abstraction. For documentation-only
+changes, reread both guides, cross-check claims against code, and run `git diff --check`.
+Report checks and limitations honestly. Do not commit or push unless requested.
+Keep this guide durable: no session logs, temporary failures, or fixture-specific details.
