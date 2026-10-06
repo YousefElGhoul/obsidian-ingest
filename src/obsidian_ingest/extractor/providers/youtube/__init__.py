@@ -21,6 +21,19 @@ def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
         (info.get("subtitles") or {}, False),
         (info.get("automatic_captions") or {}, True),
     ):
+        if is_generated:
+            # Bare "en" can be a translation; yt-dlp marks native ASR tracks with -orig.
+            original_english = (
+                ["en-orig"]
+                if "en-orig" in tracks
+                else sorted(
+                    lang for lang in tracks if lang.startswith("en-") and lang.endswith("-orig")
+                )
+            )
+            if original_english:
+                track_key = original_english[0]
+                return track_key.removesuffix("-orig"), True, tracks[track_key]
+
         if "en" in tracks:
             return "en", is_generated, tracks["en"]
 
@@ -147,18 +160,20 @@ def normalize_youtube_metadata(info: dict[str, Any], original_url: str) -> Sourc
         # Date-only fallback: midnight UTC is not a known publication time.
         published_at = datetime.strptime(info["upload_date"], "%Y%m%d").replace(tzinfo=UTC)
 
-    # URL evidence only: watch URLs can hide Shorts; duration is not evidence.
-    is_short = False
-    for url in (original_url, info.get("original_url"), canonical_url):
-        if not url:
-            continue
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
-        if (host == "youtube.com" or host.endswith(".youtube.com")) and parsed.path.startswith(
-            "/shorts/"
-        ):
-            is_short = True
-            break
+    # yt-dlp resolves YouTube's isShortsEligible signal independently of URL syntax.
+    media_type = info.get("media_type")
+    is_short = media_type == "short"
+    if media_type not in {"short", "video", "livestream"}:
+        for url in (original_url, info.get("original_url"), canonical_url):
+            if not url:
+                continue
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if (host == "youtube.com" or host.endswith(".youtube.com")) and parsed.path.startswith(
+                "/shorts/"
+            ):
+                is_short = True
+                break
 
     chapters = tuple(
         Chapter(

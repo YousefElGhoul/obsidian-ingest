@@ -1,8 +1,11 @@
 import json
 import sys
+from io import BytesIO
 from unittest.mock import MagicMock
 
 import pytest
+from yt_dlp.networking import Response
+from yt_dlp.networking.exceptions import HTTPError
 
 from obsidian_ingest import cli, segmentation
 from obsidian_ingest.extractor.metadata import (
@@ -122,6 +125,59 @@ def test_combined_youtube_source_uses_one_snapshot_and_real_normalization(
         TranscriptSegment("Lesson", 2.125, 0.75),
     )
     assert actual_lookup is exclusions
+
+
+@pytest.mark.parametrize("inspect_chunks", [False, True])
+def test_original_english_track_avoids_failing_translated_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
+    inspect_chunks: bool,
+) -> None:
+    ydl, info, _, fetch_exclusions = source_io
+    video_url = "https://www.youtube.com/watch?v=DkhhE97Swmo"
+    translated_url = "https://example.com/timedtext?lang=ar&tlang=en&fmt=json3"
+    original_url = "https://example.com/timedtext?lang=en&fmt=json3"
+    info.update(
+        {
+            "id": "DkhhE97Swmo",
+            "title": "Therapy for the Vibe-Coded Brain",
+            "automatic_captions": {
+                "en": [{"ext": "json3", "name": "English", "url": translated_url}],
+                "en-orig": [{"ext": "json3", "name": "English (Original)", "url": original_url}],
+            },
+        }
+    )
+    response = ydl.urlopen.return_value
+
+    def open_caption(url: str) -> MagicMock:
+        if url == translated_url:
+            raise HTTPError(Response(BytesIO(), translated_url, {}, status=429))
+        assert url == original_url
+        return response
+
+    ydl.urlopen.side_effect = open_caption
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["obsidian-ingest", video_url] + (["--inspect-chunks"] if inspect_chunks else []),
+    )
+
+    cli.main()
+
+    ydl.extract_info.assert_called_once_with(video_url, download=False)
+    ydl.urlopen.assert_called_once_with(original_url)
+    report = capsys.readouterr().out
+    assert "Hello world" in report
+    assert "en-orig" not in report
+    if inspect_chunks:
+        fetch_exclusions.assert_called_once()
+        assert "Segments: 3 original, 2 retained, 1 excluded" in report
+        assert "SECRET SPONSOR" not in report
+    else:
+        fetch_exclusions.assert_not_called()
+        assert "Language: en (en)" in report
+        assert "Generated captions: True" in report
 
 
 def test_inspect_cli_offline_integration_filters_without_mutating_raw_captions(
