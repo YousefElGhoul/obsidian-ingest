@@ -10,7 +10,15 @@ wheels/
 .venv
 
 /run_output_*.txt
+/run_error_*.log
+/run_stderr_*.log
+/.run_output_*
 /videos.txt
+
+/.env
+/.env.*
+!/.env.example
+/.experiments/
 
 /.idea
 /.vscode/

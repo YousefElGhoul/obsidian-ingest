@@ -173,6 +173,42 @@ def test_short_url_evidence(field: str) -> None:
     assert metadata.provider_details.is_short is True
 
 
+def test_resolved_short_is_identical_across_equivalent_urls() -> None:
+    # Representative yt-dlp metadata observed for this Short through its watch URL.
+    info = {
+        "id": "fwBIZRq-vzY",
+        "title": "5 life-changing Linux tips",
+        "duration": 46,
+        "media_type": "short",
+        "webpage_url": "https://www.youtube.com/watch?v=fwBIZRq-vzY",
+    }
+    urls = (
+        "https://www.youtube.com/watch?v=fwBIZRq-vzY",
+        "https://www.youtube.com/shorts/fwBIZRq-vzY",
+        "https://youtu.be/fwBIZRq-vzY",
+    )
+    sources = tuple(normalize_youtube_metadata(info | {"original_url": url}, url) for url in urls)
+    for source, url in zip(sources, urls, strict=True):
+        assert source.original_url == url
+        assert source.native_format == NativeFormat.VERTICAL_SHORT
+        assert source.provider_details.is_short is True
+        assert categorize_content(source) == ContentCategory.CLIP
+        assert replace(source, original_url=urls[0]) == sources[0]
+
+
+@pytest.mark.parametrize("media_type", ["video", "livestream"])
+@pytest.mark.parametrize("url", [URL, "https://www.youtube.com/shorts/abc123"])
+def test_resolved_standard_metadata_takes_precedence_over_url_and_duration(
+    media_type: str, url: str
+) -> None:
+    metadata = normalize_youtube_metadata(
+        {"id": "abc123", "duration": 45, "media_type": media_type}, url
+    )
+    assert metadata.native_format == NativeFormat.STANDARD
+    assert metadata.provider_details.is_short is False
+    assert categorize_content(metadata) == ContentCategory.SHORT_FORM
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -71,6 +71,89 @@ def test_choose_caption_track_falls_back_to_automatic_english() -> None:
     assert choose_caption_track(info) == ("en", True, [{"ext": "json3"}])
 
 
+@pytest.mark.parametrize("manual_language", ["en", "en-US"])
+def test_manual_english_still_precedes_original_automatic_captions(manual_language: str) -> None:
+    manual = [{"ext": "json3", "url": "https://example.com/manual"}]
+    info = {
+        "subtitles": {manual_language: manual},
+        "automatic_captions": {
+            "en-orig": [{"ext": "json3", "url": "https://example.com/original"}]
+        },
+    }
+    assert choose_caption_track(info) == (manual_language, False, manual)
+
+
+@pytest.mark.parametrize("original_language", ["en-orig", "en-US-orig", "en-GB-orig"])
+def test_original_english_asr_precedes_bare_english_and_normalizes_language(
+    original_language: str,
+) -> None:
+    original = [{"ext": "json3", "url": "https://example.com/original"}]
+    info = {
+        "automatic_captions": {
+            "en": [{"ext": "json3", "url": "https://example.com/translated"}],
+            original_language: original,
+        }
+    }
+    assert choose_caption_track(info) == (original_language.removesuffix("-orig"), True, original)
+
+
+def test_exact_original_english_precedes_original_variants() -> None:
+    original = [{"ext": "json3", "url": "https://example.com/original"}]
+    info = {
+        "automatic_captions": {
+            "en-US-orig": [{"ext": "json3", "url": "https://example.com/variant"}],
+            "en-orig": original,
+        }
+    }
+    assert choose_caption_track(info) == ("en", True, original)
+
+
+def test_original_english_variants_are_selected_in_stable_order() -> None:
+    british = [{"ext": "json3", "url": "https://example.com/british"}]
+    info = {
+        "automatic_captions": {
+            "en-US-orig": [{"ext": "json3", "url": "https://example.com/american"}],
+            "en-GB-orig": british,
+        }
+    }
+    assert choose_caption_track(info) == ("en-GB", True, british)
+
+
+def test_original_english_only_is_selected_without_bare_english() -> None:
+    original = [{"ext": "json3", "url": "https://example.com/original"}]
+    assert choose_caption_track({"automatic_captions": {"en-orig": original}}) == (
+        "en",
+        True,
+        original,
+    )
+
+
+def test_non_english_original_does_not_override_english_fallback() -> None:
+    english = [{"ext": "json3", "url": "https://example.com/english"}]
+    assert choose_caption_track(
+        {
+            "automatic_captions": {
+                "ar-orig": [{"ext": "json3", "url": "https://example.com/arabic"}],
+                "en": english,
+            }
+        }
+    ) == ("en", True, english)
+
+
+def test_automatic_english_variant_fallback_without_original() -> None:
+    english = [{"ext": "json3", "url": "https://example.com/english"}]
+    assert choose_caption_track({"automatic_captions": {"en-US": english}}) == (
+        "en-US",
+        True,
+        english,
+    )
+
+
+def test_no_english_original_or_fallback_raises() -> None:
+    with pytest.raises(ValueError, match="No English captions available"):
+        choose_caption_track({"automatic_captions": {"ar-orig": [{"ext": "json3"}]}})
+
+
 def test_choose_caption_format_prefers_json3_then_vtt() -> None:
     formats = [{"ext": "vtt"}, {"ext": "json3"}]
     assert choose_caption_format(formats) == {"ext": "json3"}
