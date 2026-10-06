@@ -1,112 +1,183 @@
 # Obsidian Ingest
 
-A personal, deterministic knowledge-ingestion CLI and Python learning project.
-Currently supports YouTube transcripts, normalized source metadata, and
-SponsorBlock-aware chapter/whole-source baseline chunk inspection. Model-assisted
-semantic segmentation, deduplication, and Obsidian drafts are future work.
-See [AGENTS.md](AGENTS.md) for architecture and project guidance.
+A personal tool being built to turn source URLs into useful Markdown drafts in an
+Obsidian vault, without manually taking notes.
 
-## Usage
+The goal is simple: give it a URL, walk away, and receive a small number of
+bite-sized notes in `AI Drafts/` for later human review. Zero notes is a valid
+outcome when there is nothing worth preserving. A few strong drafts are better
+than exhaustive coverage or many weak notes.
+
+Prefer explanations, mental models, tradeoffs, gotchas, workflows, practical
+lessons, and source insights over generic summaries or copies of documentation.
+The drafts do not need to be perfect, just useful enough to prefer them to writing
+the notes manually.
+
+## Current State
+
+**Extraction works today; unattended agent processing and Obsidian writing do not
+exist yet.** The current CLI prints transcripts to the terminal, not draft notes.
+
+Implemented:
+
+- yt-dlp-based YouTube metadata and existing English caption retrieval.
+- Normalized source URLs, creator/context metadata, timestamps, and chapters
+  where available, exposed through Python functions.
+- Reusable source ingestion and read-only transcript access by time range or chapter.
+- Timestamped transcript output, preserving parsed JSON3 caption events as atoms.
+- Optional SponsorBlock-aware baseline inspection for development.
+
+Instagram and TikTok hostnames are recognized, but their extraction is not
+implemented. Caption retrieval is not audio transcription. JSON3 captions are
+parsed; although track selection accepts a VTT fallback, VTT parsing is not
+implemented. Sources without usable English JSON3 captions may fail.
+
+There is no agent/model integration, MCP server, safe vault writer, or vault
+retrieval/deduplication yet.
+
+## Usage Today
+
+Requires Python **3.13+** and [uv](https://docs.astral.sh/uv/).
+From the repository root:
 
 ```bash
 uv sync
 uv run obsidian-ingest 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-The CLI prints timestamped transcripts. Metadata is available separately:
+Replace `VIDEO_ID` with a real YouTube video ID. The command prints caption details
+and timestamped text. It does not query SponsorBlock or write to an Obsidian vault.
+Extraction requires network access and depends on source/caption availability.
+
+## Python Source API
+
+Ingest once, then inspect and navigate the normalized source without more network
+requests:
 
 ```python
-from obsidian_ingest.extractor.metadata import categorize_content, fetch_metadata
+from obsidian_ingest.source import (
+    get_source_overview,
+    ingest_source,
+    list_chapters,
+    read_chapter,
+    read_transcript,
+)
 
-metadata = fetch_metadata("https://www.youtube.com/watch?v=VIDEO_ID")
-category = categorize_content(metadata)
-print(metadata.title, category)
+source = ingest_source("https://www.youtube.com/watch?v=VIDEO_ID")
+overview = get_source_overview(source)
+print(overview.metadata.title, overview.content_category, overview.chapter_count)
+
+chapters = list_chapters(source)
+segments = read_transcript(source, start=120, end=300)
+if chapters:
+    first_chapter = read_chapter(source, 0)
 ```
 
-Metadata fetching does not retrieve captions. Calling both metadata and transcript
-fetching currently performs separate extraction requests.
+`Source` is an immutable composition of the existing metadata and transcript
+models. Chapters stay in `source.metadata.chapters`; original parsed captions stay
+in `source.transcript`. No persistence, extra session ID, or SponsorBlock lookup is
+required. YouTube ingestion uses one yt-dlp extraction snapshot plus a caption
+request for both models.
 
-## Baseline Chunk Inspection
+`read_transcript(source)` returns all original segments. Optional `start` and `end`
+are seconds and use a half-open `[start, end)` interval based on each segment's
+**start timestamp**. Omitting a bound leaves that side unbounded. Segments crossing
+a boundary stay whole: no wording, timestamps, durations, or order are changed.
+Reads return tuples of existing `TranscriptSegment` objects, not formatted strings.
+Bounds must be finite and nonnegative, with `end >= start`; equal bounds or ranges
+with no matching segment starts return an empty tuple.
+
+`list_chapters` returns unchanged creator chapters, or an empty tuple. `read_chapter`
+uses a zero-based index and the same timestamp rule. Negative or out-of-range
+indices raise `IndexError`; non-integer indices raise `TypeError`.
+
+The CLI and standalone `fetch_metadata`/`fetch_transcript` functions remain available
+and unchanged. Calling those two standalone functions separately still performs
+separate extraction requests; use `ingest_source` when both are needed.
+
+## Intended Architecture
+
+**Deterministic Python is the toolbelt and safety boundary. The agent is the brain.**
+
+The intended workflow is:
+
+```text
+URL -> yt-dlp ingestion -> safe source-access tools
+    -> agent explores and selects useful knowledge -> safe draft writer -> AI Drafts/
+```
+
+Python handles source access, provenance, and filesystem safety. The agent decides
+what matters, which ideas belong together, how many notes to produce, and what to
+write. The future writer will restrict writes to `<vault>/AI Drafts/`, not canonical
+vault notes, and drafts will include source URLs and useful timestamps.
+
+The likely near-term integration is Hermes calling a small local MCP tool surface
+to inspect metadata and chapters, read source material, and create drafts. This is
+planned, not implemented. Model choices remain replaceable.
+
+The workflow should accommodate a Reel or Short as well as a multi-hour course:
+read tiny sources whole, navigate chapters or bounded windows for large sources,
+and do not put an entire 12-hour transcript into one prompt. Processing windows
+are not notes; many reads should still lead to a reasonably small set of drafts.
+Sophisticated semantic segmentation is not a prerequisite.
+
+## Legacy Development Tools
+
+The existing experimental baseline inspector remains available:
 
 ```bash
 uv run obsidian-ingest --inspect-chunks 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-This opt-in path obtains metadata and captions from one yt-dlp extraction snapshot
-and uses yt-dlp's SponsorBlock postprocessor to look up sponsor ranges. It does not
-download or cut media. The default transcript command remains unchanged and does
-not query SponsorBlock.
+It uses one yt-dlp metadata extraction snapshot, fetches captions and SponsorBlock
+ranges, and prints a retained-source report. Only `sponsor` is excluded by default;
+introductions, self-promotion, interaction reminders, and other categories remain.
+No media is downloaded or cut, and the original normalized transcript remains
+available in the Python inspection result.
 
-Only `sponsor` is excluded by default. Introductions, self-promotion, interaction
-reminders, and other categories stay included. The explicit default category tuple
-and provider lookup are in `extractor/providers/youtube/sponsorblock.py`; Python
-callers can configure categories through `fetch_exclusions()` (an empty tuple
-disables lookup). HTTP 404 means no matching ranges. Other lookup errors, malformed
-responses, missing/invalid duration, or duration-mismatch warnings stop inspection;
-they are not silently treated as videos without sponsors. Lookup uses the existing
-yt-dlp transport and does not retry failures in this milestone.
+Filtering excludes whole caption events based on their start timestamps, so sponsor
+boundaries can retain sponsor wording or remove useful wording. Non-404 lookup
+errors, malformed results, and duration warnings stop inspection rather than
+silently treating the source as sponsor-free.
 
-Caption events remain atomic: a segment is excluded only if its **start** is in
-`[range.start, range.end)`. A segment beginning before a sponsor and extending into
-it stays whole; one beginning inside and extending past it is excluded whole.
-This simple rule can retain some sponsor wording at boundaries or remove useful
-wording at the end. The report flags boundary crossings; no text is trimmed.
-yt-dlp may snap SponsorBlock range endpoints near the video start/end and checks
-the annotation's video duration. The inspector reports the ranges exposed by that
-postprocessor, not untouched SponsorBlock API intervals.
+The baseline uses whole-source or creator-chapter sections, not model-selected
+semantic boundaries. It does not automatically split oversized sections, call
+models, or create notes. It is not the required architecture for the new workflow.
 
-`CLIP` and `SHORT_FORM` keep the retained source whole. `LONG_FORM`, `EXTENDED`, and
-unknown-duration sources use creator chapters when available, keeping unchaptered
-gaps. Without chapters they remain one baseline chunk. Oversized sections are not
-automatically split into arbitrary windows. Invalid, unordered, or overlapping
-chapter intervals and transcript timing fail explicitly.
+`scripts/evaluate.sh` is optional live inspection tooling for a manifest of YouTube
+video IDs. It runs formatting, lint, and tests before collecting reports; it is not
+an unattended note-generation workflow.
 
-The report shows original millisecond timestamps, zero-based original index runs,
-retained text, unchanged creator chapters (including empty ones), excluded ranges
-and their segment attribution, and the lookup status/time. Chunk start/end spans
-can contain intentional gaps; they do not mean continuous retained coverage.
-Discarded text is absent from chunk output, but the original transcript remains
-available through the Python result:
+## Roadmap
 
-```python
-from obsidian_ingest.segmentation import format_segmentation, inspect_source
+1. Keep and refine deterministic yt-dlp ingestion.
+2. Keep the source API small and expose it through agent-facing adapters when needed.
+3. Add a constrained `AI Drafts` writer with provenance.
+4. Connect a local agent, likely Hermes via MCP.
+5. Make `obsidian-ingest <URL>` run the unattended workflow.
+6. Use real sources, observe failures, and fix those concrete problems.
 
-result = inspect_source("https://www.youtube.com/watch?v=VIDEO_ID")
-print(format_segmentation(result))
-raw_transcript = result.filtered.original
-retained_indices = result.filtered.retained_indices
-```
+Later, if real usage justifies it: better transcript navigation/search, vault
+retrieval/deduplication, documentation-aware context, additional yt-dlp-supported
+providers, conservative caption normalization, or improved source partitioning.
+These are not prerequisites for useful drafts.
 
-Chunks use half-open positions into `retained_indices`, not slices into the raw
-transcript. Filtering preserves timestamps, wording, and source order and accounts
-for every original segment. These are **baseline chunks**, not model-validated
-semantic chunks. No Laya, embeddings, classification, or note-writing calls occur.
+A **remote inbox** is a later convenience feature and explicitly out of scope now:
+share a URL from a phone to a Telegram bot (likely first, perhaps WhatsApp later),
+trigger local processing, receive a success/failure report, and let the worker go
+idle again. No bots, queues, wake-up mechanisms, or remote infrastructure are being
+built now. The core workflow should remain independent of where the URL came from.
 
-## Metadata Assumptions
-
-- The caller's URL is preserved as `original_url`. `canonical_url` uses yt-dlp's
-  webpage URL, falling back to a watch URL constructed from the video ID.
-- Publication timestamps are UTC-aware. When only an upload date is available,
-  midnight UTC is a date-only placeholder, not a known publication time.
-- Shorts detection uses parsed YouTube `/shorts/` URLs, not duration or aspect
-  ratio. A Short supplied only through watch URLs may be classified as standard;
-  `is_short=False` means no Shorts URL evidence was found, not verified absence.
-- Missing optional fields remain `None`; tags and chapters become tuples.
-  Chapters without a title, start, or end are omitted rather than guessed.
-- Native vertical shorts are clips regardless of duration. Standard content is
-  short-form below 8 minutes, long-form from 8 through 50 minutes inclusive, and
-  extended above 50 minutes. Unknown standard duration yields no category.
-- Instagram and TikTok hostnames are recognized, but extraction is not implemented.
-
-## Verification
+## Development
 
 ```bash
+uv sync
 uv run ruff format src tests
 uv run ruff check src tests
 uv run pytest
 git diff --check
 ```
 
-Tests use fake metadata and mocked I/O, not live services. JSON3 caption events
-remain atomic. VTT parsing is deferred: selection currently accepts VTT as a
-fallback, but caption retrieval still expects JSON3.
+Automated tests use fake extraction data and mocked I/O, not live services. Live
+source checks are optional and separate. See [AGENTS.md](AGENTS.md) for coding-agent
+guidance, architectural boundaries, and verification expectations.

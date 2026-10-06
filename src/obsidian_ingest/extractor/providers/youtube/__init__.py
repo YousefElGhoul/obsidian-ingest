@@ -122,16 +122,29 @@ def _read_captions(
     return language, is_generated, parse_json3(captions)
 
 
+def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMetadata]:
+    info = ydl.extract_info(url, download=False)
+    if not info or info.get("_type") in {"playlist", "multi_video"}:
+        raise ValueError("Expected metadata for a single YouTube video")
+    return info, normalize_youtube_metadata(info, url)
+
+
+def get_youtube_content(url: str) -> tuple[SourceMetadata, Transcript]:
+    """Build normalized metadata and captions from one extraction, without exclusions."""
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info, metadata = _extract_metadata(ydl, url)
+        language, generated, segments = _read_captions(ydl, info)
+    return metadata, Transcript(metadata.source_id, language, language, generated, segments)
+
+
 def get_youtube_source(url: str) -> tuple[SourceMetadata, Transcript, ExclusionLookup]:
     """Fetch one source snapshot for inspection without changing the raw transcript."""
     from obsidian_ingest.extractor.providers.youtube.sponsorblock import fetch_exclusions
 
     opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if not info or info.get("_type") in {"playlist", "multi_video"}:
-            raise ValueError("Expected metadata for a single YouTube video")
-        metadata = normalize_youtube_metadata(info, url)
+        info, metadata = _extract_metadata(ydl, url)
         exclusions = fetch_exclusions(ydl, info)
         language, generated, segments = _read_captions(ydl, info)
     transcript = Transcript(metadata.source_id, language, language, generated, segments)
@@ -141,11 +154,8 @@ def get_youtube_source(url: str) -> tuple[SourceMetadata, Transcript, ExclusionL
 def get_youtube_metadata(url: str) -> SourceMetadata:
     ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    if not info or info.get("_type") in {"playlist", "multi_video"}:
-        raise ValueError("Expected metadata for a single YouTube video")
-    return normalize_youtube_metadata(info, url)
+        _, metadata = _extract_metadata(ydl, url)
+    return metadata
 
 
 def normalize_youtube_metadata(info: dict[str, Any], original_url: str) -> SourceMetadata:
