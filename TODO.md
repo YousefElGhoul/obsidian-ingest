@@ -34,7 +34,6 @@ remaining work. Do not mark an item complete based on implementation intent alon
 Finish the remaining writer checks before exposing it to an unattended agent. Keep
 the writer create-only; never edit, append to, move, or delete existing notes.
 
-- [ ] Test long titles near the portable filename limit when suffixes are added.
 - [ ] State the filesystem/platform assumptions and fail clearly if required safe
   no-follow primitives are unavailable.
 - [ ] Review the threat model for concurrent movement of configured/open directories;
