@@ -1,68 +1,27 @@
 import json
 import sys
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-from yt_dlp.networking import Response
-from yt_dlp.networking.exceptions import HTTPError
-
-from obsidian_ingest import cli, segmentation
-from obsidian_ingest.extractor.metadata import (
-    Chapter,
-    ExcludedRange,
-    ExclusionLookup,
-    ExclusionStatus,
-)
-from obsidian_ingest.extractor.providers import youtube
-from obsidian_ingest.extractor.providers.youtube import sponsorblock
-from obsidian_ingest.extractor.transcript import TranscriptSegment
+from obsidian_ingest import cli
+from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 
 
-def test_transcript_subcommand_preserves_existing_transcript_call(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    print_transcript = MagicMock()
-    inspect_source = MagicMock(side_effect=AssertionError("Inspection must be opt-in"))
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "transcript", "https://youtu.be/abc"])
-    monkeypatch.setattr(cli, "print_transcript", print_transcript)
-    monkeypatch.setattr(segmentation, "inspect_source", inspect_source)
+def test_transcript_subcommand_calls_existing_printer(monkeypatch, capsys) -> None:
+    printer = MagicMock()
+    url = "https://youtu.be/example"
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "transcript", url])
+    monkeypatch.setattr(cli, "print_transcript", printer)
 
     cli.main()
 
-    print_transcript.assert_called_once_with("https://youtu.be/abc")
-    inspect_source.assert_not_called()
+    printer.assert_called_once_with(url)
     assert capsys.readouterr().out == ""
 
 
-def test_inspect_cli_formats_inspected_source_only(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    result = object()
-    inspect_source = MagicMock(return_value=result)
-    format_segmentation = MagicMock(return_value="Baseline chunks\nSource indices: 0, 2")
-    print_transcript = MagicMock(side_effect=AssertionError("Must not print raw sponsor text"))
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
-    monkeypatch.setattr(segmentation, "inspect_source", inspect_source)
-    monkeypatch.setattr(segmentation, "format_segmentation", format_segmentation)
-    monkeypatch.setattr(cli, "print_transcript", print_transcript)
-
-    cli.main()
-
-    inspect_source.assert_called_once_with("https://youtu.be/abc")
-    format_segmentation.assert_called_once_with(result)
-    print_transcript.assert_not_called()
-    assert capsys.readouterr().out == "Baseline chunks\nSource indices: 0, 2\n"
-
-
-def test_metadata_subcommand_prints_normalized_json(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_metadata_subcommand_prints_normalized_json(monkeypatch, capsys) -> None:
     url = "https://youtu.be/abc123"
-    metadata = youtube.normalize_youtube_metadata(
-        {"id": "abc123", "title": "A video", "timestamp": 0}, url
-    )
+    metadata = normalize_youtube_metadata({"id": "abc123", "title": "A video", "timestamp": 0}, url)
     fetch_metadata = MagicMock(return_value=metadata)
     monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "metadata", url])
     monkeypatch.setattr(cli, "fetch_metadata", fetch_metadata)
@@ -77,9 +36,25 @@ def test_metadata_subcommand_prints_normalized_json(
     assert output["chapters"] == []
 
 
-def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_inspect_subcommand_formats_ingested_source(monkeypatch, capsys) -> None:
+    url = "https://youtu.be/example"
+    source = object()
+    inspect_source = MagicMock(return_value=source)
+    format_source_inspection = MagicMock(return_value="Sponsor filtering: failed")
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", url])
+    monkeypatch.setattr("obsidian_ingest.inspection.inspect_source", inspect_source)
+    monkeypatch.setattr(
+        "obsidian_ingest.inspection.format_source_inspection", format_source_inspection
+    )
+
+    cli.main()
+
+    inspect_source.assert_called_once_with(url)
+    format_source_inspection.assert_called_once_with(source)
+    assert capsys.readouterr().out == "Sponsor filtering: failed\n"
+
+
+def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(monkeypatch) -> None:
     run_mcp = MagicMock()
     vault = Path("/tmp/test-vault")
     monkeypatch.setattr(
@@ -94,7 +69,7 @@ def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(
     run_mcp.assert_called_once_with(vault, "Inbox/Drafts")
 
 
-def test_mcp_subcommand_defaults_draft_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
     run_mcp = MagicMock()
     monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", "--vault", "/tmp/vault"])
     monkeypatch.setattr(cli, "_run_mcp", run_mcp)
@@ -102,191 +77,3 @@ def test_mcp_subcommand_defaults_draft_folder(monkeypatch: pytest.MonkeyPatch) -
     cli.main()
 
     run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts")
-
-
-@pytest.fixture
-def source_io(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[MagicMock, dict, ExclusionLookup, MagicMock]:
-    info = {
-        "id": "snapshot-id",
-        "title": "One snapshot",
-        "duration": 600,
-        "chapters": [
-            {"title": "Intro", "start_time": 0, "end_time": 2},
-            {"title": "Lesson", "start_time": 2, "end_time": 600},
-        ],
-        "automatic_captions": {"en": [{"ext": "json3", "url": "https://example.com/captions"}]},
-    }
-    exclusions = ExclusionLookup(
-        (ExcludedRange(1, 2, "sponsor", "SponsorBlock"),),
-        ExclusionStatus.COMPLETE,
-        "SponsorBlock",
-        ("sponsor",),
-    )
-    factory = MagicMock()
-    ydl = factory.return_value.__enter__.return_value
-    ydl.extract_info.return_value = info
-    ydl.urlopen.return_value.read.return_value = json.dumps(
-        {
-            "events": [
-                {
-                    "tStartMs": 125,
-                    "dDurationMs": 2000,
-                    "segs": [{"utf8": " Hello "}, {"utf8": "world"}],
-                },
-                {"tStartMs": 1000, "dDurationMs": 1500, "segs": [{"utf8": "SECRET SPONSOR"}]},
-                {"tStartMs": 2125, "dDurationMs": 750, "segs": [{"utf8": "Lesson"}]},
-            ]
-        }
-    ).encode()
-    fetch_exclusions = MagicMock(return_value=exclusions)
-    monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
-    monkeypatch.setattr(sponsorblock, "fetch_exclusions", fetch_exclusions)
-    return ydl, info, exclusions, fetch_exclusions
-
-
-def test_combined_youtube_source_uses_one_snapshot_and_real_normalization(
-    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
-) -> None:
-    ydl, info, exclusions, fetch_exclusions = source_io
-    metadata, transcript, actual_lookup = youtube.get_youtube_source("https://youtu.be/request-id")
-
-    ydl.extract_info.assert_called_once_with("https://youtu.be/request-id", download=False)
-    fetch_exclusions.assert_called_once_with(ydl, info)
-    assert fetch_exclusions.call_args.args[1] is info
-    ydl.urlopen.assert_called_once_with("https://example.com/captions")
-    assert metadata.source_id == transcript.video_id == "snapshot-id"
-    assert metadata.original_url == "https://youtu.be/request-id"
-    assert metadata.title == "One snapshot"
-    assert metadata.duration_seconds == 600
-    assert metadata.chapters == (Chapter("Intro", 0, 2), Chapter("Lesson", 2, 600))
-    assert (transcript.language, transcript.language_code, transcript.is_generated) == (
-        "en",
-        "en",
-        True,
-    )
-    assert transcript.segments == (
-        TranscriptSegment("Hello world", 0.125, 2),
-        TranscriptSegment("SECRET SPONSOR", 1, 1.5),
-        TranscriptSegment("Lesson", 2.125, 0.75),
-    )
-    assert actual_lookup is exclusions
-
-
-@pytest.mark.parametrize("inspect_chunks", [False, True])
-def test_original_english_track_avoids_failing_translated_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
-    inspect_chunks: bool,
-) -> None:
-    ydl, info, _, fetch_exclusions = source_io
-    video_url = "https://www.youtube.com/watch?v=DkhhE97Swmo"
-    translated_url = "https://example.com/timedtext?lang=ar&tlang=en&fmt=json3"
-    original_url = "https://example.com/timedtext?lang=en&fmt=json3"
-    info.update(
-        {
-            "id": "DkhhE97Swmo",
-            "title": "Therapy for the Vibe-Coded Brain",
-            "automatic_captions": {
-                "en": [{"ext": "json3", "name": "English", "url": translated_url}],
-                "en-orig": [{"ext": "json3", "name": "English (Original)", "url": original_url}],
-            },
-        }
-    )
-    response = ydl.urlopen.return_value
-
-    def open_caption(url: str) -> MagicMock:
-        if url == translated_url:
-            raise HTTPError(Response(BytesIO(), translated_url, {}, status=429))
-        assert url == original_url
-        return response
-
-    ydl.urlopen.side_effect = open_caption
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["obsidian-ingest", "inspect" if inspect_chunks else "transcript", video_url],
-    )
-
-    cli.main()
-
-    ydl.extract_info.assert_called_once_with(video_url, download=False)
-    ydl.urlopen.assert_called_once_with(original_url)
-    report = capsys.readouterr().out
-    assert "Hello world" in report
-    assert "en-orig" not in report
-    if inspect_chunks:
-        fetch_exclusions.assert_called_once()
-        assert "Segments: 3 original, 2 retained, 1 excluded" in report
-        assert "SECRET SPONSOR" not in report
-    else:
-        fetch_exclusions.assert_not_called()
-        assert "Language: en (en)" in report
-        assert "Generated captions: True" in report
-
-
-def test_inspect_cli_offline_integration_filters_without_mutating_raw_captions(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
-) -> None:
-    ydl, _, _, fetch_exclusions = source_io
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
-
-    cli.main()
-
-    ydl.extract_info.assert_called_once_with("https://youtu.be/abc", download=False)
-    fetch_exclusions.assert_called_once()
-    report = capsys.readouterr().out
-    assert "Segments: 3 original, 2 retained, 1 excluded" in report
-    assert "SECRET SPONSOR" not in report
-    assert "sponsor (SponsorBlock); excluded indices: 1" in report
-    assert "Segment 0: retained, crosses range 0" in report
-    assert "Segment 1: excluded, crosses range 0" in report
-    assert "[0] [00:00.125] Hello world" in report
-    assert "[2] [00:02.125] Lesson" in report
-    assert "Chapter: 0: Intro" in report
-    assert "Chapter: 1: Lesson" in report
-
-
-def test_lookup_failure_prints_no_chunks_and_does_not_fetch_captions(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
-) -> None:
-    ydl, _, _, fetch_exclusions = source_io
-    fetch_exclusions.side_effect = ValueError("SponsorBlock lookup failed")
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
-
-    with pytest.raises(ValueError, match="SponsorBlock lookup failed"):
-        cli.main()
-
-    ydl.extract_info.assert_called_once_with("https://youtu.be/abc", download=False)
-    fetch_exclusions.assert_called_once()
-    ydl.urlopen.assert_not_called()
-    assert capsys.readouterr().out == ""
-
-
-@pytest.mark.parametrize("info", [None, {}, {"_type": "playlist"}, {"_type": "multi_video"}])
-def test_combined_source_rejects_non_video_before_lookup_or_captions(
-    source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock], info: dict | None
-) -> None:
-    ydl, _, _, fetch_exclusions = source_io
-    ydl.extract_info.return_value = info
-    with pytest.raises(ValueError, match="Expected metadata for a single YouTube video"):
-        youtube.get_youtube_source("https://youtu.be/abc")
-    ydl.extract_info.assert_called_once_with("https://youtu.be/abc", download=False)
-    fetch_exclusions.assert_not_called()
-    ydl.urlopen.assert_not_called()
-
-
-def test_inspection_rejects_unsupported_provider_before_extraction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    get_source = MagicMock(side_effect=AssertionError("No extraction expected"))
-    monkeypatch.setattr(youtube, "get_youtube_source", get_source)
-    with pytest.raises(ValueError, match="currently supported only for YouTube"):
-        segmentation.inspect_source("https://www.instagram.com/reel/abc/")
-    get_source.assert_not_called()

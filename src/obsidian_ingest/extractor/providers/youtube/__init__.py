@@ -9,6 +9,7 @@ from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import (
     Chapter,
     ExclusionLookup,
+    ExclusionStatus,
     NativeFormat,
     SourceMetadata,
     YouTubeMetadata,
@@ -129,23 +130,25 @@ def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMeta
     return info, normalize_youtube_metadata(info, url)
 
 
-def get_youtube_content(url: str) -> tuple[SourceMetadata, Transcript]:
-    """Build normalized metadata and captions from one extraction, without exclusions."""
+def get_youtube_content(
+    url: str, categories: tuple[str, ...] = ("sponsor",)
+) -> tuple[SourceMetadata, Transcript, ExclusionLookup]:
+    """Build metadata, captions, and best-effort exclusions from one extraction snapshot."""
     opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info, metadata = _extract_metadata(ydl, url)
-        language, generated, segments = _read_captions(ydl, info)
-    return metadata, Transcript(metadata.source_id, language, language, generated, segments)
+        try:
+            from obsidian_ingest.extractor.providers.youtube.sponsorblock import fetch_exclusions
 
-
-def get_youtube_source(url: str) -> tuple[SourceMetadata, Transcript, ExclusionLookup]:
-    """Fetch one source snapshot for inspection without changing the raw transcript."""
-    from obsidian_ingest.extractor.providers.youtube.sponsorblock import fetch_exclusions
-
-    opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info, metadata = _extract_metadata(ydl, url)
-        exclusions = fetch_exclusions(ydl, info)
+            exclusions = fetch_exclusions(ydl, info, categories)
+        except Exception as error:  # noqa: BLE001 - filtering is optional; captions still proceed.
+            exclusions = ExclusionLookup(
+                ranges=(),
+                status=ExclusionStatus.FAILED,
+                provenance="SponsorBlock",
+                categories=categories,
+                error_message=str(error) or type(error).__name__,
+            )
         language, generated, segments = _read_captions(ydl, info)
     transcript = Transcript(metadata.source_id, language, language, generated, segments)
     return metadata, transcript, exclusions

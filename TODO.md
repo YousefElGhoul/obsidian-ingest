@@ -17,15 +17,19 @@ remaining work. Do not mark an item complete based on implementation intent alon
 - YouTube extraction provides normalized metadata, English captions, chapters, and
   timestamps through yt-dlp. Current caption parsing handles JSON3, not VTT.
 - `source.py` provides reusable ingestion and read-only overview, chapter, and
-  bounded transcript access. One logical YouTube ingestion uses one yt-dlp metadata
-  snapshot plus a caption request.
+  bounded transcript access. Sponsor filtering defaults to `sponsor` only, uses one
+  yt-dlp metadata snapshot, and is best-effort; the original transcript remains
+  available when lookup fails or a caller opts out.
 - `drafts.py` provides a create-only Markdown writer. It uses a configurable vault
   path and relative folder, defaulting to `00 Inbox/AI Drafts`; it adds source
   provenance and creates numbered filenames on collisions. It writes to a hidden,
   non-Markdown staging file and atomically publishes only completed drafts; forced
   termination may leave hidden staging data.
 - The CLI exposes `transcript`, `inspect`, `metadata`, and local stdio `mcp`
-  subcommands. The MCP server exposes source tools and create-only draft writing.
+  subcommands. `inspect` is a source/filter diagnostic, not a chunk report. The MCP
+  server exposes source tools and create-only draft writing.
+- `scripts/evaluate.py` reads `videos.txt`, captures MCP source-tool responses and
+  schemas per video, reads every retained transcript page, and never creates drafts.
 - No agent orchestration, vault reader, deduplication, or unattended URL-to-draft
   workflow exists yet.
 
@@ -34,6 +38,8 @@ remaining work. Do not mark an item complete based on implementation intent alon
 Use the current source/draft MCP tools to evaluate whether agent-written drafts are
 useful before implementing vault-reading deduplication.
 
+- [ ] Run `uv run python scripts/evaluate.py` and review the retained text, exclusion
+  status, chapters, and tool responses in its per-video reports.
 - [ ] Configure the locally installed Hermes server using the README instructions;
   keep agent configuration changes manual and user-controlled.
 - [ ] Use a disposable vault without private material for the first live experiment.

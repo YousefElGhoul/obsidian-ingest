@@ -13,19 +13,11 @@ from obsidian_ingest.extractor.transcript import TranscriptSegment
 from obsidian_ingest.source import (
     Source,
     get_source_overview,
+    read_chapter_entries,
+    read_transcript_entries,
 )
-from obsidian_ingest.source import (
-    ingest_source as ingest_application_source,
-)
-from obsidian_ingest.source import (
-    list_chapters as get_application_chapters,
-)
-from obsidian_ingest.source import (
-    read_chapter as read_application_chapter,
-)
-from obsidian_ingest.source import (
-    read_transcript as read_application_transcript,
-)
+from obsidian_ingest.source import ingest_source as ingest_application_source
+from obsidian_ingest.source import list_chapters as get_application_chapters
 
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 500
@@ -47,26 +39,40 @@ def _source_overview(source: Source) -> dict[str, Any]:
             overview.content_category.value if overview.content_category is not None else None
         ),
         "chapter_count": overview.chapter_count,
+        "sponsor_filtering": {
+            "status": overview.exclusion_lookup.status.value,
+            "enabled": bool(overview.exclusion_lookup.categories),
+            "categories": list(overview.exclusion_lookup.categories),
+            "error": overview.exclusion_lookup.error_message,
+            "original_segments": overview.original_segment_count,
+            "retained_segments": overview.retained_segment_count,
+            "excluded_segments": overview.excluded_segment_count,
+        },
     }
 
 
 def _segment_page(
-    segments: tuple[TranscriptSegment, ...], offset: int, limit: int
+    entries: tuple[tuple[int, TranscriptSegment], ...], offset: int, limit: int
 ) -> dict[str, Any]:
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be a nonnegative integer")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
         raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
-    selected = segments[offset : offset + limit]
+    selected = entries[offset : offset + limit]
     next_offset = offset + len(selected)
     return {
         "segments": [
-            {"text": segment.text, "start": segment.start, "duration": segment.duration}
-            for segment in selected
+            {
+                "source_index": source_index,
+                "text": segment.text,
+                "start": segment.start,
+                "duration": segment.duration,
+            }
+            for source_index, segment in selected
         ],
-        "total_segments": len(segments),
+        "total_segments": len(entries),
         "offset": offset,
-        "next_offset": next_offset if next_offset < len(segments) else None,
+        "next_offset": next_offset if next_offset < len(entries) else None,
     }
 
 
@@ -86,10 +92,10 @@ def create_server(settings: DraftWriterSettings) -> MCPServer:
             raise ToolError(f"Unknown source_id: {source_id}; ingest the URL first") from error
 
     @server.tool()
-    def ingest_source(url: str) -> dict[str, Any]:
-        """Ingest a supported source and return a handle and normalized overview."""
+    def ingest_source(url: str, exclude_sponsors: bool = True) -> dict[str, Any]:
+        """Ingest a source, excluding SponsorBlock sponsor atoms by default."""
         try:
-            source = ingest_application_source(url)
+            source = ingest_application_source(url, exclude_sponsors=exclude_sponsors)
         except Exception as error:
             raise ToolError(f"Could not ingest source: {error}") from error
         source_id = uuid4().hex
@@ -98,7 +104,7 @@ def create_server(settings: DraftWriterSettings) -> MCPServer:
 
     @server.tool()
     def get_source_overview(source_id: str) -> dict[str, Any]:
-        """Get source metadata without reading transcript text."""
+        """Get source metadata and sponsor-filtering outcome without transcript text."""
         return _source_overview(get_source(source_id))
 
     @server.tool()
@@ -110,18 +116,44 @@ def create_server(settings: DraftWriterSettings) -> MCPServer:
         ]
 
     @server.tool()
+    def list_exclusions(source_id: str) -> list[dict[str, Any]]:
+        """List sponsor ranges and original transcript indices they exclude."""
+        source = get_source(source_id)
+        return [
+            {
+                "range_index": range_index,
+                "start": exclusion.start,
+                "end": exclusion.end,
+                "reason": exclusion.reason,
+                "provenance": exclusion.provenance,
+                "source_indices": [
+                    segment.source_index
+                    for segment in source.filtered_transcript.excluded
+                    if range_index in segment.range_indices
+                ],
+            }
+            for range_index, exclusion in enumerate(source.exclusion_lookup.ranges)
+        ]
+
+    @server.tool()
     def read_transcript(
         source_id: str,
         start: float | None = None,
         end: float | None = None,
+        include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> dict[str, Any]:
-        """Read original segments by half-open start-time range with pagination."""
+        """Read sponsor-filtered transcript pages by default; optionally include original atoms."""
         source = get_source(source_id)
         try:
-            segments = read_application_transcript(source, start=start, end=end)
-            return _segment_page(segments, offset, limit)
+            entries = read_transcript_entries(
+                source,
+                start=start,
+                end=end,
+                include_excluded=include_excluded,
+            )
+            return _segment_page(entries, offset, limit)
         except (TypeError, ValueError) as error:
             raise ToolError(str(error)) from error
 
@@ -129,14 +161,19 @@ def create_server(settings: DraftWriterSettings) -> MCPServer:
     def read_chapter(
         source_id: str,
         chapter_index: int,
+        include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> dict[str, Any]:
-        """Read creator-chapter segments with pagination."""
+        """Read creator-chapter pages from the retained or original transcript view."""
         source = get_source(source_id)
         try:
-            segments = read_application_chapter(source, chapter_index)
-            return _segment_page(segments, offset, limit)
+            entries = read_chapter_entries(
+                source,
+                chapter_index,
+                include_excluded=include_excluded,
+            )
+            return _segment_page(entries, offset, limit)
         except (IndexError, TypeError, ValueError) as error:
             raise ToolError(str(error)) from error
 
