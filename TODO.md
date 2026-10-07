@@ -21,26 +21,19 @@ remaining work. Do not mark an item complete based on implementation intent alon
   snapshot plus a caption request.
 - `drafts.py` provides a create-only Markdown writer. It uses a configurable vault
   path and relative folder, defaulting to `00 Inbox/AI Drafts`; it adds source
-  provenance and creates numbered filenames on collisions.
+  provenance and creates numbered filenames on collisions. It writes to a hidden,
+  non-Markdown staging file and atomically publishes only completed drafts; forced
+  termination may leave hidden staging data.
 - The CLI currently prints transcripts or invokes the legacy `--inspect-chunks`
   baseline inspector. Neither path runs an agent or writes drafts.
 - No vault reader, deduplication, agent orchestration, MCP server, or unattended
   workflow exists yet.
 
-## Next: Writer Integrity
+## Writer Integrity Follow-up
 
-Complete these focused safety checks before exposing the writer to an unattended
-agent. Keep the writer create-only; never edit, append to, move, or delete existing
-notes.
+Finish the remaining writer checks before exposing it to an unattended agent. Keep
+the writer create-only; never edit, append to, move, or delete existing notes.
 
-- [ ] Make failed-write cleanup safe against deleting a file another process placed
-  at the same path after this writer created its file.
-- [ ] Define and test behavior for write errors and interrupted/partial writes so a
-  failed operation is not reported as a successful complete draft.
-- [ ] Test existing files, directories, and symlinks at candidate filenames; verify
-  collisions only choose another numeric filename and never modify those entries.
-- [ ] Test concurrent calls creating the same title; each must create a distinct file
-  without overwriting another call's output.
 - [ ] Test long titles near the portable filename limit when suffixes are added.
 - [ ] State the filesystem/platform assumptions and fail clearly if required safe
   no-follow primitives are unavailable.
