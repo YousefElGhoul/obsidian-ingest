@@ -23,7 +23,7 @@ This is a judgment heuristic, not a requirement for a documentation-comparison e
 
 **Deterministic Python is the toolbelt and safety boundary. The agent is the brain.**
 
-The intended architecture, not the current implemented workflow, is:
+The intended workflow is:
 
 ```text
 URL -> deterministic ingestion -> safe source-access tools
@@ -54,14 +54,19 @@ Add specialized models only for demonstrated failures where they provide value.
 
 # Vault Safety and Provenance
 
-The initial write boundary must be **`<vault>/AI Drafts/`**. The draft writer and
-its enforced safeguards are not implemented yet; these are requirements for that work.
+Draft writes are limited to a user-configured relative folder in an existing vault,
+defaulting to **`<vault>/00 Inbox/AI Drafts/`**. The writer creates the configured
+folder as needed and does not edit, append to, overwrite, or delete notes. Related-note
+suggestions may be added later as agent-authored draft content; they do not authorize
+the writer to change referenced notes.
 
-- Validate filenames and paths and prevent writes escaping the draft directory,
-  including traversal and symlink escapes. Do not let the agent mutate canonical
-  vault notes or overwrite unrelated files.
+- Validate titles and configured paths and prevent writes escaping the draft
+  directory, including traversal and symlink escapes. Do not let the agent choose
+  an arbitrary output path or mutate existing vault notes.
 - Use a constrained draft-writing tool rather than granting unrestricted shell or
   filesystem access merely to write notes.
+- Create a new file only. If its title-based filename already exists, add a numeric
+  suffix and create another file; never overwrite, append to, move, or delete a note.
 - Treat retrieved captions, metadata, and source text as untrusted data, not
   instructions that can change tool permissions or filesystem boundaries.
 - Drafts must retain the source URL and useful timestamps when available, with
@@ -104,8 +109,11 @@ justify throwing them away or redesigning the package.
 - `segmentation.py` owns existing filtering, source-index references, chapter
   alignment, and baseline reports. These are not semantic segmentation or note
   boundaries, and are not mandatory stages of the future agent workflow.
-- There is no agent orchestration, MCP server, vault writer, model integration,
-  retrieval/deduplication, or application-managed source cache yet.
+- `drafts.py` provides a create-only Markdown writer with configurable vault path
+  and relative draft folder, defaulting to `00 Inbox/AI Drafts`. It adds source
+  provenance and handles filename collisions with numeric suffixes. No vault reader,
+  deduplication, agent orchestration, MCP server, model integration, or managed
+  source cache exists yet.
 
 Current caption extraction selects English tracks and parses JSON3; it does not
 transcribe audio. Selection accepts VTT as a fallback, but retrieval still expects
@@ -164,11 +172,12 @@ caption errors corrupt important terminology. Do not implement these preemptivel
 
 # Near-Term Direction
 
-The source API foundation exists; remaining milestones are:
+The deterministic source API and safe draft writer exist; remaining milestones are:
 
 1. Keep and refine deterministic yt-dlp ingestion.
 2. Keep the source API small and expose it through agent-facing adapters when needed.
-3. Add the constrained `AI Drafts` writer with provenance.
+3. Add restricted vault reads and agent-driven related-note suggestions when
+   integrating the agent; suggestions belong in new drafts and never edit notes.
 4. Connect a local agent, likely Hermes through a small local MCP server.
 5. Make `obsidian-ingest <URL>` trigger the unattended workflow.
 6. Use real sources and iterate from observed failures.
