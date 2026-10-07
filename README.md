@@ -15,8 +15,9 @@ the notes manually.
 
 ## Current State
 
-**Extraction works today; unattended agent processing and Obsidian writing do not
-exist yet.** The current CLI prints transcripts to the terminal, not draft notes.
+**Extraction and safe draft creation work today; unattended agent processing does
+not exist yet.** The current CLI prints transcripts to the terminal and does not
+create drafts.
 
 Implemented:
 
@@ -24,6 +25,7 @@ Implemented:
 - Normalized source URLs, creator/context metadata, timestamps, and chapters
   where available, exposed through Python functions.
 - Reusable source ingestion and read-only transcript access by time range or chapter.
+- A create-only Markdown draft writer with a configurable vault path and draft folder.
 - Timestamped transcript output, preserving parsed JSON3 caption events as atoms.
 - Optional SponsorBlock-aware baseline inspection for development.
 
@@ -32,7 +34,7 @@ implemented. Caption retrieval is not audio transcription. JSON3 captions are
 parsed; although track selection accepts a VTT fallback, VTT parsing is not
 implemented. Sources without usable English JSON3 captions may fail.
 
-There is no agent/model integration, MCP server, safe vault writer, or vault
+There is no agent/model integration, MCP server, vault reader, or vault
 retrieval/deduplication yet.
 
 ## Usage Today
@@ -95,6 +97,39 @@ The CLI and standalone `fetch_metadata`/`fetch_transcript` functions remain avai
 and unchanged. Calling those two standalone functions separately still performs
 separate extraction requests; use `ingest_source` when both are needed.
 
+## Creating Drafts
+
+The writer creates Markdown notes without editing or overwriting existing files.
+It requires an existing vault directory and creates its configured relative draft
+folder as needed. The default is `00 Inbox/AI Drafts`.
+
+```python
+from pathlib import Path
+
+from obsidian_ingest.drafts import DraftWriterSettings, create_draft
+
+settings = DraftWriterSettings(vault_path=Path("/path/to/vault"))
+result = create_draft(
+    settings,
+    title="Why retries can amplify an outage",
+    contents="Agent-written note content, with no required template.",
+    source=source.metadata,
+    timestamps=(120.5, 245.0),
+)
+print(result.path)
+```
+
+The title becomes the Markdown filename; the writer does not add a duplicate title
+heading to the note body. It appends a readable `Source` section with the source
+title, URL, creator when available, and supplied timestamps. Timestamps are seconds.
+Invalid filename titles or unsafe folder paths are rejected. Existing filenames
+are preserved; a new draft uses `Title (2).md`, then `Title (3).md`, as needed.
+
+The agent-facing caller supplies note content, title, source metadata, and optional
+timestamps, but not an output path. The configured vault and draft folder are trusted
+application settings. Related-note suggestions and vault reading/search are planned
+for agent integration; this writer does not discover related notes or change them.
+
 ## Intended Architecture
 
 **Deterministic Python is the toolbelt and safety boundary. The agent is the brain.**
@@ -108,8 +143,9 @@ URL -> yt-dlp ingestion -> safe source-access tools
 
 Python handles source access, provenance, and filesystem safety. The agent decides
 what matters, which ideas belong together, how many notes to produce, and what to
-write. The future writer will restrict writes to `<vault>/AI Drafts/`, not canonical
-vault notes, and drafts will include source URLs and useful timestamps.
+write. The writer creates new files only inside the configured draft folder, which
+defaults to `<vault>/00 Inbox/AI Drafts/`; it never edits existing notes. Drafts
+include source URLs and optional timestamps.
 
 The likely near-term integration is Hermes calling a small local MCP tool surface
 to inspect metadata and chapters, read source material, and create drafts. This is
@@ -152,7 +188,8 @@ an unattended note-generation workflow.
 
 1. Keep and refine deterministic yt-dlp ingestion.
 2. Keep the source API small and expose it through agent-facing adapters when needed.
-3. Add a constrained `AI Drafts` writer with provenance.
+3. Add restricted vault reads and agent-driven related-note suggestions; suggested
+   links belong in new drafts and never authorize edits to existing notes.
 4. Connect a local agent, likely Hermes via MCP.
 5. Make `obsidian-ingest <URL>` run the unattended workflow.
 6. Use real sources, observe failures, and fix those concrete problems.
