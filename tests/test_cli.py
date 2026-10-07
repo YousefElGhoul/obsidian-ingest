@@ -1,6 +1,7 @@
 import json
 import sys
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,12 +20,12 @@ from obsidian_ingest.extractor.providers.youtube import sponsorblock
 from obsidian_ingest.extractor.transcript import TranscriptSegment
 
 
-def test_default_cli_preserves_existing_transcript_call(
+def test_transcript_subcommand_preserves_existing_transcript_call(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     print_transcript = MagicMock()
     inspect_source = MagicMock(side_effect=AssertionError("Inspection must be opt-in"))
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "https://youtu.be/abc"])
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "transcript", "https://youtu.be/abc"])
     monkeypatch.setattr(cli, "print_transcript", print_transcript)
     monkeypatch.setattr(segmentation, "inspect_source", inspect_source)
 
@@ -42,9 +43,7 @@ def test_inspect_cli_formats_inspected_source_only(
     inspect_source = MagicMock(return_value=result)
     format_segmentation = MagicMock(return_value="Baseline chunks\nSource indices: 0, 2")
     print_transcript = MagicMock(side_effect=AssertionError("Must not print raw sponsor text"))
-    monkeypatch.setattr(
-        sys, "argv", ["obsidian-ingest", "--inspect-chunks", "https://youtu.be/abc"]
-    )
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
     monkeypatch.setattr(segmentation, "inspect_source", inspect_source)
     monkeypatch.setattr(segmentation, "format_segmentation", format_segmentation)
     monkeypatch.setattr(cli, "print_transcript", print_transcript)
@@ -55,6 +54,54 @@ def test_inspect_cli_formats_inspected_source_only(
     format_segmentation.assert_called_once_with(result)
     print_transcript.assert_not_called()
     assert capsys.readouterr().out == "Baseline chunks\nSource indices: 0, 2\n"
+
+
+def test_metadata_subcommand_prints_normalized_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    url = "https://youtu.be/abc123"
+    metadata = youtube.normalize_youtube_metadata(
+        {"id": "abc123", "title": "A video", "timestamp": 0}, url
+    )
+    fetch_metadata = MagicMock(return_value=metadata)
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "metadata", url])
+    monkeypatch.setattr(cli, "fetch_metadata", fetch_metadata)
+
+    cli.main()
+
+    fetch_metadata.assert_called_once_with(url)
+    output = json.loads(capsys.readouterr().out)
+    assert output["source_id"] == "abc123"
+    assert output["title"] == "A video"
+    assert output["published_at"] == "1970-01-01T00:00:00+00:00"
+    assert output["chapters"] == []
+
+
+def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mcp = MagicMock()
+    vault = Path("/tmp/test-vault")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["obsidian-ingest", "mcp", "--vault", str(vault), "--draft-folder", "Inbox/Drafts"],
+    )
+    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
+
+    cli.main()
+
+    run_mcp.assert_called_once_with(vault, "Inbox/Drafts")
+
+
+def test_mcp_subcommand_defaults_draft_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_mcp = MagicMock()
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", "--vault", "/tmp/vault"])
+    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
+
+    cli.main()
+
+    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts")
 
 
 @pytest.fixture
@@ -160,7 +207,7 @@ def test_original_english_track_avoids_failing_translated_endpoint(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["obsidian-ingest", video_url] + (["--inspect-chunks"] if inspect_chunks else []),
+        ["obsidian-ingest", "inspect" if inspect_chunks else "transcript", video_url],
     )
 
     cli.main()
@@ -186,9 +233,7 @@ def test_inspect_cli_offline_integration_filters_without_mutating_raw_captions(
     source_io: tuple[MagicMock, dict, ExclusionLookup, MagicMock],
 ) -> None:
     ydl, _, _, fetch_exclusions = source_io
-    monkeypatch.setattr(
-        sys, "argv", ["obsidian-ingest", "https://youtu.be/abc", "--inspect-chunks"]
-    )
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
 
     cli.main()
 
@@ -213,9 +258,7 @@ def test_lookup_failure_prints_no_chunks_and_does_not_fetch_captions(
 ) -> None:
     ydl, _, _, fetch_exclusions = source_io
     fetch_exclusions.side_effect = ValueError("SponsorBlock lookup failed")
-    monkeypatch.setattr(
-        sys, "argv", ["obsidian-ingest", "--inspect-chunks", "https://youtu.be/abc"]
-    )
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "inspect", "https://youtu.be/abc"])
 
     with pytest.raises(ValueError, match="SponsorBlock lookup failed"):
         cli.main()

@@ -57,7 +57,7 @@ for index in "${!ids[@]}"; do
     printf '[%s/%s] Attempting %s\n' "$((index + 1))" "${#ids[@]}" "$id" >&2
     # Stage beside the final report so publication is an atomic rename.
     if temporary=$(mktemp -- "$output_dir/.run_output_${id}.XXXXXX"); then
-        if uv run obsidian-ingest --inspect-chunks "https://www.youtube.com/watch?v=$id" \
+        if uv run obsidian-ingest inspect "https://www.youtube.com/watch?v=$id" \
             < /dev/null > "$temporary" 2> "$stderr_log"; then
             if [[ -s "$temporary" ]]; then
                 if mv -fT -- "$temporary" "$final" 2>> "$stderr_log"; then
