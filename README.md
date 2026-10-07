@@ -22,7 +22,7 @@ Current capabilities:
 - Normalized source metadata, chapters, timestamps, and read-only transcript access.
 - Create-only Markdown drafts with a configurable vault path and relative draft
   folder, defaulting to `00 Inbox/AI Drafts/`.
-- CLI subcommands for transcript output, normalized metadata, and legacy inspection.
+- CLI subcommands for transcript output, normalized metadata, and source inspection.
 - MCP tools for source ingestion/navigation and create-only draft writing.
 
 YouTube captions are retrieved, not transcribed. JSON3 parsing is implemented;
@@ -44,7 +44,7 @@ The current CLI does not run an agent. Available commands:
 ```bash
 obsidian-ingest transcript URL  # Print timestamped captions
 obsidian-ingest metadata URL    # Print normalized metadata as JSON
-obsidian-ingest inspect URL     # Legacy SponsorBlock-aware baseline report
+obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
 obsidian-ingest mcp --vault PATH [--draft-folder PATH]
 ```
 
@@ -52,7 +52,7 @@ Extraction requires network access and depends on source and caption availabilit
 
 ### Python Source API
 
-Ingest once, then inspect metadata and read original transcript segments without
+Ingest once, then inspect metadata and read retained transcript segments without
 additional network requests:
 
 ```python
@@ -77,7 +77,11 @@ if chapters:
 For one YouTube ingestion, metadata and captions use one yt-dlp extraction snapshot
 plus a caption request. Transcript range bounds are seconds, half-open `[start, end)`,
 and based on segment start time. Segments crossing a boundary remain whole. Chapter
-indices are zero-based; only creator-provided chapters are returned.
+indices are zero-based; only creator-provided chapters are returned. Sponsor filtering
+is enabled by default. Use `read_transcript(source, include_excluded=True)` or the
+equivalent chapter option to read original atoms. The unmodified transcript is always
+available at `source.transcript`. If SponsorBlock fails, ingestion continues, the
+overview reports the failure, and all atoms remain in the default readable view.
 
 ### Python Draft Writer
 
@@ -136,12 +140,15 @@ in-memory map. Source handles work only while that server process is running; re
 it clears them. No database or network listener is started. The configured vault and
 draft folder are trusted server settings, not tool arguments.
 
-The tools let an agent ingest a URL, inspect its overview and creator chapters, read
-timestamped transcript pages or chapter pages, and create a draft attributed to that
-ingested source. Transcript reads default to 200 segments and cap pages at 500. Page
-offsets preserve source order, including adjacent segments with the same timestamp.
-Vault listing/search and deduplication are not available yet, so the agent cannot
-compare against existing vault notes through this server.
+The tools let an agent ingest a URL, inspect its overview and creator chapters, list
+SponsorBlock ranges, read timestamped transcript pages or chapter pages, and create a
+draft attributed to that ingested source. Sponsor filtering defaults to `sponsor` only;
+reads return the retained view, with an option to include original atoms. SponsorBlock
+errors are reported and ingestion continues with unfiltered text. Transcript reads
+default to 200 segments and cap pages at 500. Page offsets preserve source order, and
+each segment includes its original source index. Vault listing/search and deduplication
+are not available yet, so the agent cannot compare against existing vault notes through
+this server.
 
 ### Connect Hermes
 
@@ -167,6 +174,7 @@ mcp_servers:
         - ingest_source
         - get_source_overview
         - list_chapters
+        - list_exclusions
         - read_transcript
         - read_chapter
         - create_draft
@@ -188,29 +196,53 @@ Suggested first test prompt:
 
 Hermes configuration and live agent runs are intentionally left to the user.
 
-## Legacy Inspection
+## Source Inspection
 
-The experimental baseline inspector is retained for development:
+Inspect normalized source metadata, creator chapters, SponsorBlock outcome, exclusions,
+and retained transcript atoms without constructing chunks:
 
 ```bash
 uv run obsidian-ingest inspect 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-It reports a SponsorBlock-filtered retained transcript and chapter-aligned baseline
-sections. Only `sponsor` is excluded by default. These sections are not semantic
-boundaries or note boundaries, and this path does not call a model or write drafts.
-The `transcript` subcommand does not query SponsorBlock.
+Sponsor filtering is on by default and only excludes `sponsor` atoms by their start
+timestamps. Other categories remain. If SponsorBlock lookup fails, ingestion continues
+with the full transcript and the report shows the failure; it does not claim that
+filtering succeeded. The original transcript and exclusion attribution remain in the
+Python `Source`. The `transcript` subcommand prints the raw unfiltered captions. Neither
+command calls a model or creates drafts.
 
-`scripts/evaluate.sh` is optional live inspection tooling for a manifest of YouTube
-video IDs. It runs formatting, lint, and tests before collecting reports; it is not
-part of the unattended workflow.
+## Inspecting MCP Responses
+
+To see the source content and tool responses that an agent would receive, without
+connecting an agent or creating drafts:
+
+```bash
+uv run python scripts/evaluate.py
+```
+
+By default this reads YouTube IDs from `videos.txt`, connects to the local MCP server
+over stdio, and writes one JSON report per video in `outputs_archive/`. Each report
+contains the available tool schemas, arguments and responses, overview, exclusions,
+all retained transcript pages, and a read of the first creator chapter when available.
+Transcript/chapter page references point into the recorded `calls` array, where each
+response is stored once. This can produce large reports for long videos. The evaluator
+does **not** call the draft writer or any model. It extracts live YouTube data; this is
+not part of pytest.
+
+Optional positional arguments select a manifest, an output directory (created if
+missing), and the delay between videos:
+
+```bash
+uv run python scripts/evaluate.py videos.txt outputs_archive 2
+```
 
 ## Development
 
 ```bash
 uv sync
-uv run ruff format src tests
-uv run ruff check src tests
+uv run ruff format src tests scripts
+uv run ruff check src tests scripts
 uv run pytest
 git diff --check
 ```

@@ -7,8 +7,14 @@ from mcp.client import Client
 from obsidian_ingest import mcp_server
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.extractor import Provider
+from obsidian_ingest.extractor.metadata import (
+    ExcludedRange,
+    ExclusionLookup,
+    ExclusionStatus,
+)
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.source import Source
 
 URL = "https://www.youtube.com/watch?v=video-123"
@@ -35,9 +41,18 @@ def _sample_source() -> Source:
             TranscriptSegment("First atom", 0, 1),
             TranscriptSegment("Second atom at same time", 1, 0.5),
             TranscriptSegment("Third atom", 1, 1),
+            TranscriptSegment("Sponsor atom", 2, 1),
         ),
     )
-    return Source(metadata, transcript)
+    lookup = ExclusionLookup(
+        (ExcludedRange(2, 3, "sponsor", "SponsorBlock"),),
+        ExclusionStatus.COMPLETE,
+        "SponsorBlock",
+        ("sponsor",),
+    )
+    return Source(
+        metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
+    )
 
 
 def _tool_data(result) -> dict:
@@ -64,6 +79,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "ingest_source",
                 "get_source_overview",
                 "list_chapters",
+                "list_exclusions",
                 "read_transcript",
                 "read_chapter",
                 "create_draft",
@@ -81,6 +97,15 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert ingested["overview"]["title"] == "A useful explanation"
             assert ingested["overview"]["provider"] == Provider.YOUTUBE.value
             assert ingested["overview"]["chapter_count"] == 1
+            assert ingested["overview"]["sponsor_filtering"] == {
+                "status": "complete",
+                "enabled": True,
+                "categories": ["sponsor"],
+                "error": None,
+                "original_segments": 4,
+                "retained_segments": 3,
+                "excluded_segments": 1,
+            }
 
             overview = _tool_data(
                 await client.call_tool("get_source_overview", {"source_id": source_id})
@@ -89,6 +114,19 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             chapters = _tool_data(await client.call_tool("list_chapters", {"source_id": source_id}))
             assert chapters == [{"index": 0, "title": "Main idea", "start": 0.0, "end": 20.0}]
+            exclusions = _tool_data(
+                await client.call_tool("list_exclusions", {"source_id": source_id})
+            )
+            assert exclusions == [
+                {
+                    "range_index": 0,
+                    "start": 2,
+                    "end": 3,
+                    "reason": "sponsor",
+                    "provenance": "SponsorBlock",
+                    "source_indices": [3],
+                }
+            ]
 
             first_page = _tool_data(
                 await client.call_tool(
@@ -107,6 +145,14 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             )
             assert [segment["text"] for segment in second_page["segments"]] == ["Third atom"]
             assert second_page["next_offset"] is None
+            raw_page = _tool_data(
+                await client.call_tool(
+                    "read_transcript",
+                    {"source_id": source_id, "include_excluded": True, "offset": 3},
+                )
+            )
+            assert [segment["text"] for segment in raw_page["segments"]] == ["Sponsor atom"]
+            assert raw_page["segments"][0]["source_index"] == 3
 
             chapter_page = _tool_data(
                 await client.call_tool(
@@ -159,12 +205,16 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert "limit must be" in invalid_page.content[0].text
 
     asyncio.run(exercise_tools())
-    ingest.assert_called_once_with(URL)
+    ingest.assert_called_once_with(URL, exclude_sponsors=True)
 
 
 def test_source_handles_are_scoped_to_one_server_process(tmp_path: Path, monkeypatch) -> None:
     source = _sample_source()
-    monkeypatch.setattr(mcp_server, "ingest_application_source", lambda url: source)
+    monkeypatch.setattr(
+        mcp_server,
+        "ingest_application_source",
+        lambda url, exclude_sponsors=True: source,
+    )
     vault = tmp_path / "vault"
     vault.mkdir()
     server = mcp_server.create_server(DraftWriterSettings(vault))

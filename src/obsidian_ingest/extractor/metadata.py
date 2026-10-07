@@ -13,6 +13,7 @@ class NativeFormat(StrEnum):
 class ExclusionStatus(StrEnum):
     COMPLETE = "complete"
     DISABLED = "disabled"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class ExclusionLookup:
     provenance: str
     categories: tuple[str, ...]
     retrieved_at: datetime | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

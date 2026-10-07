@@ -27,7 +27,7 @@ def main() -> None:
     transcript_parser.add_argument("url", help="Video URL")
 
     inspect_parser = subparsers.add_parser(
-        "inspect", help="Print the legacy SponsorBlock-aware baseline inspection"
+        "inspect", help="Inspect normalized source data and best-effort sponsor filtering"
     )
     inspect_parser.add_argument("url", help="Video URL")
 
@@ -46,9 +46,9 @@ def main() -> None:
     if args.command == "transcript":
         print_transcript(args.url)
     elif args.command == "inspect":
-        from obsidian_ingest.segmentation import format_segmentation, inspect_source
+        from obsidian_ingest.inspection import format_source_inspection, inspect_source
 
-        print(format_segmentation(inspect_source(args.url)))
+        print(format_source_inspection(inspect_source(args.url)))
     elif args.command == "metadata":
         metadata = fetch_metadata(args.url)
         print(json.dumps(asdict(metadata), indent=2, default=_json_default))

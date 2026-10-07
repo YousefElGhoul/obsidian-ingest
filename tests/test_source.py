@@ -5,10 +5,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from obsidian_ingest.extractor import ContentCategory, Provider
-from obsidian_ingest.extractor.metadata import Chapter, NativeFormat
+from obsidian_ingest.extractor.metadata import (
+    Chapter,
+    ExcludedRange,
+    ExclusionLookup,
+    ExclusionStatus,
+    NativeFormat,
+)
 from obsidian_ingest.extractor.providers import youtube
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata, sponsorblock
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.source import (
     Source,
     get_source_overview,
@@ -38,23 +45,23 @@ def source() -> Source:
         },
         URL,
     )
-    return Source(
-        metadata,
-        Transcript(
-            "snapshot-id",
-            "en-US",
-            "en-US",
-            False,
-            (
-                TranscriptSegment("  Original\nwording  ", 0, 1.25),
-                TranscriptSegment("Crosses into the second chapter", 119.5, 2),
-                TranscriptSegment("Exactly at the start", 120, 0.5),
-                TranscriptSegment("Same timestamp, still in source order", 120, 1),
-                TranscriptSegment("Crosses beyond the end", 299.75, 2),
-                TranscriptSegment("Exactly at the end", 300, 1),
-            ),
+    transcript = Transcript(
+        "snapshot-id",
+        "en-US",
+        "en-US",
+        False,
+        (
+            TranscriptSegment("  Original\nwording  ", 0, 1.25),
+            TranscriptSegment("Crosses into the second chapter", 119.5, 2),
+            TranscriptSegment("Exactly at the start", 120, 0.5),
+            TranscriptSegment("Same timestamp, still in source order", 120, 1),
+            TranscriptSegment("Crosses beyond the end", 299.75, 2),
+            TranscriptSegment("Exactly at the end", 300, 1),
         ),
     )
+    lookup = ExclusionLookup((), ExclusionStatus.DISABLED, "SponsorBlock", ())
+    filtered = filter_source_transcript(metadata, transcript, lookup)
+    return Source(metadata, transcript, lookup, filtered)
 
 
 @pytest.fixture
@@ -88,7 +95,26 @@ def source_io(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock, Ma
             ]
         }
     ).encode()
-    fetch_exclusions = MagicMock(side_effect=AssertionError("SponsorBlock must not be called"))
+    exclusions = ExclusionLookup(
+        (ExcludedRange(1, 2, "sponsor", "SponsorBlock"),),
+        ExclusionStatus.COMPLETE,
+        "SponsorBlock",
+        ("sponsor",),
+    )
+    ydl.urlopen.return_value.read.return_value = json.dumps(
+        {
+            "events": [
+                {
+                    "tStartMs": 125,
+                    "dDurationMs": 2000,
+                    "segs": [{"utf8": "Original "}, {"utf8": "words\nunchanged"}],
+                },
+                {"tStartMs": 1000, "dDurationMs": 500, "segs": [{"utf8": "Sponsor atom"}]},
+                {"tStartMs": 2125, "dDurationMs": 750, "segs": [{"utf8": "Next"}]},
+            ]
+        }
+    ).encode()
+    fetch_exclusions = MagicMock(return_value=exclusions)
     monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
     monkeypatch.setattr(sponsorblock, "fetch_exclusions", fetch_exclusions)
     return factory, ydl, fetch_exclusions
@@ -98,6 +124,7 @@ def test_ingest_source_reuses_one_snapshot_and_reads_do_not_extract_again(
     source_io: tuple[MagicMock, MagicMock, MagicMock],
 ) -> None:
     factory, ydl, fetch_exclusions = source_io
+    info = ydl.extract_info.return_value
     source = ingest_source(URL)
 
     assert isinstance(source, Source)
@@ -119,8 +146,25 @@ def test_ingest_source_reuses_one_snapshot_and_reads_do_not_extract_again(
         True,
         (
             TranscriptSegment("Original words\nunchanged", 0.125, 2),
+            TranscriptSegment("Sponsor atom", 1, 0.5),
             TranscriptSegment("Next", 2.125, 0.75),
         ),
+    )
+    assert source.exclusion_lookup is not None
+    assert source.filtered_transcript.retained_indices == (0, 2)
+    assert source.filtered_transcript.excluded[0].source_index == 1
+    assert tuple(segment.text for segment in read_transcript(source)) == (
+        "Original words\nunchanged",
+        "Next",
+    )
+    assert tuple(segment.text for segment in read_transcript(source, include_excluded=True)) == (
+        "Original words\nunchanged",
+        "Sponsor atom",
+        "Next",
+    )
+    assert tuple(segment.text for segment in read_chapter(source, 0)) == (
+        "Original words\nunchanged",
+        "Next",
     )
     get_source_overview(source)
     list_chapters(source)
@@ -130,7 +174,7 @@ def test_ingest_source_reuses_one_snapshot_and_reads_do_not_extract_again(
     factory.assert_called_once_with({"quiet": True, "no_warnings": True, "noplaylist": True})
     ydl.extract_info.assert_called_once_with(URL, download=False)
     ydl.urlopen.assert_called_once_with("https://example.com/original")
-    fetch_exclusions.assert_not_called()
+    fetch_exclusions.assert_called_once_with(ydl, info, ("sponsor",))
     with pytest.raises(FrozenInstanceError):
         source.transcript = source.transcript
 
@@ -166,15 +210,37 @@ def test_ingestion_rejects_unsupported_providers_without_io(
     factory.assert_not_called()
 
 
-def test_ingestion_does_not_require_duration_for_sponsorblock(
+def test_sponsor_lookup_failure_does_not_block_ingestion(
     source_io: tuple[MagicMock, MagicMock, MagicMock],
 ) -> None:
     _, ydl, fetch_exclusions = source_io
     ydl.extract_info.return_value.pop("duration")
+    fetch_exclusions.side_effect = RuntimeError("SponsorBlock duration unavailable")
     source = ingest_source(URL)
     assert source.metadata.duration_seconds is None
     assert get_source_overview(source).content_category is None
-    fetch_exclusions.assert_not_called()
+    assert source.exclusion_lookup.status == ExclusionStatus.FAILED
+    assert source.exclusion_lookup.error_message == "SponsorBlock duration unavailable"
+    assert source.filtered_transcript.retained_indices == (0, 1, 2)
+    assert tuple(segment.text for segment in read_transcript(source)) == tuple(
+        segment.text for segment in source.transcript.segments
+    )
+    ydl.urlopen.assert_called_once_with("https://example.com/original")
+    fetch_exclusions.assert_called_once()
+
+
+def test_sponsor_filtering_can_be_disabled(source_io) -> None:
+    _, ydl, fetch_exclusions = source_io
+    disabled = ExclusionLookup((), ExclusionStatus.DISABLED, "SponsorBlock", ())
+    fetch_exclusions.return_value = disabled
+
+    source = ingest_source(URL, exclude_sponsors=False)
+
+    fetch_exclusions.assert_called_once()
+    assert fetch_exclusions.call_args.args[2] == ()
+    assert source.exclusion_lookup is disabled
+    assert source.filtered_transcript.retained_indices == (0, 1, 2)
+    ydl.extract_info.assert_called_once_with(URL, download=False)
 
 
 def test_ingestion_preserves_caption_selection_errors(
@@ -192,6 +258,9 @@ def test_overview_exposes_metadata_and_derived_context(source: Source) -> None:
     assert overview.metadata is source.metadata
     assert overview.content_category == ContentCategory.LONG_FORM
     assert overview.chapter_count == 3
+    assert overview.exclusion_lookup.status == ExclusionStatus.DISABLED
+    assert overview.original_segment_count == overview.retained_segment_count == 6
+    assert overview.excluded_segment_count == 0
 
 
 def test_unbounded_read_returns_original_segments(source: Source) -> None:
@@ -281,7 +350,9 @@ def test_no_chapters_are_invented(source: Source) -> None:
 
 
 def test_empty_transcript_remains_empty(source: Source) -> None:
-    source = replace(source, transcript=replace(source.transcript, segments=()))
+    transcript = replace(source.transcript, segments=())
+    filtered = filter_source_transcript(source.metadata, transcript, source.exclusion_lookup)
+    source = replace(source, transcript=transcript, filtered_transcript=filtered)
     assert read_transcript(source) == ()
     assert read_transcript(source, start=0, end=120) == ()
     assert read_chapter(source, 0) == ()
