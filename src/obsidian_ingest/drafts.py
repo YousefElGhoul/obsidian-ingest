@@ -2,6 +2,7 @@
 
 import os
 import re
+import secrets
 import stat
 from dataclasses import dataclass
 from math import isfinite
@@ -101,31 +102,78 @@ def _open_directory_chain(root_fd: int, parts: tuple[str, ...]) -> int:
         raise
 
 
-def _create_exclusive(directory_fd: int, title: str, contents: bytes) -> str:
+def _create_staging_directory(directory_fd: int) -> tuple[str, int]:
+    while True:
+        name = f".obsidian-ingest-{secrets.token_hex(8)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=directory_fd)
+        except FileExistsError:
+            continue
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        return name, os.open(name, flags, dir_fd=directory_fd)
+
+
+def _write_staged_file(staging_fd: int, contents: bytes) -> None:
+    file_fd = os.open(
+        ".draft.tmp",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=staging_fd,
+    )
+    try:
+        with os.fdopen(file_fd, "wb") as staged_file:
+            view = memoryview(contents)
+            while view:
+                written = staged_file.write(view)
+                if written == 0:
+                    raise OSError("failed to write staged draft")
+                view = view[written:]
+            staged_file.flush()
+            os.fsync(staged_file.fileno())
+    except BaseException:
+        try:
+            os.unlink(".draft.tmp", dir_fd=staging_fd)
+        except OSError:
+            pass
+        raise
+
+
+def _publish_staged_file(directory_fd: int, staging_fd: int, title: str) -> str:
     index = 1
     while True:
         suffix = "" if index == 1 else f" ({index})"
         filename = f"{title}{suffix}.md"
         try:
-            file_fd = os.open(
+            os.link(
+                ".draft.tmp",
                 filename,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o666,
-                dir_fd=directory_fd,
+                src_dir_fd=staging_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
             )
         except FileExistsError:
             index += 1
             continue
-        try:
-            with os.fdopen(file_fd, "wb") as draft_file:
-                draft_file.write(contents)
-        except BaseException:
-            try:
-                os.unlink(filename, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-            raise
         return filename
+
+
+def _cleanup_staging(directory_fd: int, staging_name: str, staging_fd: int) -> None:
+    try:
+        try:
+            os.unlink(".draft.tmp", dir_fd=staging_fd)
+        except FileNotFoundError:
+            pass
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(staging_fd)
+        except OSError:
+            pass
+    try:
+        os.rmdir(staging_name, dir_fd=directory_fd)
+    except OSError:
+        pass
 
 
 def create_draft(
@@ -144,7 +192,11 @@ def create_draft(
     title = _validate_title(title)
     parts = _draft_folder_parts(settings.draft_folder)
     payload = _render_draft(contents, source, timestamps)
-    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+    if (
+        not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or os.link not in os.supports_dir_fd
+    ):
         raise RuntimeError("safe draft writing requires no-follow directory support")
 
     vault_path = Path(settings.vault_path)
@@ -156,7 +208,12 @@ def create_draft(
     try:
         directory_fd = _open_directory_chain(root_fd, parts)
         try:
-            filename = _create_exclusive(directory_fd, title, payload)
+            staging_name, staging_fd = _create_staging_directory(directory_fd)
+            try:
+                _write_staged_file(staging_fd, payload)
+                filename = _publish_staged_file(directory_fd, staging_fd, title)
+            finally:
+                _cleanup_staging(directory_fd, staging_name, staging_fd)
         finally:
             os.close(directory_fd)
     finally:
