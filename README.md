@@ -99,6 +99,22 @@ filename, not a duplicate top-level heading in the note. A readable source secti
 is appended with source identity, URL, creator when available, and optional timestamps.
 Related-note suggestions and vault reads are not yet implemented.
 
+The writer requires POSIX-style directory-relative filesystem operations,
+`O_NOFOLLOW`/`O_DIRECTORY`, file syncing, and hard-link support on the destination
+filesystem. It checks for required operating-system capabilities before creating
+draft folders and fails clearly if they are missing or hard-link publication is
+rejected. Linux is currently verified; native Windows support is out of scope. The
+draft is atomically visible after publication, but this is not a guarantee that its
+directory entry survives power loss. A forced termination or staging-cleanup error
+may leave hidden, non-Markdown staging data.
+
+Directory descriptors prevent symlink traversal while opening the configured path,
+but do not prevent another process from moving an already-open vault or draft folder.
+Such a move can cause a draft to be published in the moved directory while the
+returned path points to its former location. Configure a trusted destination and do
+not allow an untrusted process to concurrently move or replace its directory tree;
+stronger isolation requires an operating-system boundary.
+
 ## Legacy Inspection
 
 The experimental baseline inspector is retained for development:

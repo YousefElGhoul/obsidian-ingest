@@ -29,17 +29,6 @@ remaining work. Do not mark an item complete based on implementation intent alon
 - No vault reader, deduplication, agent orchestration, MCP server, or unattended
   workflow exists yet.
 
-## Writer Integrity Follow-up
-
-Finish the remaining writer checks before exposing it to an unattended agent. Keep
-the writer create-only; never edit, append to, move, or delete existing notes.
-
-- [ ] State the filesystem/platform assumptions and fail clearly if required safe
-  no-follow primitives are unavailable.
-- [ ] Review the threat model for concurrent movement of configured/open directories;
-  document guarantees and limitations rather than claiming stronger confinement than
-  the implementation provides.
-
 ## Restricted Vault Reads
 
 Implement the smallest read surface needed for deduplication and related-note

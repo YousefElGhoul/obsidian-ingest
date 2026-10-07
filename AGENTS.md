@@ -60,6 +60,10 @@ until they are implemented or deliberately dropped.
 - Draft writes are create-only in the trusted, configured relative folder, defaulting
   to `<vault>/00 Inbox/AI Drafts/`. Never edit, append to, overwrite, move, or delete
   existing notes. Do not accept an agent-selected absolute destination.
+- The writer uses POSIX directory-relative/no-follow operations and hard-link
+  publication. Do not claim it prevents a process with filesystem permissions from
+  moving an already-open destination directory; the configured tree must be trusted
+  against concurrent mutation unless separately isolated by the OS.
 - Test filesystem boundaries with temporary directories, never a real vault. Automated
   tests must use fake extraction data and mocked I/O, not live services.
 - Add dependencies only for concrete needs. Avoid premature async, generic provider

@@ -1,3 +1,4 @@
+import errno
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -403,6 +404,9 @@ def test_staging_cleanup_failure_after_publication_does_not_fail_success(
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(drafts.os, "unlink", fail_staging_unlink)
+    monkeypatch.setattr(
+        drafts.os, "supports_dir_fd", set(drafts.os.supports_dir_fd) | {fail_staging_unlink}
+    )
     result = create_draft(settings, title="Published", contents="complete", source=source_metadata)
 
     assert result.path.read_text(encoding="utf-8").startswith("complete\n\n## Source")
@@ -436,6 +440,126 @@ def test_concurrent_same_title_writes_publish_distinct_complete_files(
     for result in results:
         assert result.path.read_text(encoding="utf-8").startswith(("first", "second"))
     assert not tuple(results[0].path.parent.glob(".obsidian-ingest-*"))
+
+
+@pytest.mark.parametrize("flag", ["O_NOFOLLOW", "O_DIRECTORY"])
+def test_missing_safety_flag_fails_before_creating_draft_folder(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    monkeypatch.delattr(drafts.os, flag)
+
+    with pytest.raises(RuntimeError, match=f"unavailable: {flag}"):
+        create_draft(settings, title="Unsupported", contents="body", source=source_metadata)
+
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [drafts.os.open, drafts.os.mkdir, drafts.os.unlink, drafts.os.rmdir, drafts.os.link],
+    ids=lambda operation: operation.__name__,
+)
+def test_missing_dir_fd_operation_fails_before_creating_draft_folder(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+    operation,
+) -> None:
+    supported = set(drafts.os.supports_dir_fd)
+    supported.remove(operation)
+    monkeypatch.setattr(drafts.os, "supports_dir_fd", supported)
+
+    with pytest.raises(RuntimeError, match=f"unavailable: {operation.__name__}"):
+        create_draft(settings, title="Unsupported", contents="body", source=source_metadata)
+
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+def test_missing_no_follow_link_support_fails_before_creating_draft_folder(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supported = set(drafts.os.supports_follow_symlinks)
+    supported.discard(drafts.os.link)
+    monkeypatch.setattr(drafts.os, "supports_follow_symlinks", supported)
+
+    with pytest.raises(RuntimeError, match=r"link\(follow_symlinks=False\)"):
+        create_draft(settings, title="Unsupported", contents="body", source=source_metadata)
+
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+def test_missing_fsync_fails_before_creating_draft_folder(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(drafts.os, "fsync")
+
+    with pytest.raises(RuntimeError, match="unavailable: fsync"):
+        create_draft(settings, title="Unsupported", contents="body", source=source_metadata)
+
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+def test_hard_link_publication_failure_does_not_publish_or_change_existing_notes(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = settings.vault_path / settings.draft_folder
+    folder.mkdir(parents=True)
+    existing = folder / "Unavailable.md"
+    existing.write_text("Preserve me", encoding="utf-8")
+
+    def reject_hard_links(*args, **kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+
+    monkeypatch.setattr(drafts.os, "link", reject_hard_links)
+    monkeypatch.setattr(
+        drafts.os, "supports_dir_fd", set(drafts.os.supports_dir_fd) | {reject_hard_links}
+    )
+    monkeypatch.setattr(
+        drafts.os,
+        "supports_follow_symlinks",
+        set(drafts.os.supports_follow_symlinks) | {reject_hard_links},
+    )
+
+    with pytest.raises(OSError, match="could not atomically publish draft with a hard link"):
+        create_draft(settings, title="Unavailable", contents="body", source=source_metadata)
+
+    assert existing.read_text(encoding="utf-8") == "Preserve me"
+    assert tuple(folder.glob("*.md")) == (existing,)
+    assert not tuple(folder.glob(".obsidian-ingest-*"))
+
+
+def test_moving_open_draft_directory_can_publish_outside_configured_path(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    publish = drafts._publish_staged_file
+    configured_folder = settings.vault_path / settings.draft_folder
+    moved_folder = tmp_path / "moved-drafts"
+
+    def move_then_publish(directory_fd: int, staging_fd: int, title: str) -> str:
+        configured_folder.rename(moved_folder)
+        return publish(directory_fd, staging_fd, title)
+
+    monkeypatch.setattr(drafts, "_publish_staged_file", move_then_publish)
+    result = create_draft(settings, title="Moved", contents="complete", source=source_metadata)
+
+    assert result.path == configured_folder / "Moved.md"
+    assert not result.path.exists()
+    assert (
+        (moved_folder / "Moved.md").read_text(encoding="utf-8").startswith("complete\n\n## Source")
+    )
+    assert not tuple(moved_folder.glob(".obsidian-ingest-*"))
 
 
 def test_writer_requires_existing_directory_root(
