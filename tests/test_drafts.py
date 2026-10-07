@@ -96,6 +96,47 @@ def test_existing_files_are_preserved_and_collision_gets_numeric_suffix(
     assert result.path.read_text(encoding="utf-8").startswith("A new draft\n\n## Source")
 
 
+@pytest.mark.parametrize("title", ["a" * 240, "界" * 80])
+def test_maximum_240_byte_title_creates_portable_filename(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata, title: str
+) -> None:
+    result = create_draft(settings, title=title, contents="Complete body", source=source_metadata)
+
+    assert len(title.encode("utf-8")) == 240
+    assert result.path.name == f"{title}.md"
+    assert len(os.fsencode(result.path.name)) <= 255
+    assert result.path.read_text(encoding="utf-8").startswith("Complete body\n\n## Source")
+
+
+@pytest.mark.parametrize("collision_index", [2, 10])
+@pytest.mark.parametrize("title", ["a" * 240, "界" * 80])
+def test_maximum_title_collision_suffix_stays_within_component_limit(
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    collision_index: int,
+    title: str,
+) -> None:
+    folder = settings.vault_path / settings.draft_folder
+    folder.mkdir(parents=True)
+    existing = {}
+    for index in range(1, collision_index):
+        suffix = "" if index == 1 else f" ({index})"
+        path = folder / f"{title}{suffix}.md"
+        contents = f"Preserve existing note {index}"
+        path.write_text(contents, encoding="utf-8")
+        existing[path] = contents
+
+    result = create_draft(
+        settings, title=title, contents="New complete body", source=source_metadata
+    )
+
+    assert len(title.encode("utf-8")) == 240
+    assert result.path.name == f"{title} ({collision_index}).md"
+    assert len(os.fsencode(result.path.name)) <= 255
+    assert result.path.read_text(encoding="utf-8").startswith("New complete body\n\n## Source")
+    assert {path: path.read_text(encoding="utf-8") for path in existing} == existing
+
+
 @pytest.mark.parametrize(
     "title",
     [
