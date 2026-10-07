@@ -154,6 +154,10 @@ def _publish_staged_file(directory_fd: int, staging_fd: int, title: str) -> str:
         except FileExistsError:
             index += 1
             continue
+        except OSError as error:
+            raise OSError(
+                f"could not atomically publish draft with a hard link: {error}"
+            ) from error
         return filename
 
 
@@ -176,6 +180,25 @@ def _cleanup_staging(directory_fd: int, staging_name: str, staging_fd: int) -> N
         pass
 
 
+def _require_writer_capabilities() -> None:
+    required_flags = ("O_NOFOLLOW", "O_DIRECTORY")
+    missing_flags = tuple(name for name in required_flags if not hasattr(os, name))
+    required_dir_fd = (os.open, os.mkdir, os.unlink, os.rmdir, os.link)
+    supported_dir_fd = getattr(os, "supports_dir_fd", ())
+    missing_operations = tuple(
+        operation.__name__ for operation in required_dir_fd if operation not in supported_dir_fd
+    )
+    if os.link not in getattr(os, "supports_follow_symlinks", ()):
+        missing_operations += ("link(follow_symlinks=False)",)
+    if not hasattr(os, "fsync"):
+        missing_operations += ("fsync",)
+    if missing_flags or missing_operations:
+        missing = ", ".join((*missing_flags, *missing_operations))
+        raise RuntimeError(
+            f"safe draft writing requires POSIX filesystem support; unavailable: {missing}"
+        )
+
+
 def create_draft(
     settings: DraftWriterSettings,
     *,
@@ -187,17 +210,13 @@ def create_draft(
     """Create a new draft beneath the configured folder, never modifying a note.
 
     Existing names receive a numeric suffix. Directory traversal uses file
-    descriptors and rejects symlinks in the configured folder path.
+    descriptors and rejects symlinks in the configured folder path. The configured
+    directory tree must not be concurrently moved or modified by an untrusted process.
     """
     title = _validate_title(title)
     parts = _draft_folder_parts(settings.draft_folder)
     payload = _render_draft(contents, source, timestamps)
-    if (
-        not hasattr(os, "O_NOFOLLOW")
-        or not hasattr(os, "O_DIRECTORY")
-        or os.link not in os.supports_dir_fd
-    ):
-        raise RuntimeError("safe draft writing requires no-follow directory support")
+    _require_writer_capabilities()
 
     vault_path = Path(settings.vault_path)
     vault_info = vault_path.stat()
