@@ -1,13 +1,14 @@
 [project]
 name = "obsidian-ingest"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agent-driven knowledge ingestion from source URLs into Obsidian drafts"
 readme = "README.md"
 authors = [
     { name = "Yousef El-Ghoul", email = "yousefelghoul03@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "mcp>=2.3.0,<3",
     "yt-dlp>=2026.8.19",
 ]
 

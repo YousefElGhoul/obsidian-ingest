@@ -12,9 +12,9 @@ creation. An agent will eventually decide what is worth preserving and what to w
 
 ## Current Status
 
-Source extraction/navigation and create-only draft writing are implemented. Agent
-orchestration, vault reading and deduplication, MCP, Hermes integration, and the
-unattended URL-to-draft workflow are not implemented yet.
+Source extraction/navigation, create-only draft writing, and a local stdio MCP server
+are implemented. Hermes must be configured separately. Vault reading/deduplication,
+agent orchestration, and the unattended URL-to-draft workflow are not implemented yet.
 
 Current capabilities:
 
@@ -22,7 +22,8 @@ Current capabilities:
 - Normalized source metadata, chapters, timestamps, and read-only transcript access.
 - Create-only Markdown drafts with a configurable vault path and relative draft
   folder, defaulting to `00 Inbox/AI Drafts/`.
-- Optional legacy SponsorBlock-aware baseline inspection via `--inspect-chunks`.
+- CLI subcommands for transcript output, normalized metadata, and legacy inspection.
+- MCP tools for source ingestion/navigation and create-only draft writing.
 
 YouTube captions are retrieved, not transcribed. JSON3 parsing is implemented;
 selection can accept VTT as a fallback, but VTT parsing is not implemented. Instagram
@@ -35,12 +36,19 @@ root:
 
 ```bash
 uv sync
-uv run obsidian-ingest 'https://www.youtube.com/watch?v=VIDEO_ID'
+uv run obsidian-ingest transcript 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
-The current CLI prints transcript information and timestamped text. It does not run
-an agent or write drafts. Extraction requires network access and depends on source
-and caption availability.
+The current CLI does not run an agent. Available commands:
+
+```bash
+obsidian-ingest transcript URL  # Print timestamped captions
+obsidian-ingest metadata URL    # Print normalized metadata as JSON
+obsidian-ingest inspect URL     # Legacy SponsorBlock-aware baseline report
+obsidian-ingest mcp --vault PATH [--draft-folder PATH]
+```
+
+Extraction requires network access and depends on source and caption availability.
 
 ### Python Source API
 
@@ -115,18 +123,83 @@ returned path points to its former location. Configure a trusted destination and
 not allow an untrusted process to concurrently move or replace its directory tree;
 stronger isolation requires an operating-system boundary.
 
+## Local MCP Server
+
+Run the server from a terminal with an existing vault path:
+
+```bash
+uv run obsidian-ingest mcp --vault '/path/to/test-vault'
+```
+
+The process communicates over stdio and keeps ingested `Source` objects in a simple
+in-memory map. Source handles work only while that server process is running; restarting
+it clears them. No database or network listener is started. The configured vault and
+draft folder are trusted server settings, not tool arguments.
+
+The tools let an agent ingest a URL, inspect its overview and creator chapters, read
+timestamped transcript pages or chapter pages, and create a draft attributed to that
+ingested source. Transcript reads default to 200 segments and cap pages at 500. Page
+offsets preserve source order, including adjacent segments with the same timestamp.
+Vault listing/search and deduplication are not available yet, so the agent cannot
+compare against existing vault notes through this server.
+
+### Connect Hermes
+
+Add a local stdio server to Hermes' `~/.hermes/config.yaml`, replacing both paths:
+
+```yaml
+mcp_servers:
+  obsidian_ingest:
+    command: uv
+    args:
+      - run
+      - --directory
+      - /path/to/obsidian-ingest
+      - obsidian-ingest
+      - mcp
+      - --vault
+      - /path/to/test-vault
+    cwd: /path/to/obsidian-ingest
+    timeout: 600
+    connect_timeout: 30
+    tools:
+      include:
+        - ingest_source
+        - get_source_overview
+        - list_chapters
+        - read_transcript
+        - read_chapter
+        - create_draft
+      prompts: false
+      resources: false
+```
+
+Restart/reload Hermes after changing its configuration. For a first experiment, use a
+disposable test vault. The MCP server only constrains its own tools; other Hermes tools
+or shell access may independently access paths available to the Hermes process.
+
+Suggested first test prompt:
+
+> Ingest this URL and inspect its metadata and chapters. Read only the transcript
+> material needed to identify a few useful explanations, mental models, tradeoffs, or
+> practical lessons. Zero notes is fine. Create concise drafts with useful timestamps.
+> Do not repeat the filename as a top-level heading. You cannot inspect existing vault
+> notes yet, so do not claim that you deduplicated against the vault.
+
+Hermes configuration and live agent runs are intentionally left to the user.
+
 ## Legacy Inspection
 
 The experimental baseline inspector is retained for development:
 
 ```bash
-uv run obsidian-ingest --inspect-chunks 'https://www.youtube.com/watch?v=VIDEO_ID'
+uv run obsidian-ingest inspect 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
 It reports a SponsorBlock-filtered retained transcript and chapter-aligned baseline
 sections. Only `sponsor` is excluded by default. These sections are not semantic
 boundaries or note boundaries, and this path does not call a model or write drafts.
-The default CLI transcript path does not query SponsorBlock.
+The `transcript` subcommand does not query SponsorBlock.
 
 `scripts/evaluate.sh` is optional live inspection tooling for a manifest of YouTube
 video IDs. It runs formatting, lint, and tests before collecting reports; it is not

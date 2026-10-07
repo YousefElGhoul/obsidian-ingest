@@ -24,10 +24,24 @@ remaining work. Do not mark an item complete based on implementation intent alon
   provenance and creates numbered filenames on collisions. It writes to a hidden,
   non-Markdown staging file and atomically publishes only completed drafts; forced
   termination may leave hidden staging data.
-- The CLI currently prints transcripts or invokes the legacy `--inspect-chunks`
-  baseline inspector. Neither path runs an agent or writes drafts.
-- No vault reader, deduplication, agent orchestration, MCP server, or unattended
+- The CLI exposes `transcript`, `inspect`, `metadata`, and local stdio `mcp`
+  subcommands. The MCP server exposes source tools and create-only draft writing.
+- No agent orchestration, vault reader, deduplication, or unattended URL-to-draft
   workflow exists yet.
+
+## First Agent Output Trial
+
+Use the current source/draft MCP tools to evaluate whether agent-written drafts are
+useful before implementing vault-reading deduplication.
+
+- [ ] Configure the locally installed Hermes server using the README instructions;
+  keep agent configuration changes manual and user-controlled.
+- [ ] Use a disposable vault without private material for the first live experiment.
+- [ ] Try a short source with usable captions; observe tool discovery, source reads,
+  draft creation, and the agent's final report.
+- [ ] Review note usefulness, amount, factual fidelity, timestamps, title/body
+  behavior, and whether zero notes is handled sensibly.
+- [ ] Record only concrete failures that should inform the next implementation task.
 
 ## Restricted Vault Reads
 
@@ -54,36 +68,10 @@ suggestions. The user configures trusted scope; the agent cannot broaden it.
 - [ ] Document the privacy limit: path exclusion cannot hide private information
   copied into an allowed note or guarantee secrecy from an agent already told it.
 
-## Local Agent Adapter
+## Vault-Enabled Agent Isolation
 
-Expose existing application functions through a small local MCP server, without
-placing application policy in MCP-specific code.
-
-- [ ] Choose and document the smallest local MCP SDK/transport that works with the
-  selected agent; add only the necessary dependency.
-- [ ] Expose coarse capabilities for source ingestion, overview/chapters, bounded
-  transcript reads, restricted vault reads/search, and draft creation.
-- [ ] Bind vault settings and the draft destination in trusted server configuration.
-  Never accept an agent-selected vault root, arbitrary output path, or permissions.
-- [ ] Bind provenance to the ingested source for the run; do not trust arbitrary
-  source URLs or source metadata supplied by the agent when writing a draft.
-- [ ] Keep each source available for the current run so navigation does not repeat
-  yt-dlp extraction. Avoid a database or durable session infrastructure until needed.
-- [ ] Bound tool outputs and return clear errors for invalid source references,
-  invalid ranges, inaccessible notes, and failed writes.
-- [ ] Test MCP operations offline and ensure every vault operation uses the same
-  access policy as the underlying Python application functions.
-- [ ] Do not expose generic filesystem mutation, shell access, or every helper as a
-  tool.
-
-## Agent Integration And Isolation
-
-Use a replaceable general-purpose agent initially. Keep judgment in the agent and
-filesystem/source correctness in the application.
-
-- [ ] Connect a local agent, likely Hermes, to the restricted MCP tools.
-- [ ] Configure the agent with only the tools needed for source exploration, vault
-  comparison, and draft creation.
+- [ ] After restricted vault tools exist, expose only the tools needed for source
+  exploration, vault comparison, and draft creation.
 - [ ] Remove alternate unrestricted routes to the vault, including shell, general
   filesystem tools, and broadly privileged vault APIs.
 - [ ] Choose an OS/container isolation arrangement that enforces the intended access
