@@ -28,6 +28,9 @@ remaining work. Do not mark an item complete based on implementation intent alon
 - The CLI exposes `transcript`, `inspect`, `metadata`, and local stdio `mcp`
   subcommands. `inspect` is a source/filter diagnostic, not a chunk report. The MCP
   server exposes source tools and create-only draft writing.
+- `source_cache.py` persists normalized extraction snapshots in an XDG-state SQLite
+  database. MCP source IDs survive restarts; equivalent YouTube URLs reuse snapshots
+  with matching SponsorBlock options. Explicit refresh replaces snapshots safely.
 - `scripts/evaluate.py` reads `videos.txt`, captures MCP source-tool responses and
   schemas per video, reads every retained transcript page, and never creates drafts.
 - No agent orchestration, vault reader, deduplication, or unattended URL-to-draft
@@ -164,8 +167,6 @@ useful workflow:
 - [ ] Add documentation-aware context if drafts repeatedly duplicate reference docs.
 - [ ] Add conservative caption normalization if errors corrupt important terminology.
 - [ ] Add additional yt-dlp providers when a concrete source need justifies the work.
-- [ ] Add source caching/state if repeated extraction creates a demonstrated cost or
-  reliability problem.
 - [ ] Reconsider more sophisticated source partitioning only if observed navigation
   failures materially harm note quality.
 - [ ] Consider specialized models only if real use demonstrates a clear advantage.

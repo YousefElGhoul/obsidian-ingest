@@ -1,7 +1,7 @@
 """Thin local MCP adapter for source navigation and create-only draft writing."""
 
+from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,8 +16,8 @@ from obsidian_ingest.source import (
     read_chapter_entries,
     read_transcript_entries,
 )
-from obsidian_ingest.source import ingest_source as ingest_application_source
 from obsidian_ingest.source import list_chapters as get_application_chapters
+from obsidian_ingest.source_cache import SourceCache, SourceCacheError
 
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 500
@@ -80,27 +80,33 @@ def _chapter_data(index: int, chapter: Chapter) -> dict[str, Any]:
     return {"index": index, "title": chapter.title, "start": chapter.start, "end": chapter.end}
 
 
-def create_server(settings: DraftWriterSettings) -> MCPServer:
-    """Create an MCP server whose source handles live only for this process."""
+def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None) -> MCPServer:
+    """Create an MCP server backed by persistent, option-specific source handles."""
     server = MCPServer("obsidian-ingest")
-    sources: dict[str, Source] = {}
+    cache = SourceCache(cache_db)
 
     def get_source(source_id: str) -> Source:
         try:
-            return sources[source_id]
+            return cache.get(source_id)
         except KeyError as error:
             raise ToolError(f"Unknown source_id: {source_id}; ingest the URL first") from error
+        except SourceCacheError as error:
+            raise ToolError(str(error)) from error
 
     @server.tool()
-    def ingest_source(url: str, exclude_sponsors: bool = True) -> dict[str, Any]:
-        """Ingest a source, excluding SponsorBlock sponsor atoms by default."""
+    def ingest_source(
+        url: str, exclude_sponsors: bool = True, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Reuse a persistent source; refresh explicitly re-extracts. Sponsors excluded by default."""
         try:
-            source = ingest_application_source(url, exclude_sponsors=exclude_sponsors)
+            result = cache.ingest(url, exclude_sponsors=exclude_sponsors, refresh=refresh)
         except Exception as error:
             raise ToolError(f"Could not ingest source: {error}") from error
-        source_id = uuid4().hex
-        sources[source_id] = source
-        return {"source_id": source_id, "overview": _source_overview(source)}
+        return {
+            "source_id": result.source_id,
+            "cached": result.cached,
+            "overview": _source_overview(result.source),
+        }
 
     @server.tool()
     def get_source_overview(source_id: str) -> dict[str, Any]:
