@@ -24,6 +24,7 @@ Current capabilities:
   folder, defaulting to `00 Inbox/AI Drafts/`.
 - CLI subcommands for transcript output, normalized metadata, and source inspection.
 - MCP tools for source ingestion/navigation and create-only draft writing.
+- Persistent SQLite source caching with stable MCP handles across server/gateway restarts.
 
 YouTube captions are retrieved, not transcribed. JSON3 parsing is implemented;
 selection can accept VTT as a fallback, but VTT parsing is not implemented. Instagram
@@ -45,7 +46,7 @@ The current CLI does not run an agent. Available commands:
 obsidian-ingest transcript URL  # Print timestamped captions
 obsidian-ingest metadata URL    # Print normalized metadata as JSON
 obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
-obsidian-ingest mcp --vault PATH [--draft-folder PATH]
+obsidian-ingest mcp --vault PATH [--draft-folder PATH] [--cache-db PATH]
 ```
 
 Extraction requires network access and depends on source and caption availability.
@@ -135,10 +136,46 @@ Run the server from a terminal with an existing vault path:
 uv run obsidian-ingest mcp --vault '/path/to/test-vault'
 ```
 
-The process communicates over stdio and keeps ingested `Source` objects in a simple
-in-memory map. Source handles work only while that server process is running; restarting
-it clears them. No database or network listener is started. The configured vault and
-draft folder are trusted server settings, not tool arguments.
+The process communicates over stdio and stores normalized extraction snapshots in a
+local SQLite file using Python's standard-library `sqlite3`. No database server or
+network listener is started. Source handles remain usable after MCP server or Hermes
+gateway restarts, provided the server uses the same cache database. The configured vault,
+draft folder, and cache database are trusted server settings, not tool arguments.
+
+The default database is `$XDG_STATE_HOME/obsidian-ingest/sources.sqlite3`, or
+`~/.local/state/obsidian-ingest/sources.sqlite3` when `XDG_STATE_HOME` is unset or not
+absolute. It is outside the repository and vault. Use `mcp --cache-db /path/to/sources.sqlite3`
+to override it; choose a trusted location outside both the repository and vault.
+
+`ingest_source(url, exclude_sponsors=True, refresh=False)` returns `source_id`, `cached`,
+and `overview`. A hit makes zero yt-dlp calls and no caption or SponsorBlock requests.
+YouTube watch, short-link, shorts, live, and embed URLs share the video-ID cache key.
+The stored original URL remains the URL used for extraction, even when a hit uses a
+different URL form. Sponsor filtering enabled and disabled have separate snapshots and
+opaque IDs: changing the option may require extraction once, but never silently reuses
+the wrong filtering behavior. Each option-specific handle keeps its filtering semantics.
+
+Snapshots preserve all normalized metadata (including provider details and publication
+time), original transcript atoms/timestamps and caption flags, SponsorBlock lookup
+status/ranges/categories/retrieval time/errors, and extraction time and yt-dlp version.
+The filtered view is reconstructed with the existing filtering functions. Only source
+extraction data is stored, not conversations, generated drafts, or agent reasoning.
+Treat cached source content as untrusted data just like live source content.
+
+There is no automatic expiration. Pass `refresh=True` to `ingest_source` to re-extract
+an entry, including a previous failed SponsorBlock lookup; a successful refresh keeps
+its existing ID. Failed extraction does not create an entry, and failed refresh leaves
+the previous snapshot intact. Missing IDs produce an explicit unknown-ID error. Corrupt
+or incompatible entries produce errors rather than incomplete data; refresh can replace
+a bad entry. An incompatible schema or corrupt database file requires stopping the
+server and selecting a new `--cache-db` path or manually moving the unusable database
+aside. A new database cannot recover old source IDs.
+
+Python callers can use `SourceCache(path).ingest(url)` from
+`obsidian_ingest.source_cache`, returning a `CachedSource` with `source_id`, `source`,
+and `cached`; `SourceCache(path).get(source_id)` retrieves the normalized `Source` after
+a restart. The low-level `source.ingest_source` API and diagnostic CLI commands remain
+uncached and retain their existing behavior.
 
 The tools let an agent ingest a URL, inspect its overview and creator chapters, list
 SponsorBlock ranges, read timestamped transcript pages or chapter pages, and create a
@@ -227,8 +264,8 @@ contains the available tool schemas, arguments and responses, overview, exclusio
 all retained transcript pages, and a read of the first creator chapter when available.
 Transcript/chapter page references point into the recorded `calls` array, where each
 response is stored once. This can produce large reports for long videos. The evaluator
-does **not** call the draft writer or any model. It extracts live YouTube data; this is
-not part of pytest.
+does **not** call the draft writer or any model. It reuses cached sources or extracts
+live YouTube data on a cache miss; this is not part of pytest.
 
 Optional positional arguments select a manifest, an output directory (created if
 missing), and the delay between videos:

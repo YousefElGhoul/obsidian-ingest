@@ -66,7 +66,7 @@ def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(monkeypatch) -> None
 
     cli.main()
 
-    run_mcp.assert_called_once_with(vault, "Inbox/Drafts")
+    run_mcp.assert_called_once_with(vault, "Inbox/Drafts", None)
 
 
 def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
@@ -76,4 +76,17 @@ def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
 
     cli.main()
 
-    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts")
+    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts", None)
+
+
+def test_mcp_subcommand_passes_cache_override(monkeypatch, tmp_path) -> None:
+    run_mcp = MagicMock()
+    database = tmp_path / "cache.sqlite3"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["obsidian-ingest", "mcp", "--vault", "/tmp/vault", "--cache-db", str(database)],
+    )
+    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
+    cli.main()
+    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts", database)

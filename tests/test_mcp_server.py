@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from mcp.client import Client
 
-from obsidian_ingest import mcp_server
+from obsidian_ingest import mcp_server, source_cache
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import (
@@ -66,10 +66,10 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 ) -> None:
     source = _sample_source()
     ingest = MagicMock(return_value=source)
-    monkeypatch.setattr(mcp_server, "ingest_application_source", ingest)
+    monkeypatch.setattr(source_cache, "ingest_source", ingest)
     vault = tmp_path / "vault"
     vault.mkdir()
-    server = mcp_server.create_server(DraftWriterSettings(vault))
+    server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=tmp_path / "cache.db")
 
     async def exercise_tools() -> None:
         async with Client(server) as client:
@@ -94,6 +94,10 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             ingested = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
             source_id = ingested["source_id"]
+            assert ingested["cached"] is False
+            hit = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
+            assert hit["source_id"] == source_id
+            assert hit["cached"] is True
             assert ingested["overview"]["title"] == "A useful explanation"
             assert ingested["overview"]["provider"] == Provider.YOUTUBE.value
             assert ingested["overview"]["chapter_count"] == 1
@@ -208,16 +212,17 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
     ingest.assert_called_once_with(URL, exclude_sponsors=True)
 
 
-def test_source_handles_are_scoped_to_one_server_process(tmp_path: Path, monkeypatch) -> None:
+def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch) -> None:
     source = _sample_source()
     monkeypatch.setattr(
-        mcp_server,
-        "ingest_application_source",
+        source_cache,
+        "ingest_source",
         lambda url, exclude_sponsors=True: source,
     )
     vault = tmp_path / "vault"
     vault.mkdir()
-    server = mcp_server.create_server(DraftWriterSettings(vault))
+    database = tmp_path / "cache.db"
+    server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=database)
 
     async def ingest_and_read() -> str:
         async with Client(server) as client:
@@ -225,12 +230,42 @@ def test_source_handles_are_scoped_to_one_server_process(tmp_path: Path, monkeyp
             return result["source_id"]
 
     source_id = asyncio.run(ingest_and_read())
-    second_server = mcp_server.create_server(DraftWriterSettings(vault))
+    second_server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=database)
+    extraction = MagicMock(side_effect=AssertionError("Restart must not extract"))
+    monkeypatch.setattr(source_cache, "ingest_source", extraction)
 
     async def read_from_new_server():
         async with Client(second_server) as client:
-            return await client.call_tool("get_source_overview", {"source_id": source_id})
+            overview = _tool_data(
+                await client.call_tool("get_source_overview", {"source_id": source_id})
+            )
+            assert overview["title"] == source.metadata.title
+            assert _tool_data(await client.call_tool("list_chapters", {"source_id": source_id}))
+            assert _tool_data(await client.call_tool("list_exclusions", {"source_id": source_id}))
+            transcript = _tool_data(
+                await client.call_tool("read_transcript", {"source_id": source_id})
+            )
+            assert transcript["total_segments"] == 3
+            chapter = _tool_data(
+                await client.call_tool("read_chapter", {"source_id": source_id, "chapter_index": 0})
+            )
+            assert chapter["segments"] == transcript["segments"]
+            draft = _tool_data(
+                await client.call_tool(
+                    "create_draft",
+                    {
+                        "source_id": source_id,
+                        "title": "After restart",
+                        "contents": "Useful content.",
+                    },
+                )
+            )
+            assert Path(draft["path"]).is_file()
+            hit = _tool_data(
+                await client.call_tool("ingest_source", {"url": "https://youtu.be/video-123"})
+            )
+            assert hit["cached"] is True
+            assert hit["source_id"] == source_id
 
-    result = asyncio.run(read_from_new_server())
-    assert result.is_error
-    assert "Unknown source_id" in result.content[0].text
+    asyncio.run(read_from_new_server())
+    extraction.assert_not_called()
