@@ -66,7 +66,7 @@ def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(monkeypatch) -> None
 
     cli.main()
 
-    run_mcp.assert_called_once_with(vault, "Inbox/Drafts", None)
+    run_mcp.assert_called_once_with(vault, "Inbox/Drafts", None, config_path=None)
 
 
 def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
@@ -76,7 +76,7 @@ def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
 
     cli.main()
 
-    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts", None)
+    run_mcp.assert_called_once_with(Path("/tmp/vault"), None, None, config_path=None)
 
 
 def test_mcp_subcommand_passes_cache_override(monkeypatch, tmp_path) -> None:
@@ -89,4 +89,13 @@ def test_mcp_subcommand_passes_cache_override(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(cli, "_run_mcp", run_mcp)
     cli.main()
-    run_mcp.assert_called_once_with(Path("/tmp/vault"), "00 Inbox/AI Drafts", database)
+    run_mcp.assert_called_once_with(Path("/tmp/vault"), None, database, config_path=None)
+
+
+def test_mcp_config_argument_forwards_trusted_config(monkeypatch, tmp_path) -> None:
+    run_mcp = MagicMock()
+    config = tmp_path / "vault.toml"
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", "--config", str(config)])
+    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
+    cli.main()
+    run_mcp.assert_called_once_with(None, None, None, config_path=config)

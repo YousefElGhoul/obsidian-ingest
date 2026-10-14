@@ -27,14 +27,26 @@ remaining work. Do not mark an item complete based on implementation intent alon
   termination may leave hidden staging data.
 - The CLI exposes `transcript`, `inspect`, `metadata`, and local stdio `mcp`
   subcommands. `inspect` is a source/filter diagnostic, not a chunk report. The MCP
-  server exposes source tools and create-only draft writing.
+  server exposes source tools and create-only draft writing; trusted TOML settings
+  additionally enable restricted note search/read and verified curation drafts.
 - `source_cache.py` persists normalized extraction snapshots in an XDG-state SQLite
   database. MCP source IDs survive restarts; equivalent YouTube URLs reuse snapshots
   with matching SponsorBlock options. Explicit refresh replaces snapshots safely.
 - `scripts/evaluate.py` reads `videos.txt`, captures MCP source-tool responses and
   schemas per video, reads every retained transcript page, and never creates drafts.
-- No agent orchestration, vault reader, deduplication, or unattended URL-to-draft
-  workflow exists yet.
+- Trusted TOML vault scopes, bounded literal search, revision-checked note reads,
+  verified related-note links, and review-only `(EDIT)` suggestions are implemented;
+  there is still no automated agent runner or unattended URL-to-draft workflow.
+
+## Vault-Aware Curation
+
+This milestone supersedes the old restricted-read checklist and the verified-link
+portion of `Agent Workflow And Deduplication`.
+
+- [ ] Keep host Hermes setup and OS-level filesystem isolation user-controlled; verify
+  the installed skill/tool allowlist on the host before exposing private vault data.
+- [ ] Run the first curation trial against a disposable vault and assess whether literal
+  search plus agent inspection finds useful notes without false claims of completeness.
 
 ## Remaining Verification
 
@@ -45,8 +57,8 @@ remaining work. Do not mark an item complete based on implementation intent alon
 
 ## First Agent Output Trial
 
-Use the current source/draft MCP tools to evaluate whether agent-written drafts are
-useful before implementing vault-reading deduplication.
+Use the source/draft MCP tools as a baseline, then perform the curation trial described
+above against a disposable vault.
 
 - [ ] Run `uv run python scripts/evaluate.py` and review the retained text, exclusion
   status, chapters, and tool responses in its per-video reports.
@@ -59,37 +71,12 @@ useful before implementing vault-reading deduplication.
   behavior, and whether zero notes is handled sensibly.
 - [ ] Record only concrete failures that should inform the next implementation task.
 
-## Restricted Vault Reads
-
-Implement the smallest read surface needed for deduplication and related-note
-suggestions. The user configures trusted scope; the agent cannot broaden it.
-
-- [ ] Define trusted vault access settings: existing vault root, allowed read scope,
-  configured draft destination, and explicit vault-relative excluded paths.
-- [ ] Ensure the draft destination is within the vault and does not overlap an
-  excluded path. Fail closed on invalid or conflicting settings.
-- [ ] Add read-only operations to list accessible notes, read a selected note, and
-  search accessible note text. Return bounded/paginated results rather than dumping
-  the vault into one prompt.
-- [ ] Include existing AI drafts in the accessible set so prior drafts can be
-  considered for duplication.
-- [ ] Apply allowed and excluded scope consistently to listings, reads, search,
-  indexing, and metadata. Do not expose excluded paths through counts, suggestions,
-  snippets, backlinks, or distinguishable errors.
-- [ ] Reject traversal and symlink aliases that escape the vault or reach excluded
-  content. Keep all note reads strictly read-only.
-- [ ] Add offline temporary-vault tests for ordinary readable notes, configured
-  private exclusions, symlink escapes, empty results, pagination, and attempts to
-  read or write outside the allowed scope.
-- [ ] Document the privacy limit: path exclusion cannot hide private information
-  copied into an allowed note or guarantee secrecy from an agent already told it.
-
 ## Vault-Enabled Agent Isolation
 
-- [ ] After restricted vault tools exist, expose only the tools needed for source
-  exploration, vault comparison, and draft creation.
-- [ ] Remove alternate unrestricted routes to the vault, including shell, general
-  filesystem tools, and broadly privileged vault APIs.
+- [ ] In the host Hermes configuration, allow only the dedicated source/vault MCP
+  tools needed for source exploration, comparison, and create-only draft writing.
+- [ ] Disable or isolate alternate unrestricted routes to the vault, including shell,
+  general filesystem tools, and broadly privileged vault APIs.
 - [ ] Choose an OS/container isolation arrangement that enforces the intended access
   if the agent tries to bypass tool-level rules. Keep excluded/private folders out
   of the agent process's accessible filesystem view where feasible.
@@ -117,9 +104,6 @@ topic.
   material easily found in official documentation.
 - [ ] Distinguish redundant notes from a useful new perspective, explanation, or
   addition to an existing topic. Do not use filename collision as deduplication.
-- [ ] Allow the agent to add a `Related Notes` section to a new draft with verified
-  links to relevant accessible notes or suggested human edits. The writer must not
-  follow those links to edit existing notes.
 - [ ] Preserve source URL and useful timestamps in every draft; use the configured
   writer and never grant the agent direct write access to canonical notes.
 - [ ] Handle small sources with a whole read and large sources with chapters or

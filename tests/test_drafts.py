@@ -183,6 +183,64 @@ def test_setext_h2_named_source_is_reserved(settings, source_metadata):
     assert not (settings.vault_path / "00 Inbox").exists()
 
 
+def test_user_markdown_and_wikilinks_are_preserved(settings, source_metadata):
+    body = (
+        "An ordinary [Markdown link](https://example.com) and [[Existing Note]].\n\n"
+        "`[[Inline example]]`\n\n"
+        "```markdown\n[[Code example]]\n```"
+    )
+    result = create_draft(settings, title="Expressive body", contents=body, source=source_metadata)
+    rendered = result.path.read_text(encoding="utf-8")
+    assert rendered == body + (
+        "\n\n## Source\n\n"
+        "- Source: A useful source\n"
+        "- URL: https://www.youtube.com/watch?v=video-123\n"
+        "- Creator: A creator\n"
+    )
+
+
+def test_related_notes_heading_must_be_generated_from_verified_references(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    with pytest.raises(ValueError, match="Related Notes must be generated"):
+        create_draft(
+            settings,
+            title="Unverified related heading",
+            contents="A body.\n\n## Related Notes\n- [[Secret.md]]",
+            source=source_metadata,
+        )
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "A body.\n\n> ## Related Notes\n> - [[Unverified]]",
+        "A body.\n\n> Related Notes\n> ----------------\n> [[Unverified]]",
+    ],
+)
+def test_blockquoted_related_notes_heading_cannot_impersonate_generated_section(
+    settings, source_metadata, contents
+):
+    with pytest.raises(ValueError, match="Related Notes must be generated"):
+        create_draft(settings, title="Quoted section", contents=contents, source=source_metadata)
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+def test_related_links_must_be_safe_vault_relative_markdown_paths(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    with pytest.raises(ValueError, match="wikilink path is not safe"):
+        create_draft(
+            settings,
+            title="Unsafe generated link",
+            contents="A useful body.",
+            source=source_metadata,
+            related_notes=(("[[../Private/Secret.md]]", "Looks related."),),
+        )
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
 def test_existing_files_are_preserved_and_collision_gets_numeric_suffix(
     settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:

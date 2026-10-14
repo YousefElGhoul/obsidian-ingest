@@ -12,6 +12,7 @@ from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
 from obsidian_ingest import mcp_server, source_cache
+from obsidian_ingest.config import VaultSettings
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import (
@@ -100,7 +101,13 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "title",
                 "contents",
                 "timestamps",
+                "related_notes",
             }
+            related_schema = draft_tool.input_schema["properties"]["related_notes"]
+            assert related_schema["anyOf"][0]["items"]["$ref"] == "#/$defs/RelatedNoteInput"
+            related_item_schema = draft_tool.input_schema["$defs"]["RelatedNoteInput"]
+            assert set(related_item_schema["required"]) == {"note_id", "reason"}
+            assert "revision" in related_item_schema["properties"]
             transcript_tool = next(tool for tool in tools.tools if tool.name == "read_transcript")
             assert transcript_tool.input_schema["properties"]["limit"]["default"] == 40
 
@@ -529,3 +536,227 @@ def test_mcp_cache_refresh_filter_variants_and_corruption_errors(tmp_path, monke
 
     asyncio.run(exercise())
     assert extraction.call_count == 4
+
+
+def test_scoped_vault_tools_are_only_exposed_with_trusted_settings(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "Engineering").mkdir(parents=True)
+    (vault / "Private").mkdir()
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    (vault / "Engineering/Retry.md").write_text("Retry budgets limit load.", encoding="utf-8")
+    (vault / "Private/Secret.md").write_text("hidden marker", encoding="utf-8")
+    settings = DraftWriterSettings(vault)
+    legacy = mcp_server.create_server(settings, cache_db=tmp_path / "legacy.db")
+    configured = mcp_server.create_server(
+        settings,
+        cache_db=tmp_path / "configured.db",
+        vault_settings=VaultSettings(vault, ("*",), ("Private",)),
+    )
+
+    async def exercise() -> None:
+        async with Client(legacy) as client:
+            assert "search_vault" not in {tool.name for tool in (await client.list_tools()).tools}
+        async with Client(configured) as client:
+            assert {"search_vault", "read_vault_note"} <= {
+                tool.name for tool in (await client.list_tools()).tools
+            }
+            assert "create_edit_suggestion" in {
+                tool.name for tool in (await client.list_tools()).tools
+            }
+            result = await client.call_tool("search_vault", {"query": "retry"})
+            assert result.structured_content is None
+            assert (
+                len(
+                    json.dumps(
+                        {"content": [{"type": "text", "text": result.content[0].text}]},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode()
+                )
+                <= 16 * 1024
+            )
+            page = json.loads(result.content[0].text)
+            assert page["notes"][0]["path"] == "Engineering/Retry.md"
+            assert "hidden marker" not in result.content[0].text
+            note_id = page["notes"][0]["note_id"]
+            note = json.loads(
+                (await client.call_tool("read_vault_note", {"note_id": note_id, "limit": 10}))
+                .content[0]
+                .text
+            )
+            assert note["text"] == "Retry budg"
+            excluded = await client.call_tool("read_vault_note", {"note_id": "note_unknown"})
+            assert excluded.is_error
+            assert "NOTE_UNAVAILABLE" in excluded.content[0].text
+            assert "Private" not in excluded.content[0].text
+
+    asyncio.run(exercise())
+
+
+def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_path, monkeypatch):
+    source = _sample_source()
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
+    vault = tmp_path / "vault"
+    (vault / "Engineering").mkdir(parents=True)
+    (vault / "Computer Science").mkdir()
+    (vault / "Papers").mkdir()
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    target = vault / "Engineering/Retry Policies.md"
+    original = "Existing canonical note, unchanged.\n"
+    target.write_text(original, encoding="utf-8")
+    (vault / "Computer Science/Retry Policies.md").write_text(
+        "Different duplicate basename.", encoding="utf-8"
+    )
+    (vault / "Papers/Café (retry), policy.md").write_text(
+        "Unicode marker for punctuation link testing.", encoding="utf-8"
+    )
+    settings = DraftWriterSettings(vault)
+    server = mcp_server.create_server(
+        settings,
+        cache_db=tmp_path / "cache.db",
+        vault_settings=VaultSettings(vault, ("*",), ("Private",)),
+    )
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            source_id = _tool_data(await client.call_tool("ingest_source", {"url": URL}))[
+                "source_id"
+            ]
+            search = json.loads(
+                (await client.call_tool("search_vault", {"query": "retry"})).content[0].text
+            )
+            selected = next(
+                note for note in search["notes"] if note["path"] == "Engineering/Retry Policies.md"
+            )
+            note_ref = {"note_id": selected["note_id"]}
+            modified = "Existing canonical note with a harmless human edit.\n"
+            target.write_text(modified, encoding="utf-8")
+
+            related = _tool_data(
+                await client.call_tool(
+                    "create_draft",
+                    {
+                        "source_id": source_id,
+                        "title": "Retry budgets",
+                        "contents": "A retry budget limits aggregate load.",
+                        "related_notes": [
+                            note_ref
+                            | {
+                                "reason": "Explains the per-request policy.",
+                                "revision": selected["revision"],
+                            }
+                        ],
+                        "timestamps": [125.9],
+                    },
+                )
+            )
+            related_text = Path(related["path"]).read_text(encoding="utf-8")
+            assert (
+                "## Related Notes\n\n- [[Engineering/Retry Policies.md]]: Explains the per-request policy."
+                in related_text
+            )
+            assert "[02:05](https://www.youtube.com/watch?v=video-123&t=125s)" in related_text
+
+            unicode_search = json.loads(
+                (await client.call_tool("search_vault", {"query": "unicode marker"}))
+                .content[0]
+                .text
+            )
+            unicode_note = unicode_search["notes"][0]
+            unicode_draft = _tool_data(
+                await client.call_tool(
+                    "create_draft",
+                    {
+                        "source_id": source_id,
+                        "title": "Unicode path",
+                        "contents": "This is the related insight.",
+                        "related_notes": [
+                            {
+                                "note_id": unicode_note["note_id"],
+                                "reason": "The note contains the specific example.",
+                            }
+                        ],
+                    },
+                )
+            )
+            unicode_text = Path(unicode_draft["path"]).read_text(encoding="utf-8")
+            assert "[[Papers/Café (retry), policy.md]]" in unicode_text
+
+            search = json.loads(
+                (await client.call_tool("search_vault", {"query": "retry"})).content[0].text
+            )
+            selected = next(
+                note for note in search["notes"] if note["path"] == "Engineering/Retry Policies.md"
+            )
+
+            edit = _tool_data(
+                await client.call_tool(
+                    "create_edit_suggestion",
+                    {
+                        "source_id": source_id,
+                        "target_note_id": selected["note_id"],
+                        "target_revision": selected["revision"],
+                        "change_summary": "Add an aggregate retry budget.",
+                        "reasoning": "The current explanation omits system-wide load.",
+                        "proposed_content": "A retry budget caps retries across clients.",
+                        "timestamps": [125],
+                    },
+                )
+            )
+            edit_path = Path(edit["path"])
+            edit_text = edit_path.read_text(encoding="utf-8")
+            assert edit_path.name.startswith("(EDIT) Retry Policies")
+            assert edit_text.startswith("[[Engineering/Retry Policies.md]]\n\n## Suggested Change")
+            assert "## Proposed Content\n\nA retry budget caps retries across clients." in edit_text
+            assert "## Source" in edit_text
+            assert target.read_text(encoding="utf-8") == modified
+            collision = _tool_data(
+                await client.call_tool(
+                    "create_edit_suggestion",
+                    {
+                        "source_id": source_id,
+                        "target_note_id": selected["note_id"],
+                        "target_revision": selected["revision"],
+                        "change_summary": "Add an aggregate retry budget.",
+                        "reasoning": "The current explanation omits system-wide load.",
+                        "proposed_content": "A retry budget caps retries across clients.",
+                    },
+                )
+            )
+            assert Path(collision["path"]).name == "(EDIT) Retry Policies (2).md"
+            assert target.read_text(encoding="utf-8") == modified
+
+            invalid = await client.call_tool(
+                "create_draft",
+                {
+                    "source_id": source_id,
+                    "title": "Broken link",
+                    "contents": "Body",
+                    "related_notes": [
+                        {
+                            "note_id": "note_unknown",
+                            "revision": "sha256:fake",
+                            "reason": "Not verified.",
+                        }
+                    ],
+                },
+            )
+            assert invalid.is_error
+            assert "NOTE_UNAVAILABLE" in invalid.content[0].text
+            assert not (vault / "00 Inbox/AI Drafts/Broken link.md").exists()
+
+            injected = await client.call_tool(
+                "create_draft",
+                {
+                    "source_id": source_id,
+                    "title": "User wikilink",
+                    "contents": "Body with [[Unverified Note]] and [a Markdown link](https://example.com).",
+                },
+            )
+            assert not injected.is_error
+            injected_path = Path(_tool_data(injected)["path"])
+            injected_text = injected_path.read_text(encoding="utf-8")
+            assert "[[Unverified Note]]" in injected_text
+            assert "[a Markdown link](https://example.com)" in injected_text
+
+    asyncio.run(exercise())
