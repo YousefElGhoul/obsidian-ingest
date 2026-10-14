@@ -182,7 +182,7 @@ useful workflow:
 
 Only consider after the local unattended workflow is useful and reliable.
 
-- [ ] Add a personal Telegram URL inbox first; consider WhatsApp or other interfaces
+- [X] Add a personal Telegram URL inbox first; consider WhatsApp or other interfaces
   only if useful.
 - [ ] Trigger the same local workflow, restrict authorized senders, and report
   success/failure without duplicating ingestion logic.

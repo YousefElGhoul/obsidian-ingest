@@ -455,7 +455,7 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
                 "- Source: A useful explanation\n"
                 "- URL: https://www.youtube.com/watch?v=video-123\n"
                 "- Creator: A creator\n"
-                "- Relevant timestamps: 1.5s\n"
+                "- Relevant timestamps: [00:01](https://www.youtube.com/watch?v=video-123&t=1s)\n"
             )
 
     asyncio.run(run_server())

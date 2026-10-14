@@ -8,6 +8,7 @@ import pytest
 
 from obsidian_ingest import drafts
 from obsidian_ingest.drafts import DraftWriterSettings, create_draft
+from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 
@@ -49,7 +50,8 @@ def test_create_draft_creates_default_nested_destination(
         "- Source: A useful source\n"
         "- URL: https://www.youtube.com/watch?v=video-123\n"
         "- Creator: A creator\n"
-        "- Relevant timestamps: 12.5s, 45s\n"
+        "- Relevant timestamps: [00:12](https://www.youtube.com/watch?v=video-123&t=12s), "
+        "[00:45](https://www.youtube.com/watch?v=video-123&t=45s)\n"
     )
     assert "# A useful idea" not in result.path.read_text(encoding="utf-8")
 
@@ -62,6 +64,55 @@ def test_empty_body_and_missing_optional_metadata_are_supported(
     assert result.path.read_text(encoding="utf-8") == (
         "## Source\n\n- Source: minimal\n- URL: https://youtu.be/minimal\n"
     )
+
+
+def test_youtube_timestamp_links_use_video_id_and_floor_fractional_seconds(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    result = create_draft(
+        settings,
+        title="Linked timestamps",
+        contents="Body",
+        source=source_metadata,
+        timestamps=(125.9, 3661.8),
+    )
+    rendered = result.path.read_text(encoding="utf-8")
+    assert (
+        "- Relevant timestamps: [02:05](https://www.youtube.com/watch?v=video-123&t=125s), "
+        "[01:01:01](https://www.youtube.com/watch?v=video-123&t=3661s)" in rendered
+    )
+
+
+def test_youtube_timestamp_links_ignore_existing_url_query_parameters(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    from dataclasses import replace
+
+    source = replace(
+        source_metadata,
+        original_url="https://www.youtube.com/watch?v=video-123&t=17s&list=playlist-1",
+    )
+    result = create_draft(
+        settings, title="Query parameters", contents="Body", source=source, timestamps=(125,)
+    )
+    rendered = result.path.read_text(encoding="utf-8")
+    assert "[02:05](https://www.youtube.com/watch?v=video-123&t=125s)" in rendered
+    assert "&t=17s&t=" not in rendered
+    assert "- URL: https://www.youtube.com/watch?v=video-123&t=17s&list=playlist-1" in rendered
+
+
+def test_non_youtube_timestamp_format_stays_plain(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    from dataclasses import replace
+
+    source = replace(source_metadata, provider=Provider.TIKTOK)
+    result = create_draft(
+        settings, title="Other provider", contents="Body", source=source, timestamps=(125.5,)
+    )
+    rendered = result.path.read_text(encoding="utf-8")
+    assert "- Relevant timestamps: 125.5s" in rendered
+    assert "[02:05]" not in rendered
 
 
 def test_custom_relative_draft_folder_and_unicode_content(
