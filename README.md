@@ -182,10 +182,25 @@ SponsorBlock ranges, read timestamped transcript pages or chapter pages, and cre
 draft attributed to that ingested source. Sponsor filtering defaults to `sponsor` only;
 reads return the retained view, with an option to include original atoms. SponsorBlock
 errors are reported and ingestion continues with unfiltered text. Transcript reads
-default to 200 segments and cap pages at 500. Page offsets preserve source order, and
-each segment includes its original source index. Vault listing/search and deduplication
-are not available yet, so the agent cannot compare against existing vault notes through
-this server.
+default to 40 segments and cap a request at 80. The serialized MCP content envelope is
+limited to 20 KiB; a page may therefore contain fewer than the requested number of
+whole segments. The response includes `offset`, requested `limit`, `total_segments`, and
+`next_offset`. Continue with the returned `next_offset` until it is `null`. Source
+indices, wording, timestamps, and order are preserved. An individual atom that cannot
+fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
+are returned as one compact JSON text result instead of duplicated text and structured
+payloads; the evaluator parses this result format. This bound is intended to keep reads
+small, but Hermes spillover thresholds vary by deployment and have not been verified
+against a local Hermes installation. Vault listing/search and deduplication are not
+available yet, so the agent cannot compare against existing vault notes through this
+server.
+
+For `create_draft`, `contents` is the Markdown body only. Do not include an opening H1
+title or Source/Sources/Source Attribution/Provenance sections; the application appends
+one `## Source` section with the source URL, creator when available, and supplied
+timestamps. A separate `## References` section for additional papers and materials is
+allowed. Heading validation covers ordinary ATX and Setext Markdown headings and ignores
+fenced or indented code examples; it is not a general-purpose Markdown parser.
 
 ### Connect Hermes
 

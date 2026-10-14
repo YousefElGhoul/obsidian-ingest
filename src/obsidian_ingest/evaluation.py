@@ -17,7 +17,7 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[2]
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_PAGE_SIZE = 500
+_PAGE_SIZE = 80
 
 
 class EvaluationFailure(RuntimeError):
@@ -38,6 +38,15 @@ def parse_manifest(path: Path) -> tuple[str, ...]:
 
 def _result_data(result) -> dict[str, Any]:
     data = result.structured_content or {}
+    if not data:
+        text = next(
+            (getattr(item, "text", "") for item in result.content if getattr(item, "text", "")),
+            "",
+        )
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = {}
     if len(data) == 1 and "result" in data:
         return data["result"]
     return data

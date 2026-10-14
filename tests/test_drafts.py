@@ -80,6 +80,58 @@ def test_custom_relative_draft_folder_and_unicode_content(
     )
 
 
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "# Draft title\n\nBody",
+        "\n  # Draft title ##\nBody",
+        "Draft title\n============\nBody",
+        "## Context\n\n## SOURCE\nAgent attribution",
+        "## Sources\n- https://example.com",
+        "### Provenance\n- Claimed URL: https://example.com",
+        "Source Attribution\n-------------------\n- Claimed URL",
+    ],
+)
+def test_agent_title_and_source_sections_are_rejected_before_filesystem_changes(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata, contents: str
+) -> None:
+    with pytest.raises(ValueError, match="H1 title|Source or provenance"):
+        create_draft(settings, title="Invalid body", contents=contents, source=source_metadata)
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
+def test_references_and_markdown_examples_are_allowed_and_source_is_appended_once(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    body = (
+        "A body with a source mention.\n\n"
+        "## References\n- [Paper](https://example.com/paper)\n\n"
+        "```markdown\n# Example title\n## Source\n```\n"
+        "    ## Provenance\n"
+    )
+    result = create_draft(settings, title="Valid body", contents=body, source=source_metadata)
+    rendered = result.path.read_text(encoding="utf-8")
+    assert rendered == (
+        body
+        + "\n## Source\n\n"
+        + "- Source: A useful source\n"
+        + "- URL: https://www.youtube.com/watch?v=video-123\n"
+        + "- Creator: A creator\n"
+    )
+    assert rendered.count("## Source") == 2  # one fenced example, one generated section
+
+
+def test_setext_h2_named_source_is_reserved(settings, source_metadata):
+    with pytest.raises(ValueError, match="Source or provenance"):
+        create_draft(
+            settings,
+            title="Reserved",
+            contents="Source\n------\nnot allowed",
+            source=source_metadata,
+        )
+    assert not (settings.vault_path / "00 Inbox").exists()
+
+
 def test_existing_files_are_preserved_and_collision_gets_numeric_suffix(
     settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:
