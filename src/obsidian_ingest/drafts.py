@@ -19,6 +19,9 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"LPT{number}" for number in range(1, 10)),
 }
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$")
+_SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+_RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +65,7 @@ def _validate_title(title: str) -> str:
 def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float, ...]) -> bytes:
     if not isinstance(contents, str):
         raise TypeError("contents must be a string")
+    _validate_body(contents)
     if not isinstance(timestamps, tuple):
         raise TypeError("timestamps must be a tuple of seconds")
     for timestamp in timestamps:
@@ -82,6 +86,51 @@ def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float
         lines.append(f"- Relevant timestamps: {values}")
     separator = "" if not contents else "\n" if contents.endswith("\n") else "\n\n"
     return f"{contents}{separator}{'\n'.join(lines)}\n".encode()
+
+
+def _validate_body(contents: str) -> None:
+    lines = contents.splitlines()
+    in_fence = False
+    fence_marker = ""
+    first_heading_checked = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker
+            elif marker == fence_marker:
+                in_fence = False
+            continue
+        if in_fence or line.startswith(("    ", "\t")):
+            continue
+        heading = _ATX_HEADING.match(line)
+        heading_text = heading.group(2) if heading else None
+        if heading_text is not None:
+            heading_text = re.sub(r"[ \t]+#+[ \t]*$", "", heading_text).strip()
+            if heading_text.casefold() in _RESERVED_HEADINGS:
+                raise ValueError("contents must not include a Source or provenance section")
+            if not first_heading_checked and heading.group(1) == "#":
+                preceding = lines[:index]
+                if all(not item.strip() for item in preceding):
+                    raise ValueError(
+                        "contents must be body-only and must not start with an H1 title"
+                    )
+            first_heading_checked = True
+            continue
+        setext = _SETEXT_HEADING.match(line)
+        if setext and index > 0 and lines[index - 1].strip():
+            title = lines[index - 1].strip()
+            if title.casefold() in _RESERVED_HEADINGS:
+                raise ValueError("contents must not include a Source or provenance section")
+            if setext.group(1).startswith("=") and all(
+                not item.strip() for item in lines[: index - 1]
+            ):
+                raise ValueError("contents must be body-only and must not start with an H1 title")
+            first_heading_checked = True
+        elif line.strip() and not first_heading_checked:
+            first_heading_checked = True
 
 
 def _open_directory_chain(root_fd: int, parts: tuple[str, ...]) -> int:

@@ -36,6 +36,13 @@ remaining work. Do not mark an item complete based on implementation intent alon
 - No agent orchestration, vault reader, deduplication, or unattended URL-to-draft
   workflow exists yet.
 
+## Remaining Verification
+
+- [ ] Verify the 20 KiB transcript response limit against the actual Hermes deployment
+  and its spillover behavior. The local Hermes installation/threshold was unavailable;
+  compact single-channel responses and a conservative envelope cap are implemented and
+  covered offline, but deployment-specific spillover avoidance remains unverified.
+
 ## First Agent Output Trial
 
 Use the current source/draft MCP tools to evaluate whether agent-written drafts are

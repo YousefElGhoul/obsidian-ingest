@@ -8,6 +8,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from obsidian_ingest import evaluation
 from obsidian_ingest.evaluation import evaluate_video, main, parse_manifest, write_report
 
 
@@ -22,6 +23,19 @@ def _result(data=None, *, error: str | None = None):
         is_error=error is not None,
         structured_content=None if error else {"result": data},
         content=content if error else [],
+    )
+
+
+def _text_result(data):
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return SimpleNamespace(
+        is_error=False,
+        structured_content=None,
+        content=[
+            SimpleNamespace(
+                text=text, model_dump=lambda mode="json": {"type": "text", "text": text}
+            )
+        ],
     )
 
 
@@ -41,15 +55,34 @@ class FakeSession:
             return _result([{"start": 4, "end": 5, "source_indices": [1]}])
         if name == "read_transcript":
             if arguments["offset"] == 0:
-                return _result(
+                return _text_result(
                     {
                         "segments": [{"source_index": 0, "text": "One"}],
+                        "offset": 0,
+                        "limit": evaluation._PAGE_SIZE,
+                        "total_segments": 2,
                         "next_offset": 1,
                     }
                 )
-            return _result({"segments": [{"source_index": 2, "text": "Two"}], "next_offset": None})
+            return _text_result(
+                {
+                    "segments": [{"source_index": 2, "text": "Two"}],
+                    "offset": 1,
+                    "limit": evaluation._PAGE_SIZE,
+                    "total_segments": 2,
+                    "next_offset": None,
+                }
+            )
         if name == "read_chapter":
-            return _result({"segments": [{"source_index": 0, "text": "One"}], "next_offset": None})
+            return _text_result(
+                {
+                    "segments": [{"source_index": 0, "text": "One"}],
+                    "offset": 0,
+                    "limit": evaluation._PAGE_SIZE,
+                    "total_segments": 1,
+                    "next_offset": None,
+                }
+            )
         raise AssertionError(f"Unexpected tool call: {name}")
 
 
@@ -72,9 +105,15 @@ def test_evaluate_video_records_all_source_tool_content_without_writing_drafts()
     assert all(name != "create_draft" for name, _ in session.calls)
     assert session.calls[0][1] == {"url": "https://www.youtube.com/watch?v=abcdefghijk"}
     assert all("include_excluded" not in arguments for _, arguments in session.calls)
-    assert (
-        report["calls"][4]["result"]["structured_content"]["result"]["segments"][0]["text"] == "One"
+    assert all(
+        arguments["limit"] == 80
+        for name, arguments in session.calls
+        if name in {"read_transcript", "read_chapter"}
     )
+    assert session.calls[5][1]["offset"] == 1
+    transcript_result = report["calls"][4]["result"]
+    assert transcript_result["structured_content"] is None
+    assert json.loads(transcript_result["content"][0]["text"])["segments"][0]["text"] == "One"
 
 
 def test_evaluate_video_records_and_stops_on_tool_errors() -> None:

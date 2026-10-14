@@ -1,5 +1,6 @@
 """Thin local MCP adapter for source navigation and create-only draft writing."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,9 @@ from obsidian_ingest.source import (
 from obsidian_ingest.source import list_chapters as get_application_chapters
 from obsidian_ingest.source_cache import SourceCache, SourceCacheError
 
-DEFAULT_PAGE_SIZE = 200
-MAX_PAGE_SIZE = 500
+DEFAULT_PAGE_SIZE = 40
+MAX_PAGE_SIZE = 80
+MAX_PAGE_ENVELOPE_BYTES = 20 * 1024
 
 
 def _source_overview(source: Source) -> dict[str, Any]:
@@ -53,27 +55,52 @@ def _source_overview(source: Source) -> dict[str, Any]:
 
 def _segment_page(
     entries: tuple[tuple[int, TranscriptSegment], ...], offset: int, limit: int
-) -> dict[str, Any]:
+) -> str:
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be a nonnegative integer")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
         raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
-    selected = entries[offset : offset + limit]
-    next_offset = offset + len(selected)
-    return {
-        "segments": [
+    segments = []
+    for source_index, segment in entries[offset : offset + limit]:
+        segments.append(
             {
                 "source_index": source_index,
                 "text": segment.text,
                 "start": segment.start,
                 "duration": segment.duration,
             }
-            for source_index, segment in selected
-        ],
-        "total_segments": len(entries),
+        )
+        next_offset = offset + len(segments)
+        page = {
+            "segments": segments,
+            "offset": offset,
+            "limit": limit,
+            "total_segments": len(entries),
+            "next_offset": next_offset if next_offset < len(entries) else None,
+        }
+        text = json.dumps(page, ensure_ascii=False, separators=(",", ":"))
+        envelope = json.dumps(
+            {"content": [{"type": "text", "text": text}]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        # Leave room for the surrounding JSON-RPC result and server metadata.
+        if len(envelope) > MAX_PAGE_ENVELOPE_BYTES - 1024:
+            segments.pop()
+            if not segments:
+                raise ValueError(
+                    f"Transcript segment {source_index} exceeds the {MAX_PAGE_ENVELOPE_BYTES}-byte response limit"
+                )
+            break
+    next_offset = offset + len(segments)
+    page = {
+        "segments": segments,
         "offset": offset,
+        "limit": limit,
+        "total_segments": len(entries),
         "next_offset": next_offset if next_offset < len(entries) else None,
     }
+    return json.dumps(page, ensure_ascii=False, separators=(",", ":"))
 
 
 def _chapter_data(index: int, chapter: Chapter) -> dict[str, Any]:
@@ -141,7 +168,7 @@ def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None
             for range_index, exclusion in enumerate(source.exclusion_lookup.ranges)
         ]
 
-    @server.tool()
+    @server.tool(structured_output=False)
     def read_transcript(
         source_id: str,
         start: float | None = None,
@@ -149,8 +176,8 @@ def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None
         include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
-    ) -> dict[str, Any]:
-        """Read sponsor-filtered transcript pages by default; optionally include original atoms."""
+    ) -> str:
+        """Read compact JSON pages; follow next_offset until null. Whole atoms are preserved."""
         source = get_source(source_id)
         try:
             entries = read_transcript_entries(
@@ -163,15 +190,15 @@ def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None
         except (TypeError, ValueError) as error:
             raise ToolError(str(error)) from error
 
-    @server.tool()
+    @server.tool(structured_output=False)
     def read_chapter(
         source_id: str,
         chapter_index: int,
         include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
-    ) -> dict[str, Any]:
-        """Read creator-chapter pages from the retained or original transcript view."""
+    ) -> str:
+        """Read compact JSON chapter pages; follow next_offset until null."""
         source = get_source(source_id)
         try:
             entries = read_chapter_entries(
@@ -190,7 +217,7 @@ def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None
         contents: str,
         timestamps: list[float] | None = None,
     ) -> dict[str, str]:
-        """Create a draft attributed to an ingested source in the configured folder."""
+        """Create a source-attributed draft; contents is the Markdown body only, with no title H1 or source section."""
         source = get_source(source_id)
         try:
             result = write_draft(
