@@ -7,8 +7,11 @@ import stat
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from urllib.parse import urlencode
 
+from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import SourceMetadata
+from obsidian_ingest.extractor.transcript import format_timestamp
 
 _WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -82,7 +85,17 @@ def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float
     if source.creator_name:
         lines.append(f"- Creator: {single_line(source.creator_name)}")
     if timestamps:
-        values = ", ".join(f"{timestamp:g}s" for timestamp in timestamps)
+        formatted = []
+        for timestamp in timestamps:
+            if source.provider == Provider.YOUTUBE:
+                seconds = int(timestamp)
+                url = "https://www.youtube.com/watch?" + urlencode(
+                    {"v": source.source_id, "t": f"{seconds}s"}
+                )
+                formatted.append(f"[{format_timestamp(seconds)}]({url})")
+            else:
+                formatted.append(f"{timestamp:g}s")
+        values = ", ".join(formatted)
         lines.append(f"- Relevant timestamps: {values}")
     separator = "" if not contents else "\n" if contents.endswith("\n") else "\n\n"
     return f"{contents}{separator}{'\n'.join(lines)}\n".encode()
@@ -111,7 +124,7 @@ def _validate_body(contents: str) -> None:
             heading_text = re.sub(r"[ \t]+#+[ \t]*$", "", heading_text).strip()
             if heading_text.casefold() in _RESERVED_HEADINGS:
                 raise ValueError("contents must not include a Source or provenance section")
-            if not first_heading_checked and heading.group(1) == "#":
+            if not first_heading_checked and heading.group(1) in ("#", "##"):
                 preceding = lines[:index]
                 if all(not item.strip() for item in preceding):
                     raise ValueError(

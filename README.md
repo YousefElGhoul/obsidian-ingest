@@ -110,6 +110,8 @@ The default destination is `<vault>/00 Inbox/AI Drafts/`; an alternative safe,
 vault-relative folder can be supplied in trusted settings. The title becomes the
 filename, not a duplicate top-level heading in the note. A readable source section
 is appended with source identity, URL, creator when available, and optional timestamps.
+YouTube timestamps link to the normalized video ID at the corresponding whole second;
+timestamps for other providers remain plain time values.
 Related-note suggestions and vault reads are not yet implemented.
 
 The writer requires POSIX-style directory-relative filesystem operations,
