@@ -2,11 +2,14 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from obsidian_ingest.config import VaultSettings
+from obsidian_ingest.curation import create_edit_suggestion as write_edit_suggestion
+from obsidian_ingest.curation import verified_related_notes
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.drafts import create_draft as write_draft
 from obsidian_ingest.extractor.metadata import Chapter
@@ -19,10 +22,17 @@ from obsidian_ingest.source import (
 )
 from obsidian_ingest.source import list_chapters as get_application_chapters
 from obsidian_ingest.source_cache import SourceCache, SourceCacheError
+from obsidian_ingest.vault import NoteChanged, NoteUnavailable, VaultReader
 
 DEFAULT_PAGE_SIZE = 40
 MAX_PAGE_SIZE = 80
 MAX_PAGE_ENVELOPE_BYTES = 20 * 1024
+
+
+class RelatedNoteInput(TypedDict):
+    note_id: str
+    reason: str
+    revision: NotRequired[str]
 
 
 def _source_overview(source: Source) -> dict[str, Any]:
@@ -107,9 +117,20 @@ def _chapter_data(index: int, chapter: Chapter) -> dict[str, Any]:
     return {"index": index, "title": chapter.title, "start": chapter.start, "end": chapter.end}
 
 
-def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None) -> MCPServer:
+def create_server(
+    settings: DraftWriterSettings,
+    *,
+    cache_db: Path | None = None,
+    vault_settings: VaultSettings | None = None,
+) -> MCPServer:
     """Create an MCP server backed by persistent, option-specific source handles."""
     server = MCPServer("obsidian-ingest")
+    if vault_settings is not None and (
+        settings.vault_path.resolve() != vault_settings.root.resolve()
+        or settings.draft_folder != vault_settings.draft_folder
+    ):
+        raise ValueError("Draft writer settings must match trusted vault configuration")
+    vault = VaultReader(vault_settings) if vault_settings is not None else None
     cache = SourceCache(cache_db)
 
     def get_source(source_id: str) -> Source:
@@ -216,19 +237,90 @@ def create_server(settings: DraftWriterSettings, *, cache_db: Path | None = None
         title: str,
         contents: str,
         timestamps: list[float] | None = None,
+        related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
         """Create a source-attributed draft; contents is the Markdown body only, with no title H1 or source section."""
         source = get_source(source_id)
         try:
+            verified_links = ()
+            if related_notes:
+                if vault is None:
+                    raise ValueError(
+                        "NOTE_UNAVAILABLE: verified vault links require trusted vault settings"
+                    )
+                verified_links = verified_related_notes(vault, related_notes)
             result = write_draft(
                 settings,
                 title=title,
                 contents=contents,
                 source=source.metadata,
                 timestamps=tuple(timestamps or ()),
+                related_notes=verified_links,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             raise ToolError(f"Could not create draft: {error}") from error
         return {"path": str(result.path)}
+
+    if vault is not None:
+
+        @server.tool(structured_output=False)
+        def search_vault(
+            query: str = "",
+            scope: Literal["title", "content", "both"] = "both",
+            cursor: str | None = None,
+            limit: int = 10,
+        ) -> str:
+            """Search accessible Markdown note titles and content; empty query browses notes."""
+            try:
+                result = vault.search(query, scope=scope, cursor=cursor, limit=limit)
+            except ValueError as error:
+                raise ToolError(str(error)) from error
+            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+        @server.tool(structured_output=False)
+        def read_vault_note(
+            note_id: str,
+            offset: int = 0,
+            limit: int = 4000,
+            revision: str | None = None,
+        ) -> str:
+            """Read bounded pages of one accessible note; pass its revision on continuation pages."""
+            try:
+                result = vault.read(note_id, offset=offset, limit=limit, revision=revision)
+            except NoteChanged as error:
+                raise ToolError("NOTE_CHANGED: note changed; search and read it again") from error
+            except NoteUnavailable as error:
+                raise ToolError("NOTE_UNAVAILABLE: note is unavailable") from error
+            except ValueError as error:
+                raise ToolError(str(error)) from error
+            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+        @server.tool()
+        def create_edit_suggestion(
+            source_id: str,
+            target_note_id: str,
+            target_revision: str,
+            change_summary: str,
+            reasoning: str,
+            proposed_content: str,
+            timestamps: list[float] | None = None,
+        ) -> dict[str, str]:
+            """Create a review-only (EDIT) draft for a verified accessible note; never changes it."""
+            source = get_source(source_id)
+            try:
+                result = write_edit_suggestion(
+                    settings,
+                    source=source.metadata,
+                    vault=vault,
+                    target_note_id=target_note_id,
+                    target_revision=target_revision,
+                    change_summary=change_summary,
+                    reasoning=reasoning,
+                    proposed_content=proposed_content,
+                    timestamps=tuple(timestamps or ()),
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                raise ToolError(f"Could not create edit suggestion: {error}") from error
+            return {"path": str(result.path)}
 
     return server

@@ -24,7 +24,7 @@ _WINDOWS_RESERVED_NAMES = {
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$")
 _SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-_RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance"}
+_RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "related notes"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,10 +65,50 @@ def _validate_title(title: str) -> str:
     return title
 
 
-def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float, ...]) -> bytes:
+def _render_draft(
+    contents: str,
+    source: SourceMetadata,
+    timestamps: tuple[float, ...],
+    related_notes: tuple[tuple[str, str], ...] = (),
+    leading_link: str | None = None,
+) -> bytes:
     if not isinstance(contents, str):
         raise TypeError("contents must be a string")
-    _validate_body(contents)
+    if leading_link is None:
+        _validate_body(contents)
+    else:
+        if not leading_link.startswith("[[") or not leading_link.endswith("]]"):
+            raise ValueError("leading_link must be one verified wikilink")
+        _validate_note_link_path(leading_link[2:-2])
+        _validate_body(f"{leading_link}\n\n{contents}")
+    if len(related_notes) > 5:
+        raise ValueError("related_notes must contain at most five notes")
+    related_lines = []
+    seen_links = set()
+    for link, reason in related_notes:
+        path = (
+            link[2:-2]
+            if isinstance(link, str) and link.startswith("[[") and link.endswith("]]")
+            else ""
+        )
+        _validate_note_link_path(path)
+        if link in seen_links:
+            continue
+        if (
+            not isinstance(reason, str)
+            or not reason.strip()
+            or len(reason) > 300
+            or "\n" in reason
+            or "\r" in reason
+        ):
+            raise ValueError(
+                "related note reason must be a nonempty single line of at most 300 characters"
+            )
+        if "[[" in reason or "]]" in reason:
+            raise ValueError("related note reason must not contain wikilinks")
+        seen_links.add(link)
+        safe_reason = re.sub(r"([\\`*_{}\[\]()<>|])", r"\\\1", reason.strip())
+        related_lines.append(f"- {link}: {safe_reason}")
     if not isinstance(timestamps, tuple):
         raise TypeError("timestamps must be a tuple of seconds")
     for timestamp in timestamps:
@@ -79,6 +119,13 @@ def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float
 
     def single_line(value: str) -> str:
         return value.replace("\r", " ").replace("\n", " ")
+
+    rendered_body = contents
+    if related_lines:
+        separator = "" if not rendered_body else "\n" if rendered_body.endswith("\n") else "\n\n"
+        rendered_body = f"{rendered_body}{separator}## Related Notes\n\n" + "\n".join(related_lines)
+    if leading_link is not None:
+        rendered_body = f"{leading_link}\n\n{rendered_body}"
 
     lines = ["## Source", "", f"- Source: {single_line(source.title or source.source_id)}"]
     lines.append(f"- URL: {single_line(source.original_url)}")
@@ -97,8 +144,28 @@ def _render_draft(contents: str, source: SourceMetadata, timestamps: tuple[float
                 formatted.append(f"{timestamp:g}s")
         values = ", ".join(formatted)
         lines.append(f"- Relevant timestamps: {values}")
-    separator = "" if not contents else "\n" if contents.endswith("\n") else "\n\n"
-    return f"{contents}{separator}{'\n'.join(lines)}\n".encode()
+    separator = "" if not rendered_body else "\n" if rendered_body.endswith("\n") else "\n\n"
+    return f"{rendered_body}{separator}{'\n'.join(lines)}\n".encode()
+
+
+def _validate_note_link_path(path: str) -> None:
+    parts = path.split("/")
+    if (
+        not path.endswith(".md")
+        or path.startswith("/")
+        or "\\" in path
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(character in path for character in "#^|[]\\:")
+        or "%%" in path
+        or any(ord(character) < 32 for character in path)
+    ):
+        raise ValueError("wikilink path is not safe")
+
+
+def _unquote_heading(line: str) -> str:
+    while marker := re.match(r"^ {0,3}>[ \t]?", line):
+        line = line[marker.end() :]
+    return line
 
 
 def _validate_body(contents: str) -> None:
@@ -118,11 +185,25 @@ def _validate_body(contents: str) -> None:
             continue
         if in_fence or line.startswith(("    ", "\t")):
             continue
+        unquoted = _unquote_heading(line)
+        quoted_heading = _ATX_HEADING.match(unquoted)
+        if quoted_heading:
+            quoted_title = re.sub(r"[ \t]+#+[ \t]*$", "", quoted_heading.group(2) or "").strip()
+            if quoted_title.casefold() == "related notes":
+                raise ValueError("Related Notes must be generated from verified note references")
+        if index and _SETEXT_HEADING.match(unquoted):
+            previous_title = _unquote_heading(lines[index - 1]).strip()
+            if previous_title.casefold() == "related notes":
+                raise ValueError("Related Notes must be generated from verified note references")
         heading = _ATX_HEADING.match(line)
         heading_text = heading.group(2) if heading else None
         if heading_text is not None:
             heading_text = re.sub(r"[ \t]+#+[ \t]*$", "", heading_text).strip()
             if heading_text.casefold() in _RESERVED_HEADINGS:
+                if heading_text.casefold() == "related notes":
+                    raise ValueError(
+                        "Related Notes must be generated from verified note references"
+                    )
                 raise ValueError("contents must not include a Source or provenance section")
             if not first_heading_checked and heading.group(1) in ("#", "##"):
                 preceding = lines[:index]
@@ -136,6 +217,10 @@ def _validate_body(contents: str) -> None:
         if setext and index > 0 and lines[index - 1].strip():
             title = lines[index - 1].strip()
             if title.casefold() in _RESERVED_HEADINGS:
+                if title.casefold() == "related notes":
+                    raise ValueError(
+                        "Related Notes must be generated from verified note references"
+                    )
                 raise ValueError("contents must not include a Source or provenance section")
             if setext.group(1).startswith("=") and all(
                 not item.strip() for item in lines[: index - 1]
@@ -268,6 +353,8 @@ def create_draft(
     contents: str,
     source: SourceMetadata,
     timestamps: tuple[float, ...] = (),
+    related_notes: tuple[tuple[str, str], ...] = (),
+    leading_link: str | None = None,
 ) -> DraftResult:
     """Create a new draft beneath the configured folder, never modifying a note.
 
@@ -277,7 +364,7 @@ def create_draft(
     """
     title = _validate_title(title)
     parts = _draft_folder_parts(settings.draft_folder)
-    payload = _render_draft(contents, source, timestamps)
+    payload = _render_draft(contents, source, timestamps, related_notes, leading_link)
     _require_writer_capabilities()
 
     vault_path = Path(settings.vault_path)
