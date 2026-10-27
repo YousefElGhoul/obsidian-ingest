@@ -97,6 +97,19 @@ def test_search_pagination_cursor_and_note_revision_reads(tmp_path):
             )
 
 
+def test_relative_path_references_require_access_and_match_revision(tmp_path):
+    root = _vault(tmp_path)
+    with VaultReader(_settings(root)) as reader:
+        note = reader.search("retry", scope="title")["notes"][0]
+        reference = reader.get_path_reference(note["path"], note["revision"])
+        assert reference.path == note["path"]
+        assert reader.read(reference.note_id)["text"].startswith("A separate note")
+        with pytest.raises(NoteChanged):
+            reader.get_path_reference(note["path"], "sha256:stale")
+        with pytest.raises(NoteUnavailable):
+            reader.get_path_reference("Private/Secret.md")
+
+
 def test_verified_related_references_deduplicate_paths_not_only_handles(tmp_path):
     root = _vault(tmp_path)
     with VaultReader(_settings(root)) as reader:

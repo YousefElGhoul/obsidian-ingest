@@ -9,6 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+/skills/obsidian-ingest/config/settings.toml
+
 /run_output_*.txt
 /run_error_*.log
 /run_stderr_*.log

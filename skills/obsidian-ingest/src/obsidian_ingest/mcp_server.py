@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
-from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from mcp.server import MCPServer
 from obsidian_ingest.config import VaultSettings
 from obsidian_ingest.curation import create_edit_suggestion as write_edit_suggestion
 from obsidian_ingest.curation import verified_related_notes

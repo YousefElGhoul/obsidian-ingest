@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 from contextlib import closing
@@ -424,6 +425,10 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
         command=sys.executable,
         args=["-c", code, str(vault), str(database)],
         cwd=str(Path(__file__).resolve().parents[1]),
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "skills/obsidian-ingest/src"),
+        },
     )
 
     async def run_server() -> None:

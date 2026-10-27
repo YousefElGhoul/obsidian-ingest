@@ -15,6 +15,11 @@ class VaultSettings:
     draft_folder: str = "00 Inbox/AI Drafts"
 
 
+def default_config_path() -> Path:
+    """Return the trusted settings path within this installed skill directory."""
+    return Path(__file__).resolve().parents[2] / "config/settings.toml"
+
+
 def _relative_parts(value: object, label: str) -> tuple[str, ...]:
     if (
         not isinstance(value, str)

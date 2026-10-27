@@ -419,6 +419,15 @@ class VaultReader:
             raise NoteChanged
         return reference
 
+    def get_path_reference(self, path: str, revision: str | None = None) -> NoteReference:
+        """Issue a process-local reference for a trusted vault-relative CLI path."""
+        if not isinstance(path, str) or not path.endswith(".md"):
+            raise NoteUnavailable
+        actual_revision, _, _ = self._scan_file(path)
+        if revision is not None and revision != actual_revision:
+            raise NoteChanged
+        return self._register(path, actual_revision)
+
     def get_linkable_reference(self, note_id: str) -> NoteReference:
         """Revalidate access and existence without pinning ordinary links to a revision."""
         if not isinstance(note_id, str) or len(note_id) > 80:

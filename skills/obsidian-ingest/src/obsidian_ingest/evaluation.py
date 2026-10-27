@@ -12,10 +12,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-ROOT = Path(__file__).resolve().parents[2]
+from mcp import ClientSession, StdioServerParameters
+
+SKILL_ROOT = Path(__file__).resolve().parents[2]
+ROOT = SKILL_ROOT.parents[1]
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _PAGE_SIZE = 80
 
@@ -191,13 +193,13 @@ async def run_batch(video_ids: tuple[str, ...], output_dir: Path, delay_seconds:
             args=[
                 "run",
                 "--directory",
-                str(ROOT),
+                str(SKILL_ROOT),
                 "obsidian-ingest",
                 "mcp",
                 "--vault",
                 temporary_vault,
             ],
-            cwd=str(ROOT),
+            cwd=str(SKILL_ROOT),
         )
         async with (
             stdio_client(server) as (read_stream, write_stream),

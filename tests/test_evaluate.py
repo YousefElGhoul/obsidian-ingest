@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,6 +178,10 @@ def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path
         command=sys.executable,
         args=["-c", server_code, str(vault)],
         cwd=str(Path(__file__).resolve().parents[1]),
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "skills/obsidian-ingest/src"),
+        },
     )
 
     async def list_server_tools() -> set[str]:

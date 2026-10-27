@@ -7,16 +7,18 @@ manually. Drafts should favor practical explanations, mental models, tradeoffs,
 gotchas, workflows, and useful source insights. Zero drafts is a valid outcome.
 
 The design principle is **deterministic Python is the toolbelt and safety boundary;
-the agent is the brain**. Python provides normalized source access and safe draft
-creation. An agent will eventually decide what is worth preserving and what to write.
+the agent is the brain**. The installable skill supplies the harness-neutral workflow;
+Python provides normalized source access and safe draft creation. The host agent decides
+what is worth preserving and what to write.
 
 ## Current Status
 
 Source extraction/navigation, create-only draft writing, persistent caching, and scoped
 vault search/read tools are implemented. Verified related-note links and review-only
-`(EDIT)` suggestions are available when a trusted vault config is supplied. Hermes
-configuration and skill installation remain manual; automated agent orchestration and
-the unattended URL-to-draft workflow are not implemented.
+`(EDIT)` suggestions are available with trusted settings. The installable skill and
+stdio MCP are in `skills/obsidian-ingest/`; host configuration remains user-controlled.
+There is no bundled agent runner. Use a dedicated profile with only this MCP for the
+intended vault boundary; MCP policy does not restrict alternate host tools.
 
 Current capabilities:
 
@@ -24,8 +26,10 @@ Current capabilities:
 - Normalized source metadata, chapters, timestamps, and read-only transcript access.
 - Create-only Markdown drafts with a configurable vault path and relative draft
   folder, defaulting to `00 Inbox/AI Drafts/`.
-- CLI subcommands for transcript output, normalized metadata, and source inspection.
-- MCP tools for source ingestion/navigation and create-only draft writing.
+- CLI commands for every MCP operation, plus transcript output, normalized metadata,
+  and source inspection.
+- An installable `skills/obsidian-ingest/` skill with a skill-local stdio entry point
+  and trusted TOML settings template.
 - Persistent SQLite source caching with stable MCP handles across server/gateway restarts.
 - Optional, trusted TOML vault scopes with bounded note search/read and verified related
   note and edit-suggestion drafts. Vault reads remain disabled with `--vault` alone.
@@ -36,12 +40,12 @@ and TikTok hostnames are recognized, but extraction for those providers is not.
 
 ## Installation And Usage
 
-Requires Python **3.13+** and [uv](https://docs.astral.sh/uv/). From the repository
-root:
+Requires Python **3.13+** and [uv](https://docs.astral.sh/uv/). To prepare the bundled
+skill from the repository root:
 
 ```bash
-uv sync
-uv run obsidian-ingest transcript 'https://www.youtube.com/watch?v=VIDEO_ID'
+uv sync --project skills/obsidian-ingest
+uv run --project skills/obsidian-ingest obsidian-ingest transcript 'https://www.youtube.com/watch?v=VIDEO_ID'
 ```
 
 The current CLI does not run an agent. Available commands:
@@ -50,8 +54,25 @@ The current CLI does not run an agent. Available commands:
 obsidian-ingest transcript URL  # Print timestamped captions
 obsidian-ingest metadata URL    # Print normalized metadata as JSON
 obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
-obsidian-ingest mcp (--vault PATH [--draft-folder PATH] | --config TOML) [--cache-db PATH]
+obsidian-ingest mcp [--vault PATH | --config TOML] [--draft-folder PATH] [--cache-db PATH]
+obsidian-ingest ingest-source URL [--refresh] [--cache-db PATH]
+obsidian-ingest get-source-overview SOURCE_ID
+obsidian-ingest list-chapters SOURCE_ID
+obsidian-ingest list-exclusions SOURCE_ID
+obsidian-ingest read-transcript SOURCE_ID [--start SEC] [--end SEC] [--offset N] [--limit N]
+obsidian-ingest read-chapter SOURCE_ID CHAPTER_INDEX [--offset N] [--limit N]
+obsidian-ingest search-vault [QUERY] [--scope title|content|both] [--cursor TOKEN]
+obsidian-ingest read-vault-note VAULT_RELATIVE_PATH [--revision SHA256] [--offset N]
+obsidian-ingest create-draft SOURCE_ID TITLE CONTENTS [--related-note PATH REVISION REASON]
+obsidian-ingest create-edit-suggestion SOURCE_ID PATH REVISION SUMMARY REASON CONTENTS
 ```
+
+Vault-aware CLI commands use the trusted configuration at
+`skills/obsidian-ingest/config/settings.toml` by default, independent of the current
+working directory; pass `--config` to select another file. Run `obsidian-ingest setup`
+to interactively set the absolute vault root and explicitly choose the permitted scope.
+Setup refuses to overwrite existing settings. CLI note paths are vault-relative and
+revisions are checked on every read.
 
 Extraction requires network access and depends on source and caption availability.
 
@@ -116,7 +137,8 @@ filename, not a duplicate top-level heading in the note. A readable source secti
 is appended with source identity, URL, creator when available, and optional timestamps.
 YouTube timestamps link to the normalized video ID at the corresponding whole second;
 timestamps for other providers remain plain time values.
-Related-note suggestions and vault reads are not yet implemented.
+Related-note links are verified against accessible notes when created. Vault search and
+read operations are available through the configured MCP and CLI adapters.
 
 The writer requires POSIX-style directory-relative filesystem operations,
 `O_NOFOLLOW`/`O_DIRECTORY`, file syncing, and hard-link support on the destination
@@ -136,11 +158,15 @@ stronger isolation requires an operating-system boundary.
 
 ## Local MCP Server
 
-Run the server from a terminal with an existing vault path:
+Prepare trusted settings once, then launch the skill-local server:
 
 ```bash
-uv run obsidian-ingest mcp --vault '/path/to/test-vault'
+uv run --project skills/obsidian-ingest obsidian-ingest setup
+# Answer the vault/scope prompts, then:
+uv run --project skills/obsidian-ingest python skills/obsidian-ingest/mcp/server.py
 ```
+
+For legacy write-only mode, `obsidian-ingest mcp --vault PATH` remains available.
 
 The process communicates over stdio and stores normalized extraction snapshots in a
 local SQLite file using Python's standard-library `sqlite3`. No database server or
@@ -292,13 +318,11 @@ mcp_servers:
     command: uv
     args:
       - run
-      - --directory
-      - /path/to/obsidian-ingest
-      - obsidian-ingest
-      - mcp
-      - --config
-      - /path/to/trusted/obsidian-ingest.toml
-    cwd: /path/to/obsidian-ingest
+      - --project
+      - /path/to/obsidian-ingest/skills/obsidian-ingest
+      - python
+      - mcp/server.py
+    cwd: /path/to/obsidian-ingest/skills/obsidian-ingest
     timeout: 600
     connect_timeout: 30
     tools:
@@ -317,26 +341,28 @@ mcp_servers:
       resources: false
 ```
 
-Restart/reload Hermes after changing its configuration. For a first experiment, use a
-disposable test vault. The MCP server only constrains its own tools; other Hermes tools
-or shell access may independently access paths available to the Hermes process.
+Restart/reload Hermes after changing its configuration. For a first experiment, choose
+an explicit narrow `allowed` scope and review drafts in the configured draft folder;
+do not create dummy notes to test tool connectivity. The MCP server only constrains its
+own tools; other Hermes tools or shell access may independently access paths available
+to the Hermes process.
 The repository curation instructions are in `skills/obsidian-ingest/SKILL.md`; host
 installation and profile selection are manual. To deploy to the host's `obsidian-writer`
 profile without assuming its skill path or service manager:
 
-1. In the host Hermes profile manager, locate the skill file currently selected by
-   `obsidian-writer` and update its contents from this repository's
-   `skills/obsidian-ingest/SKILL.md`. Keep the active profile's skill registration as-is.
-2. Save a trusted TOML file outside the vault and repository with the intended `root`,
-   `allowed`, `excluded`, and `draft_folder`. Validate it on the host from this checkout:
+1. Install `skills/obsidian-ingest/` as a skill in the host profile and prepare its
+   dependencies. Keep skill registration and profile changes manual.
+2. Run `obsidian-ingest setup` from the skill directory and explicitly choose the
+   intended `root`, `allowed`, `excluded`, and `draft_folder`. It creates the ignored
+   local settings file without overwriting an existing one. Validate it:
 
    ```bash
-   uv run python -c 'from pathlib import Path; from obsidian_ingest.config import load_vault_settings; print(load_vault_settings(Path("/absolute/path/to/obsidian-ingest.toml")))'
+   uv run --project . python -c 'from obsidian_ingest.config import default_config_path, load_vault_settings; print(load_vault_settings(default_config_path()))'
    ```
 
-3. In the MCP launch entry used by `obsidian-writer`, replace `--vault /path/to/vault`
-   with `--config /absolute/path/to/obsidian-ingest.toml`. Keep the checkout/workdir and
-   `--cache-db` settings unchanged if present; do not pass `--draft-folder` with `--config`.
+3. In the MCP launch entry used by `obsidian-writer`, use the skill-local `mcp/server.py`
+   command above. It loads `config/settings.toml` relative to its installation, not its
+   working directory. An explicit `--config PATH` remains supported.
 4. Set that profile's MCP tool allowlist to exactly the dedicated tools needed:
    `ingest_source`, `get_source_overview`, `list_chapters`, `list_exclusions`,
    `read_transcript`, `read_chapter`, `create_draft`, `search_vault`, `read_vault_note`,
@@ -388,7 +414,7 @@ To see the source content and tool responses that an agent would receive, withou
 connecting an agent or creating drafts:
 
 ```bash
-uv run python scripts/evaluate.py
+uv run --project skills/obsidian-ingest python scripts/evaluate.py
 ```
 
 By default this reads YouTube IDs from `videos.txt`, connects to the local MCP server
@@ -404,16 +430,16 @@ Optional positional arguments select a manifest, an output directory (created if
 missing), and the delay between videos:
 
 ```bash
-uv run python scripts/evaluate.py videos.txt outputs_archive 2
+uv run --project skills/obsidian-ingest python scripts/evaluate.py videos.txt outputs_archive 2
 ```
 
 ## Development
 
 ```bash
-uv sync
-uv run ruff format src tests scripts
-uv run ruff check src tests scripts
-uv run pytest
+uv sync --project skills/obsidian-ingest
+uv run --project skills/obsidian-ingest ruff format skills/obsidian-ingest/src tests scripts
+uv run --project skills/obsidian-ingest ruff check skills/obsidian-ingest/src tests scripts
+uv run --project skills/obsidian-ingest pytest
 git diff --check
 ```
 

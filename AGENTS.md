@@ -77,10 +77,10 @@ until they are implemented or deliberately dropped.
 For Python changes, run:
 
 ```bash
-uv run ruff format src tests
-uv run ruff format scripts
-uv run ruff check src tests scripts
-uv run pytest
+uv run --project skills/obsidian-ingest ruff format skills/obsidian-ingest/src tests
+uv run --project skills/obsidian-ingest ruff format scripts
+uv run --project skills/obsidian-ingest ruff check skills/obsidian-ingest/src tests scripts
+uv run --project skills/obsidian-ingest pytest
 git diff --check
 ```
 

@@ -1,0 +1,5 @@
+[vault]
+root = "/absolute/path/to/your/vault"
+allowed = ["Notes", "00 Inbox/AI Drafts"]
+excluded = [".obsidian", ".trash", ".git", "Private"]
+draft_folder = "00 Inbox/AI Drafts"
