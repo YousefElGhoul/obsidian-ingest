@@ -22,19 +22,17 @@ synthesis, and note count. There is no bundled agent runner.
 - Persistent SQLite source snapshots preserve source IDs across MCP restarts.
 - Trusted vault scopes provide bounded search/read, verified related links, and
   review-only `(EDIT)` suggestions. Draft publication is create-only and atomic.
-- The exported Hermes trial is reviewed in `.agents-outputs/hermes-trial-review.md`.
-  It produced useful note candidates and a zero-note decision, but exposed tool-call
-  wrapper retries, two accidental test drafts, uneven note structure, and some
-  overlapping candidates.
+- An exported Hermes trial produced useful note candidates and a zero-note decision,
+  but exposed tool-call wrapper retries, accidental test drafts, uneven note structure,
+  and overlapping candidates. Its review artifact is not present in this checkout.
 
 ## Remaining Before Public Alpha
 
-- [ ] Install this skill into the host Hermes profile and launch its bundled
-  `mcp/server.py` from the installed skill directory.
-- [ ] Verify the active ingestion profile exposes only the intended obsidian-ingest
-  tools and has no alternate shell/filesystem/vault tools enabled. MCP restrictions
-  apply only to operations routed through the MCP; OS isolation is optional defense
-  in depth and remains user-controlled.
+- [ ] Run the new installer against a disposable named Hermes 0.22.5 profile and
+  verify effective CLI/TUI tools, skill loading, repeat install, and restore. The
+  isolated Hermes runtime probe timed out while preparing dependencies; no real
+  profile was changed. MCP restrictions apply only to operations routed through the
+  MCP; OS isolation remains user-controlled.
 - [ ] Verify the 20 KiB transcript envelope limit against the active Hermes deployment
   and its spillover behavior.
 - [ ] Run a post-packaging source trial through the installed skill and assess note
@@ -45,7 +43,7 @@ synthesis, and note count. There is no bundled agent runner.
   produce duplicates; dummy-content heuristics are not a safe substitute.
 - [ ] Verify clean install, launch from an unrelated working directory, restart, and
   config preservation when updating the skill.
-- [ ] Update setup instructions only from verified harness behavior; profile changes
+- [ ] Verify the packaged installer from a clean skill installation; profile changes
   stay explicit and user-controlled.
 - [ ] Run format, lint, tests, and `git diff --check` before release.
 - [ ] Publish the scoped alpha. Do not claim a second harness is tested until one has

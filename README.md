@@ -341,45 +341,14 @@ mcp_servers:
       resources: false
 ```
 
-Restart/reload Hermes after changing its configuration. For a first experiment, choose
-an explicit narrow `allowed` scope and review drafts in the configured draft folder;
-do not create dummy notes to test tool connectivity. The MCP server only constrains its
-own tools; other Hermes tools or shell access may independently access paths available
-to the Hermes process.
-The repository curation instructions are in `skills/obsidian-ingest/SKILL.md`; host
-installation and profile selection are manual. To deploy to the host's `obsidian-writer`
-profile without assuming its skill path or service manager:
-
-1. Install `skills/obsidian-ingest/` as a skill in the host profile and prepare its
-   dependencies. Keep skill registration and profile changes manual.
-2. Run `obsidian-ingest setup` from the skill directory and explicitly choose the
-   intended `root`, `allowed`, `excluded`, and `draft_folder`. It creates the ignored
-   local settings file without overwriting an existing one. Validate it:
-
-   ```bash
-   uv run --project . python -c 'from obsidian_ingest.config import default_config_path, load_vault_settings; print(load_vault_settings(default_config_path()))'
-   ```
-
-3. In the MCP launch entry used by `obsidian-writer`, use the skill-local `mcp/server.py`
-   command above. It loads `config/settings.toml` relative to its installation, not its
-   working directory. An explicit `--config PATH` remains supported.
-4. Set that profile's MCP tool allowlist to exactly the dedicated tools needed:
-   `ingest_source`, `get_source_overview`, `list_chapters`, `list_exclusions`,
-   `read_transcript`, `read_chapter`, `create_draft`, `search_vault`, `read_vault_note`,
-   and `create_edit_suggestion`. Disable alternate shell/filesystem routes for this
-   workflow where the host supports it.
-5. Use Hermes' own profile/runtime view to confirm `obsidian-writer` loaded this server
-   and that the active tool list matches the allowlist. The configured MCP should expose
-   all ten tools; starting with `--vault` exposes only the seven source/draft tools.
-6. Restart/reload the gateway instance attached to `obsidian-writer` using the host
-   Hermes control surface that manages that profile. Identify the active instance there;
-   do not assume a gateway name, systemd unit, or restart another profile's service.
-7. Test against a disposable vault: confirm excluded notes do not appear in search or
-   read results, create a related-note draft, and create an `(EDIT)` suggestion. Verify
-   the canonical target note remains byte-for-byte unchanged.
-
-The container cannot inspect or restart the host gateway, validate its real tool
-allowlist, or perform this live test. The MCP access policy itself is not an OS sandbox.
+For Hermes, use `skills/obsidian-ingest/scripts/install-hermes.sh` from the installed
+skill. Ask the user to select a named profile and provide the vault root, allowed paths,
+exclusions, and draft folder before running it; see
+[`skills/obsidian-ingest/references/hermes.md`](skills/obsidian-ingest/references/hermes.md).
+The installer is verified only for Hermes 0.22.5 CLI/TUI profiles and requires a fresh
+session after success. Do not create dummy notes to test connectivity. The MCP server
+only constrains its own tools; other processes with filesystem access can bypass those
+restrictions. Hermes configuration and live agent runs remain user-controlled.
 
 Suggested first test prompt:
 

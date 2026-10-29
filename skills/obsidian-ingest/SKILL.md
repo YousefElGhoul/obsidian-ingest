@@ -67,11 +67,32 @@ Do not create one note per transcript page or chapter.
 
 ## Setup and CLI
 
-The stdio MCP is the recommended interface. Install the skill, prepare dependencies,
-run `obsidian-ingest setup` to choose vault permissions explicitly, and add
-`mcp/server.py` to a dedicated agent profile. Setup creates `config/settings.toml` and
-refuses to overwrite existing settings. See [the Hermes setup guide](references/hermes.md).
-The configuration is relative to this skill directory, not the process working directory.
+The stdio MCP is the recommended interface. For Hermes, ask the user which named
+profile to convert, the vault root, allowed paths, exclusions, and draft folder before
+running the installer. Never infer or broaden vault permissions. From this installed
+skill directory, run `scripts/install-hermes.sh` with the selected profile path and
+those explicit settings, for example:
+
+```bash
+scripts/install-hermes.sh \
+  --profile-home "$HOME/.hermes/profiles/obsidian" \
+  --vault-root "$HOME/Documents/My Vault" \
+  --allow "Projects" --allow "Reference" \
+  --exclude "Projects/Private" \
+  --draft-folder "00 Inbox/AI Drafts"
+```
+
+The command bootstraps `uv` and Python 3.13 user-locally when needed, preserves the
+selected profile's provider/model and existing vault settings, backs up managed
+settings, and archives other profile-local skills rather than deleting them. It
+supports Hermes 0.22.5 CLI/TUI profiles only and stops when it cannot verify the tool
+surface. Run it again to update; use `--restore` to restore the profile's pre-install
+settings. Start a **fresh Hermes session** after installation; the current session is
+not restricted retroactively. See [the Hermes setup guide](references/hermes.md).
+
+The existing `obsidian-ingest setup` command remains available for standalone use and
+prompts before creating `config/settings.toml`. Vault configuration is relative to this
+skill directory, not the process working directory.
 
 For users who intentionally choose CLI execution with their ordinary host permissions,
 `obsidian-ingest --help` exposes equivalent JSON operations. CLI vault note identifiers

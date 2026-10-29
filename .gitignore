@@ -9,19 +9,16 @@ wheels/
 # Virtual environments
 .venv
 
+/.archify/
+/.agent-outputs/
 /skills/obsidian-ingest/config/settings.toml
-
-/run_output_*.txt
-/run_error_*.log
-/run_stderr_*.log
-/.run_output_*
 /videos.txt
 /outputs_archive/
 
 /.env
 /.env.*
 !/.env.example
-/outputs_archive/.experiments/
 
-/.idea
+/.idea/
 /.vscode/
+/.zed/
