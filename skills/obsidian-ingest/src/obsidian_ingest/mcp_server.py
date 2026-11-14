@@ -214,7 +214,7 @@ def create_server(
         source_id: str,
         contents: str,
         filename: str | None = None,
-        timestamps: list[float] | None = None,
+        timestamps: list[float | str] | None = None,
         related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
         """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and timestamps in seconds for the moments cited."""
@@ -267,7 +267,7 @@ def create_server(
             change_summary: str,
             reasoning: str,
             proposed_content: str,
-            timestamps: list[float] | None = None,
+            timestamps: list[float | str] | None = None,
         ) -> dict[str, str]:
             """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section."""
             return responses.write_edit_suggestion(

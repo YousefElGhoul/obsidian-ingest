@@ -112,6 +112,8 @@ until they are implemented or deliberately dropped.
     skill must carry weak models.
   - Run all ingestions in parallel, each in its own fresh session, sending only the
     bare URL; the skill carries the instructions.
+    If the provider rate-limits (HTTP 429) or queues requests, lower the parallelism
+    and record it; a rate-limited run measures the provider, not the skill.
   - Judge drafts by usefulness in a human-first knowledge base / Zettelkasten (atomic,
     own words, linked, worth rereading), not LLM-first wiki criteria.
   - Review the install transcript step by step and each ingest transcript against the

@@ -128,8 +128,21 @@ def test_relative_path_references_require_access_and_match_revision(tmp_path):
         reference = reader.get_path_reference(note["path"], note["revision"])
         assert reference.path == note["path"]
         assert reader.read(reference.note_id)["text"].startswith("A separate note")
+        assert len(note["revision"]) == len("sha256:") + 16
         with pytest.raises(NoteChanged):
-            reader.get_path_reference(note["path"], "sha256:stale")
+            reader.get_path_reference(note["path"], "sha256:0000000000000000")
+        # A truncated copy is reported as a malformed argument, not as a changed note.
+        with pytest.raises(ValueError, match="copied exactly"):
+            reader.get_path_reference(note["path"], note["revision"][:-1])
+        with pytest.raises(ValueError, match="copied exactly"):
+            reader.get_reference(note["note_id"], note["revision"][:-1])
+        # A well-formed revision issued for another note is a mix-up, not a change.
+        other = reader.search("retry", scope="title")["notes"][1]
+        with pytest.raises(ValueError, match="does not belong to this note_id"):
+            reader.read(note["note_id"], revision=other["revision"])
+        (root / note["path"]).write_text("changed by a human", encoding="utf-8")
+        with pytest.raises(NoteChanged):
+            reader.read(note["note_id"], revision=other["revision"])
         with pytest.raises(NoteUnavailable):
             reader.get_path_reference("Private/Secret.md")
 

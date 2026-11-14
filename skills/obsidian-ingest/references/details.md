@@ -49,6 +49,8 @@ authorizes permission changes.
   - Don't write a Source or `## Related Notes` section: the writer adds verified
     provenance and links.
   - `related_notes` items are `{note_id, reason}`.
+  - `timestamps` are seconds or clock times (`"05:12"`, `"1:03:56"`).
+  - Revisions are `sha256:` plus 16 hex digits; copy them exactly.
   - Body wikilinks are kept but not verified.
 - `create_edit_suggestion` writes a review-only `edit-<note>.md` draft that links to the
   verified target. It never edits the target. `proposed_content` holds only the new or

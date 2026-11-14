@@ -155,7 +155,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument(
         "--filename", help="Optional filename; default is the kebab-case slug of the H1"
     )
-    parser.add_argument("--timestamp", type=float, action="append", default=[])
+    parser.add_argument("--timestamp", action="append", default=[], help="seconds or MM:SS")
     parser.add_argument(
         "--related-note",
         nargs=2,
@@ -192,7 +192,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("change_summary")
     parser.add_argument("reasoning")
     parser.add_argument("proposed_content")
-    parser.add_argument("--timestamp", type=float, action="append", default=[])
+    parser.add_argument("--timestamp", action="append", default=[], help="seconds or MM:SS")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
 

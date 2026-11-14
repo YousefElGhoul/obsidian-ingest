@@ -20,9 +20,10 @@ alone nor the install instructions create an OS sandbox.
 
 **Current gate: live Hermes trials.** Code for the former parity, acquisition, and
 curation-guidance milestones is implemented and verified by automated tests and diff
-review. A first restricted-mode install trial succeeded; useful ingestion has not. The
-next actionable item is milestone 1 below: first make weak-model ingestion follow the
-whole workflow, then the remaining setup checks. Trials follow the protocol in
+review. Restricted-mode install trials succeeded, and weak-model ingestion now follows
+the whole workflow: runs 17–19 used Nemotron 3 Ultra, and run 20 rechecked GPT-6 Luna
+(see `trial-reports/`). The next actionable item is milestone 1 below: the remaining
+setup checks. Trials follow the protocol in
 [`AGENTS.md`](AGENTS.md) (Hermes as an `hc` child agent in a throwaway profile with a
 disposable test vault; abort and report if no throwaway profile can be created). Do
 not implement all milestones at once. No staging, commits, or pushes without explicit
@@ -50,6 +51,9 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 - Vault scopes, verified generated links, and create-only drafts and `(EDIT)`
   suggestions exist. Canonical notes must remain untouched throughout this roadmap.
 - `SKILL.md` guides candidate consolidation, existing-note comparison, and attribution.
+  Vault search ranks notes by distinct whole-word matches. Transcript pages are compact
+  rows with `remaining_segments`. Revisions are short (16 hex digits), and the writer
+  rejects multi-H1 drafts and literal `\n` contents.
 - Installation: give an agent the skill's `SKILL.md` link and ask it to install the
   skill and its tools; it follows `references/install.md` (Hermes notes in
   `references/hermes.md`). `obsidian-ingest setup` accepts flags and then never prompts.
@@ -63,23 +67,14 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 
 **Problem:** Automated tests establish deterministic behavior, not that the install
 steps work in a real host or that the guidance produces useful Markdown and UX. The
-first trial (restricted mode, frontier-model install) installed and verified
-correctly; weak-model ingestion mostly failed. Details are in `trial-reports/`.
+restricted-mode install trials installed and verified correctly. Ingestion from a bare URL now
+works from GPT-6 Luna down to Nemotron 3 Ultra. Details are in `trial-reports/`.
 
 **Reuse/change surface:** `SKILL.md`, `references/install.md`, `references/hermes.md`,
 `videos.txt`, and Hermes run per the trial protocol in [`AGENTS.md`](AGENTS.md). Fix
 concrete failures in the smallest relevant place. No agent runner, installer framework,
 or scoring/benchmark framework.
 
-- [ ] Make weak-model ingestion follow the whole workflow from a bare URL. Observed with
-  an open-weight model (Nemotron Ultra): the agent skipped the vault search/comparison
-  and stopped after `ingest_source` to ask what to do. `SKILL.md` now opens by treating
-  a bare URL as a complete request; that change is not yet verified live. Rerun ingestions until drafts or explained
-  zero-note results appear, then inspect the generated files in the test vault:
-  usefulness as Zettelkasten notes, attribution/timestamps, overlap, uncertainty and
-  diagnostics use, related links, edit suggestions, zero-note choices, and preserved
-  canonical notes. Distinguish failures from successful zero-note outcomes; never
-  publish dummy drafts or retry known success.
 - [ ] Validate the remaining install paths in a throwaway profile: trusted CLI/MCP
   mode, installing from a GitHub `SKILL.md` link (clone into a stable location), repeat
   setup without duplicated registrations or broadened scope, and following the

@@ -293,13 +293,38 @@ def _path_result(result: DraftResult) -> dict[str, str]:
     return {"path": str(result.path)}
 
 
+_CLOCK_TIME = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def parse_timestamps(values: tuple[float | str, ...]) -> tuple[float, ...]:
+    """Accept seconds or clock times ("05:12", "1:03:56"): models often send the latter."""
+    parsed: list[float] = []
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            match = _CLOCK_TIME.fullmatch(text)
+            if not match:
+                raise ValueError(
+                    "INVALID_ARGUMENT: timestamps must be seconds (312) or clock times "
+                    "(05:12, 1:03:56)"
+                )
+            if match.group(3) is None:
+                parsed.append(float(text))
+            else:
+                hours = int(match.group(1) or 0)
+                parsed.append(hours * 3600 + int(match.group(2)) * 60 + int(match.group(3)))
+        else:
+            parsed.append(value)
+    return tuple(parsed)
+
+
 def write_draft(
     settings: DraftWriterSettings,
     source: Source,
     *,
     contents: str,
     filename: str | None = None,
-    timestamps: tuple[float, ...] = (),
+    timestamps: tuple[float | str, ...] = (),
     related_notes: list[dict[str, str]] | None = None,
     vault: VaultReader | None = None,
 ) -> dict[str, str]:
@@ -319,7 +344,7 @@ def write_draft(
         contents=contents,
         filename=filename,
         source=source.metadata,
-        timestamps=timestamps,
+        timestamps=parse_timestamps(timestamps),
         related_notes=verified,
     )
     return _path_result(result)
@@ -335,7 +360,7 @@ def write_edit_suggestion(
     change_summary: str,
     reasoning: str,
     proposed_content: str,
-    timestamps: tuple[float, ...] = (),
+    timestamps: tuple[float | str, ...] = (),
 ) -> dict[str, str]:
     result = create_edit_suggestion(
         settings,
@@ -346,6 +371,6 @@ def write_edit_suggestion(
         change_summary=change_summary,
         reasoning=reasoning,
         proposed_content=proposed_content,
-        timestamps=timestamps,
+        timestamps=parse_timestamps(timestamps),
     )
     return _path_result(result)

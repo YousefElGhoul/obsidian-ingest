@@ -693,7 +693,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                                 "revision": selected["revision"],
                             }
                         ],
-                        "timestamps": [125.9],
+                        "timestamps": [125.9, "1:03:56"],
                     },
                 )
             )
@@ -703,6 +703,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                 in related_text
             )
             assert "[02:05](https://www.youtube.com/watch?v=video-123&t=125s)" in related_text
+            assert "[01:03:56](https://www.youtube.com/watch?v=video-123&t=3836s)" in related_text
 
             unicode_search = json.loads(
                 (await client.call_tool("search_vault", {"query": "unicode marker"}))
@@ -788,6 +789,8 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
             )
             assert invalid.is_error
             assert "NOTE_UNAVAILABLE" in invalid.content[0].text
+            assert "'note_unknown'" in invalid.content[0].text
+            assert "search_vault" in invalid.content[0].text
             assert not (vault / "00 Inbox/AI Drafts/broken-link.md").exists()
 
             injected = await client.call_tool(

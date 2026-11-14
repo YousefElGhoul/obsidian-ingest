@@ -614,6 +614,8 @@ def test_cli_publication_is_create_only_with_verified_links(
         "# Retry budget\n\nBody.",
         "--timestamp",
         "1",
+        "--timestamp",
+        "01:05",
         "--related-note",
         "Notes/Fixture 1.md",
         "Shared idea.",
@@ -623,6 +625,7 @@ def test_cli_publication_is_create_only_with_verified_links(
     text = Path(draft["path"]).read_text(encoding="utf-8")
     assert "- [[Notes/Fixture 1.md]]: Shared idea." in text
     assert "[00:01](https://www.youtube.com/watch?v=video-123&t=1s)" in text
+    assert "[01:05](https://www.youtube.com/watch?v=video-123&t=65s)" in text
     assert Path(draft["path"]).name == "retry-budget.md"
     duplicate = _ok(
         monkeypatch, capsys, "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db

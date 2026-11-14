@@ -422,7 +422,8 @@ The configured server adds three tools:
   and/or content; an empty query browses accessible notes, including old AI drafts.
   Query length is limited to 256 characters. `scope` is `title`, `content`, or `both`;
   pages contain at most 20 notes and use an opaque `next_cursor`. Note IDs are
-  server-process scoped. Cursors are stateless continuation tokens, not credentials:
+  server-process scoped. Revisions are `sha256:` plus the first 16 hex digits of the
+  file's SHA-256; a malformed revision is `INVALID_ARGUMENT`, a stale one `NOTE_CHANGED`. Cursors are stateless continuation tokens, not credentials:
   they survive restarts and work across CLI and MCP, are bound to the query, search
   scope, and current vault access policy (root, allowed, excluded), and fail with
   `INVALID_CURSOR` once any of those changes. Every page re-applies the current scope

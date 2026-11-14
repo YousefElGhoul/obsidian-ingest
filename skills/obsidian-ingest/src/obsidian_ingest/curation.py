@@ -43,7 +43,11 @@ def verified_related_notes(
         try:
             reference = vault.get_linkable_reference(note_id)
         except NoteUnavailable as error:
-            raise ValueError("NOTE_UNAVAILABLE: related note is unavailable") from error
+            shown = note_id[:40] if isinstance(note_id, str) else type(note_id).__name__
+            raise ValueError(
+                f"NOTE_UNAVAILABLE: related note {shown!r} is unavailable; use a note_id "
+                "exactly as search_vault returned it in this session, or omit related_notes"
+            ) from error
         if not reference.linkable:
             raise ValueError("NOTE_NOT_LINKABLE: related note has a path that cannot be wikilinked")
         if reference.path in seen:

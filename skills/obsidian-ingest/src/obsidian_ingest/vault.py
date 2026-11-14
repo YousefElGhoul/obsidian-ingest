@@ -13,7 +13,7 @@ import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import NoReturn, Self
 
 from obsidian_ingest.config import VaultSettings
 
@@ -25,6 +25,25 @@ MAX_NOTE_RESPONSE_BYTES = 16 * 1024
 MAX_CURSOR_LENGTH = 4096
 CURSOR_VERSION = 2
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+_REVISION_PATTERN = re.compile(r"sha256:[0-9a-f]{16}")
+
+
+def _revision(digest: hashlib._Hash) -> str:
+    """A short content revision: 64 bits of SHA-256 are plenty to detect a change, and
+    weak models copy 16 hex digits reliably where they often drop one of 64."""
+    return "sha256:" + digest.hexdigest()[:16]
+
+
+def _check_revision_format(revision: str | None) -> None:
+    if revision is not None and (
+        not isinstance(revision, str) or not _REVISION_PATTERN.fullmatch(revision)
+    ):
+        raise ValueError(
+            "INVALID_ARGUMENT: revision must be copied exactly from search_vault or "
+            "read_vault_note (sha256: followed by 16 hex digits)"
+        )
 
 
 @functools.lru_cache(maxsize=256)
@@ -90,6 +109,8 @@ class VaultReader:
         self.root = settings.root.resolve(strict=True)
         self._root_fd = os.open(self.root, _DIRECTORY_FLAGS)
         self._references: dict[str, NoteReference] = {}
+        # CLI path references: their revisions come from earlier processes.
+        self._path_note_ids: set[str] = set()
         try:
             self._validate_settings()
         except BaseException:
@@ -299,7 +320,7 @@ class VaultReader:
                     scan(carry + decoded, first=first, final=True)
         except (OSError, UnicodeDecodeError) as error:
             raise NoteUnavailable from error
-        return "sha256:" + digest.hexdigest(), frozenset(found_terms), snippet
+        return _revision(digest), frozenset(found_terms), snippet
 
     def _register(self, relative: str, revision: str) -> NoteReference:
         note_id = "note_" + secrets.token_urlsafe(18)
@@ -455,8 +476,9 @@ class VaultReader:
         reference = self._references.get(note_id)
         if reference is None:
             raise NoteUnavailable
+        _check_revision_format(revision)
         if revision is not None and revision != reference.revision:
-            raise NoteChanged
+            self._raise_foreign_revision(reference)
         try:
             actual_revision, _, _ = self._scan_file(reference.path)
         except NoteUnavailable as error:
@@ -467,14 +489,31 @@ class VaultReader:
             raise NoteChanged
         return reference
 
+    def _raise_foreign_revision(self, reference: NoteReference) -> NoReturn:
+        """A revision that never belonged to this note_id is a copying mistake, unless the
+        note really changed since the note_id was issued."""
+        try:
+            actual_revision, _, _ = self._scan_file(reference.path)
+        except NoteUnavailable as error:
+            raise NoteUnavailable from error
+        if actual_revision != reference.revision or reference.note_id in self._path_note_ids:
+            raise NoteChanged
+        raise ValueError(
+            "INVALID_ARGUMENT: this revision does not belong to this note_id; pass the "
+            "revision returned with the same note_id, or omit it on a first read"
+        )
+
     def get_path_reference(self, path: str, revision: str | None = None) -> NoteReference:
         """Issue a process-local reference for a trusted vault-relative CLI path."""
         if not isinstance(path, str) or not path.endswith(".md"):
             raise NoteUnavailable
+        _check_revision_format(revision)
         actual_revision, _, _ = self._scan_file(path)
         if revision is not None and revision != actual_revision:
             raise NoteChanged
-        return self._register(path, actual_revision)
+        reference = self._register(path, actual_revision)
+        self._path_note_ids.add(reference.note_id)
+        return reference
 
     def get_linkable_reference(self, note_id: str) -> NoteReference:
         """Revalidate access and existence without pinning ordinary links to a revision."""
@@ -498,7 +537,7 @@ class VaultReader:
                     digest.update(block)
                     total_characters += len(decoder.decode(block))
                 total_characters += len(decoder.decode(b"", final=True))
-                first_revision = "sha256:" + digest.hexdigest()
+                first_revision = _revision(digest)
                 file.seek(0)
                 digest = hashlib.sha256()
                 decoder = codecs.getincrementaldecoder("utf-8")()
@@ -517,7 +556,7 @@ class VaultReader:
                         selected_parts.append(part)
                         chars_remaining -= len(part)
                 decoder.decode(b"", final=True)
-                second_revision = "sha256:" + digest.hexdigest()
+                second_revision = _revision(digest)
         except (OSError, UnicodeDecodeError) as error:
             raise NoteUnavailable from error
         if first_revision != second_revision:
@@ -540,8 +579,9 @@ class VaultReader:
         reference = self._references.get(note_id)
         if reference is None:
             raise NoteUnavailable
+        _check_revision_format(revision)
         if revision is not None and revision != reference.revision:
-            raise NoteChanged
+            self._raise_foreign_revision(reference)
         selected_limit = min(limit, MAX_NOTE_READ_CHARS)
         selected, total_characters, actual_revision = self._read_range(
             reference.path, offset, selected_limit

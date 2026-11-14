@@ -384,6 +384,49 @@ def test_a_leading_h2_and_later_h1_headings_are_kept(
     assert "# Later heading" in later.path.read_text(encoding="utf-8")
 
 
+def test_listed_timestamps_collapse_to_distinct_moments(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    cited = tuple(float(second) for second in range(317, 420, 2)) + (5.0, 600.0)
+    result = create_draft(
+        settings, contents="# Moments\n\nBody.", source=source_metadata, timestamps=cited
+    )
+    listed = result.path.read_text(encoding="utf-8").split("Relevant timestamps: ")[1]
+    assert [link.split("]")[0] for link in listed.split("[")[1:]] == [
+        "00:05",
+        "05:17",
+        "05:47",
+        "06:17",
+        "06:47",
+        "10:00",
+    ]
+
+
+def test_literal_backslash_n_instead_of_line_breaks_is_rejected(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    with pytest.raises(ValueError, match="real line"):
+        create_draft(settings, contents="# Title\\n\\nOne paragraph.", source=source_metadata)
+    kept = create_draft(
+        settings,
+        contents="# Escapes\n\nA regex like `\\n` in prose is fine.",
+        source=source_metadata,
+    )
+    assert "`\\n`" in kept.path.read_text(encoding="utf-8")
+
+
+def test_a_draft_with_several_h1_titles_is_rejected_as_several_ideas(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    contents = "# First idea\n\nBody.\n\n# Second idea\n\nMore.\n\n```\n# not a heading\n```\n"
+    with pytest.raises(ValueError, match="one idea"):
+        create_draft(settings, contents=contents, source=source_metadata)
+    fenced = create_draft(
+        settings, contents="# Only idea\n\n```sh\n# a shell comment\n```\n", source=source_metadata
+    )
+    assert fenced.path.name == "only-idea.md"
+
+
 @pytest.mark.parametrize(
     "contents",
     [

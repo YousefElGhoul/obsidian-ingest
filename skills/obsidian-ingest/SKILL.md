@@ -7,6 +7,8 @@ description: Turn a YouTube URL into a few atomic, linked notes for the user's O
 
 A bare URL is the whole request. Do all the steps below, then report. Do not stop to ask.
 
+Write few notes: usually 0–3 per video, at most 5. A person will review every one.
+
 ## Steps
 
 1. `ingest_source(url)`. Keep the `source_id`.
@@ -14,10 +16,14 @@ A bare URL is the whole request. Do all the steps below, then report. Do not sto
    `next_offset` until it is `null` and `remaining_segments` is 0. Never stop early.
 3. Write down the ideas worth keeping. An idea is something a person would look up
    again months later: a technique, mechanism, tradeoff, gotcha, or mental model that
-   the speaker states. Not ideas: what happens in the video, a lesson you draw from a
-   game or story, and advice anyone would give (keep learning, find a mentor, practice,
-   build soft skills). A let's-play or vlog has none, and neither does a video made only
-   of general career or study advice: write nothing for it.
+   the speaker states. Not ideas: what happens in the video, how a video game works
+   (its mechanics, builds, farms), a lesson you draw from a game or story, and advice
+   anyone would give (keep learning, find a mentor, practice, build soft skills). A
+   let's-play or vlog has none, and neither does a video made only of general career
+   or study advice: write nothing for it. Keep only the 0–3 ideas
+   most worth rereading (at most 5 for a long tutorial). Small facts about one tool or
+   API belong together in one note about the technique they serve, not a note each. If
+   two notes would share most of their explanation, write one.
 4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with
@@ -28,10 +34,11 @@ A bare URL is the whole request. Do all the steps below, then report. Do not sto
 5. For each idea, decide:
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. `proposed_content` is only the
-     new or changed lines, never a copy of the whole note.
+     new or changed lines, never a copy of the whole note or a summary of the video.
    - A tip you can state in one sentence (a command, shortcut, flag or setting) →
-     add it to that edit if you found a list note of such tips; otherwise put all of
-     the video's one-sentence tips together in one draft. Never one draft per tip.
+     tips for the same tool belong together. If any search found a list note of tips
+     for that tool, add every such tip from the video to its edit suggestion, including
+     tips whose own search found nothing. Otherwise write nothing for them.
    - The idea is new → `create_draft`. Pass `related_notes` for notes from step 4 that
      a reader of this note would want to open next:
      `[{"note_id": "<id from search_vault>", "reason": "<what that note adds>"}]`.
@@ -39,8 +46,9 @@ A bare URL is the whole request. Do all the steps below, then report. Do not sto
      `Kubernetes` note for a Kubernetes idea). Never link a note only because it
      shares a word or a broad theme; no link is fine.
    - The idea is already covered or weak → write nothing.
-6. Report: the searches you ran, each idea, your choice for it, and the paths the tools
-   returned. Never list a note you did not create. If you wrote nothing, say why.
+6. Only after every `create_draft` and `create_edit_suggestion` you chose has returned
+   a path, report: the searches you ran, each idea, your choice for it, and those
+   paths. Never list a note you did not create. If you wrote nothing, say why.
 
 ## How a note looks
 
@@ -56,10 +64,12 @@ example (05:12) or (1:03:56).
   write one note per chapter. A one-line tip is never a note of its own.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, and no source
   section: the tool adds the source and the related links.
-- Also pass the timestamps you cite as `timestamps`, in seconds (05:12 → 312). The tool
+- Also pass the timestamps you cite as `timestamps` (seconds or "05:12"). The tool
   turns them into video links.
 - Only what the source says. Attribute opinions to the speaker by the person or channel
-  name the video gives, not "the speaker". Do not end with a moral or lesson of your
+  name the video gives, not "the speaker". Rankings, "best" and "replace X with Y"
+  claims are opinions too: "The Coding Sloth ranks verification highest", not
+  "Verification is the most important workflow". Do not end with a moral or lesson of your
   own; if you add anything, label it as your comment.
 - Zero notes is a fine result.
 

@@ -190,7 +190,7 @@ def _render_draft(
         lines.append(f"- Creator: {single_line(source.creator_name)}")
     if timestamps:
         formatted = []
-        for timestamp in timestamps:
+        for timestamp in _distinct_moments(timestamps):
             if source.provider == Provider.YOUTUBE:
                 seconds = int(timestamp)
                 url = "https://www.youtube.com/watch?" + urlencode(
@@ -203,6 +203,23 @@ def _render_draft(
         lines.append(f"- Relevant timestamps: {values}")
     separator = "" if not rendered_body else "\n" if rendered_body.endswith("\n") else "\n\n"
     return f"{rendered_body}{separator}{'\n'.join(lines)}\n".encode()
+
+
+TIMESTAMP_GAP_SECONDS = 30
+MAX_LISTED_TIMESTAMPS = 8
+
+
+def _distinct_moments(timestamps: tuple[float, ...]) -> tuple[float, ...]:
+    """List distinct moments: weak models often cite every caption line of one passage.
+
+    Keeps the earliest of timestamps closer than TIMESTAMP_GAP_SECONDS, in time order,
+    up to MAX_LISTED_TIMESTAMPS. Inline timestamps in the body are left untouched.
+    """
+    kept: list[float] = []
+    for timestamp in sorted(timestamps):
+        if not kept or timestamp - kept[-1] >= TIMESTAMP_GAP_SECONDS:
+            kept.append(timestamp)
+    return tuple(kept[:MAX_LISTED_TIMESTAMPS])
 
 
 def _validate_note_link_path(path: str) -> None:
@@ -229,6 +246,7 @@ def _validate_body(contents: str) -> None:
     lines = contents.splitlines()
     in_fence = False
     fence_marker = ""
+    h1_count = 0
     for index, line in enumerate(lines):
         stripped = line.lstrip(" ")
         if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
@@ -252,6 +270,13 @@ def _validate_body(contents: str) -> None:
             if previous_title.casefold() == "related notes":
                 raise ValueError("Related Notes must be generated from verified note references")
         heading = _ATX_HEADING.match(line)
+        if heading and heading.group(1) == "#":
+            h1_count += 1
+            if h1_count > 1:
+                raise ValueError(
+                    "contents have more than one H1 title; a draft holds one idea, so "
+                    "call create_draft once per idea"
+                )
         heading_text = heading.group(2) if heading else None
         if heading_text is not None:
             heading_text = re.sub(r"[ \t]+#+[ \t]*$", "", heading_text).strip()
@@ -405,6 +430,11 @@ def create_draft(
     The configured directory tree must not be concurrently moved or modified by an
     untrusted process.
     """
+    if isinstance(contents, str) and "\n" not in contents and "\\n" in contents:
+        raise ValueError(
+            "contents contain the characters \\n instead of line breaks; send real line "
+            "breaks between the title and paragraphs"
+        )
     stem = _draft_stem(filename, contents)
     if isinstance(contents, str):
         contents = _strip_trailing_source_section(contents)
