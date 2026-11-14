@@ -1,0 +1,134 @@
+# Installing Obsidian Ingest
+
+Instructions for an agent asked to "install this skill and its tools", usually given
+only a link to this skill's `SKILL.md`. Follow the steps in order. Ask the user only for
+the choices in step 1; everything else is discovered or fixed below.
+
+Harness notes: [Hermes](hermes.md). For another harness, apply the same steps with that
+harness's own documented commands for registering a stdio MCP server, enabling a skill,
+and limiting tools.
+
+## 1. Ask for the user's choices, once
+
+Ask in a single message, and reuse any answer the user already gave:
+
+- Profile or session to configure (on Hermes, a named profile).
+- **Restricted** or **trusted** mode:
+  - Restricted: curation sessions expose only this skill's MCP tools; shell,
+    filesystem, delegation, and other vault-capable tools are disabled.
+  - Trusted: normal host tools stay on, and the agent may use the CLI or MCP.
+  Neither mode is an OS sandbox, and both writers are create-only.
+- Absolute vault root, allowed vault paths (`*` for all), excluded paths, and draft
+  folder (default `00 Inbox/AI Drafts`). An excluded path must not also be listed as
+  allowed; to hide part of an allowed folder, exclude a subfolder of it.
+
+Never infer a vault, broaden scope, or switch mode without the user's approval.
+
+## 2. Obtain the skill
+
+The skill directory must stay writable: it holds `config/settings.toml` and `.venv`.
+
+- From a GitHub link such as
+  `https://github.com/<owner>/<repo>/blob/<branch>/skills/obsidian-ingest/SKILL.md`,
+  clone the repository once into a stable location outside the vault and outside any
+  temporary directory, for example
+  `git clone --depth 1 --branch <branch> https://github.com/<owner>/<repo> ~/.local/share/obsidian-ingest/<repo>`.
+  The skill directory is `<clone>/skills/obsidian-ingest`.
+- If a skill directory already exists (a local path, a previous install, or the skills
+  CLI `npx skills add <owner>/<repo> --skill obsidian-ingest`), reuse it. Update it with
+  `git -C <clone> pull --ff-only`; trusted settings are gitignored and survive updates.
+
+Then make the skill visible to the harness. Prefer a symlink from the harness's skills
+directory to the skill directory over copying, so updates and settings stay in one
+place. If a different skill of the same name already exists there, stop and ask.
+
+## 3. Show the plan, get approval, back up
+
+Before changing anything, list the changes from steps 4 to 6 and ask for approval in
+one message. Then back up every host configuration file you will edit (for example
+`config.yaml.before-obsidian-ingest-<timestamp>`). Preserve provider, model,
+credentials, other profiles, and other skills. Do not print credentials.
+
+## 4. Prepare the runtime and settings
+
+With `<skill>` as the absolute skill directory:
+
+```bash
+uv sync --project <skill> --locked --no-dev
+uv run --no-dev --project <skill> obsidian-ingest setup \
+  --vault-root <vault> --allow <path> [--allow <path> ...] \
+  [--exclude <path> ...] [--draft-folder <folder>]
+```
+
+Always pass `--no-dev` to `uv run`; otherwise uv installs the development tools on
+every launch. `setup` with flags never prompts, validates the scope against the vault,
+writes `<skill>/config/settings.toml` with mode `0600`, and refuses to overwrite an
+existing file. If settings already exist, show them and ask before any reconfiguration.
+Do not read note contents during setup.
+
+Choose a source cache file outside the vault and the repository, for example
+`~/.local/state/obsidian-ingest/sources.sqlite3` (the default). If a source tool later
+reports `SOURCE_CACHE_ERROR`, show its reset steps and ask before deleting anything.
+
+## 5. Register the MCP server
+
+Register one local stdio server named `obsidian-ingest`, with absolute paths:
+
+```text
+command: <absolute path to uv>
+args:    run --no-dev --project <skill> python <skill>/mcp/server.py
+         --config <skill>/config/settings.toml [--cache-db <cache file>]
+```
+
+Allow exactly these ten tools: `ingest_source`, `get_source_overview`,
+`list_chapters`, `list_exclusions`, `read_transcript`, `read_chapter`,
+`create_draft`, `search_vault`, `read_vault_note`, `create_edit_suggestion`. Disable
+MCP resources and prompts. If the server reports a different tool list, use what it
+reports and tell the user. In trusted CLI-only mode, registration is optional: use
+`uv run --no-dev --project <skill> obsidian-ingest --help`.
+
+## 6. Restrict (restricted mode only)
+
+Use the harness's supported settings, not its internal source code.
+
+**Never disable the harness's skills toolset or skill loader** (on Hermes, the `skills`
+toolset). Many harnesses put a skill into the agent's context only when that toolset is
+on; without it the agent gets the MCP tools but never sees `SKILL.md`, while the banner
+still says the skill is active. If the toolset can also edit skills, require the user's
+approval for skill edits (on Hermes, `skills.write_approval true`) instead of
+disabling it.
+
+Then:
+
+- Disable shell, file, code execution, browser, web, computer use, delegation or
+  subagents, scheduling, cross-profile task boards, connector management, and tool
+  search or discovery features that could re-enable tools.
+- Disable the profile's other MCP servers. Keep their registrations.
+- Load only this skill in curation sessions, and disable other note-taking or
+  knowledge-base skills (for example `obsidian`, `personal-knowledge`, `llm-wiki`).
+- Make curation sessions start with exactly two toolsets: this MCP server's and the
+  skills toolset.
+
+Do not lock yourself out mid-setup: change the curation profile's settings, but run the
+final check in a fresh session. In trusted mode, change nothing in this step.
+
+## 7. Verify with the harness's own commands
+
+- The MCP server connects and lists the ten tools (on Hermes: `mcp test`).
+- A fresh session started from an unrelated directory loads the skill and exposes only
+  the intended tools. Prefer the harness's own tool listing or banner. If those
+  disagree, say so instead of writing scripts against the harness's internals.
+- The settings load and the paths resolve as configured.
+- The curation agent has the skill text: in a fresh session, ask without tools what it
+  must do before writing a note. The answer must be this skill's step 4 (search the
+  vault and read the closest notes). A banner saying the skill is active is not proof.
+
+Do not create test notes, call `create_draft`, or ingest a source to test connectivity.
+
+## 8. Report
+
+Report the mode and profile, the skill, settings, and cache locations, every command and
+setting changed, the backups, each check with its result, the exact command to start a
+curation session, and concrete undo steps. State what was not verified. Do not claim an
+OS sandbox, support for every harness version, or restriction of already-running
+sessions. On a repeat install, reuse valid configuration rather than duplicating it.

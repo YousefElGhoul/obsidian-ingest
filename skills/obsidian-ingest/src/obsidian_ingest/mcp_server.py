@@ -178,7 +178,7 @@ def create_server(
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> str:
-        """Read compact JSON pages; follow next_offset until null. Whole atoms are preserved."""
+        """Read compact JSON pages; follow next_offset until null (remaining_segments 0). Whole atoms are preserved."""
         page = responses.transcript_page(
             load_source(source_id),
             start=start,
@@ -198,7 +198,7 @@ def create_server(
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> str:
-        """Read compact JSON chapter pages; follow next_offset until null."""
+        """Read compact JSON chapter pages; follow next_offset until null (remaining_segments 0)."""
         page = responses.chapter_page(
             load_source(source_id),
             chapter_index,
@@ -212,17 +212,17 @@ def create_server(
     @_tool_errors
     def create_draft(
         source_id: str,
-        title: str,
         contents: str,
+        filename: str | None = None,
         timestamps: list[float] | None = None,
         related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
-        """Create a source-attributed draft; contents is the Markdown body only, with no title H1 or source section."""
+        """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and timestamps in seconds for the moments cited."""
         return responses.write_draft(
             settings,
             load_source(source_id),
-            title=title,
             contents=contents,
+            filename=filename,
             timestamps=tuple(timestamps or ()),
             related_notes=[dict(item) for item in related_notes] if related_notes else None,
             vault=vault,
@@ -238,7 +238,7 @@ def create_server(
             cursor: str | None = None,
             limit: int = DEFAULT_SEARCH_LIMIT,
         ) -> str:
-            """Search accessible Markdown note titles and content; empty query browses notes."""
+            """Search note filenames and content. Each query word is matched on its own as a whole word; notes matching the most distinct words come first, with matched_terms listed. Use specific words, not common ones. Empty query browses notes."""
             return compact_json(
                 responses.search_vault(vault, query, scope=scope, cursor=cursor, limit=limit)
             )
@@ -269,7 +269,7 @@ def create_server(
             proposed_content: str,
             timestamps: list[float] | None = None,
         ) -> dict[str, str]:
-            """Create a review-only (EDIT) draft for a verified accessible note; never changes it."""
+            """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section."""
             return responses.write_edit_suggestion(
                 settings,
                 load_source(source_id),

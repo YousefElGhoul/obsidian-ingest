@@ -116,7 +116,7 @@ def test_evaluate_video_records_all_source_tool_content_without_writing_drafts()
     assert report["url"] == _URL
     assert all("include_excluded" not in arguments for _, arguments in session.calls)
     assert all(
-        arguments["limit"] == 80
+        arguments["limit"] == 200
         for name, arguments in session.calls
         if name in {"read_transcript", "read_chapter"}
     )

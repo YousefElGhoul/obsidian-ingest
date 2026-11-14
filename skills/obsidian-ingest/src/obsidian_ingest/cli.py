@@ -149,8 +149,12 @@ def _tool_parsers(subparsers) -> None:
 
     parser = subparsers.add_parser("create-draft", help="Create a source-attributed Markdown draft")
     parser.add_argument("source_id")
-    parser.add_argument("title")
-    parser.add_argument("contents", help="Markdown body only; no H1 or source section")
+    parser.add_argument(
+        "contents", help="Markdown starting with an H1 title (any characters); no source section"
+    )
+    parser.add_argument(
+        "--filename", help="Optional filename; default is the kebab-case slug of the H1"
+    )
     parser.add_argument("--timestamp", type=float, action="append", default=[])
     parser.add_argument(
         "--related-note",
@@ -162,7 +166,10 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
 
-    parser = subparsers.add_parser("search-vault", help="Search accessible Markdown notes")
+    parser = subparsers.add_parser(
+        "search-vault",
+        help="Search accessible notes; each whole word matches on its own, most matched words first",
+    )
     parser.add_argument("query", nargs="?", default="")
     parser.add_argument("--scope", choices=("title", "content", "both"), default="both")
     parser.add_argument("--cursor", help="next_cursor from an earlier search with the same query")
@@ -190,23 +197,41 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--cache-db", type=Path)
 
 
-def _setup(destination: Path, input_fn=input) -> Path:
+def _split(values: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in values.split(",") if item.strip())
+
+
+def _setup(
+    destination: Path,
+    input_fn=input,
+    *,
+    vault_root: str | None = None,
+    allowed: tuple[str, ...] = (),
+    excluded: tuple[str, ...] | None = None,
+    draft_folder: str | None = None,
+) -> Path:
+    """Create settings from explicit flags, prompting only when no vault root was given."""
     from obsidian_ingest.config import VaultSettings
     from obsidian_ingest.vault import VaultReader
 
     if destination.exists():
         raise ValueError(f"Refusing to overwrite existing settings: {destination}")
-    root_value = input_fn("Absolute path to the existing Obsidian vault: ").strip()
-    root = Path(root_value).expanduser()
+    interactive = vault_root is None
+    if interactive:
+        vault_root = input_fn("Absolute path to the existing Obsidian vault: ")
+    root = Path(vault_root.strip()).expanduser()
     if not root.is_absolute() or not root.is_dir():
         raise ValueError("Vault root must be an existing absolute directory")
-    allowed_values = input_fn(
-        "Allowed vault paths (comma-separated; enter * only to allow all notes): "
-    )
-    allowed = tuple(item.strip() for item in allowed_values.split(",") if item.strip())
-    excluded_values = input_fn("Excluded vault paths (comma-separated, or blank): ")
-    excluded = tuple(item.strip() for item in excluded_values.split(",") if item.strip())
-    draft_folder = input_fn("Draft folder [00 Inbox/AI Drafts]: ").strip() or "00 Inbox/AI Drafts"
+    if interactive:
+        allowed = _split(
+            input_fn("Allowed vault paths (comma-separated; enter * only to allow all notes): ")
+        )
+        excluded = _split(input_fn("Excluded vault paths (comma-separated, or blank): "))
+        draft_folder = input_fn("Draft folder [00 Inbox/AI Drafts]: ").strip()
+    elif not allowed:
+        raise ValueError("Non-interactive setup needs at least one --allow path")
+    excluded = excluded or ()
+    draft_folder = draft_folder or "00 Inbox/AI Drafts"
     settings = VaultSettings(root.resolve(strict=True), allowed, excluded, draft_folder)
     with VaultReader(settings):
         pass
@@ -252,6 +277,16 @@ def main() -> None:
 
     setup_parser = subparsers.add_parser("setup", help="Create trusted skill-local vault settings")
     setup_parser.add_argument("--config", type=Path, default=default_config_path())
+    setup_parser.add_argument(
+        "--vault-root", help="Existing absolute vault path; with it, setup never prompts"
+    )
+    setup_parser.add_argument(
+        "--allow", action="append", default=[], help="Allowed vault path (repeatable; * = all)"
+    )
+    setup_parser.add_argument(
+        "--exclude", action="append", default=[], help="Excluded vault path (repeatable)"
+    )
+    setup_parser.add_argument("--draft-folder", help="Default: 00 Inbox/AI Drafts")
 
     _tool_parsers(subparsers)
     args = parser.parse_args()
@@ -267,7 +302,13 @@ def main() -> None:
     elif args.command == "mcp":
         _run_mcp(args.vault, args.draft_folder, args.cache_db, config_path=args.config)
     elif args.command == "setup":
-        destination = _setup(args.config)
+        destination = _setup(
+            args.config,
+            vault_root=args.vault_root,
+            allowed=tuple(args.allow),
+            excluded=tuple(args.exclude),
+            draft_folder=args.draft_folder,
+        )
         print(f"Saved trusted settings to {destination}")
     else:
         try:
@@ -360,8 +401,8 @@ def _run_write_command(args, source) -> dict[str, str]:
             return responses.write_draft(
                 writer_settings,
                 source,
-                title=args.title,
                 contents=args.contents,
+                filename=args.filename,
                 timestamps=tuple(args.timestamp),
                 related_notes=related,
                 vault=vault,

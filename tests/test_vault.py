@@ -114,7 +114,7 @@ def test_search_cursor_is_stateless_but_bound_to_access_policy(tmp_path):
     cursor = first["next_cursor"]
     decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8")
     version, fingerprint, query, scope, offset = json.loads(decoded)
-    assert (version, query, scope, offset) == (1, "retry", "both", 1)
+    assert (version, query, scope, offset) == (2, "retry", "both", 1)
     assert len(fingerprint) == 32 and all(char in "0123456789abcdef" for char in fingerprint)
     # The decoded payload reveals neither the vault root nor the configured scope.
     for secret in (str(root), str(root.resolve()), root.name, "Private"):
@@ -217,6 +217,77 @@ def test_content_search_matches_terms_crossing_stream_chunks(tmp_path):
         assert "boundary" in results["notes"][0]["snippet"]
 
 
+def test_search_matches_each_word_and_ranks_by_distinct_words_matched(tmp_path):
+    root = _vault(tmp_path)
+    (root / "Engineering/Backoff.md").write_text(
+        "Exponential backoff spaces each retry; add jitter.", encoding="utf-8"
+    )
+    with VaultReader(_settings(root)) as reader:
+        results = reader.search("retry RETRY jitter budget unrelatedword")
+        ranked = [(item["path"], item["matched_terms"]) for item in results["notes"]]
+        assert ranked == [
+            ("Engineering/Retry Policies.md", ["retry", "budget"]),
+            ("Engineering/Backoff.md", ["retry", "jitter"]),
+            ("Computer Science/Retry Policies.md", ["retry"]),
+        ]
+        assert reader.search("unrelatedword nothing")["notes"] == []
+
+
+def test_search_matches_whole_words_only(tmp_path):
+    root = _vault(tmp_path)
+    (root / "Go.md").write_text("go", encoding="utf-8")
+    (root / "Algorithms.md").write_text(
+        "Going through an algorithm, borrowing a row.", encoding="utf-8"
+    )
+    (root / "Tools.md").write_text("Use os.ReadDir and pg_trgm (Go-style).", encoding="utf-8")
+    with VaultReader(_settings(root)) as reader:
+        paths = {item["path"] for item in reader.search("go", scope="content")["notes"]}
+        assert paths == {"Go.md", "Tools.md"}
+        assert [item["path"] for item in reader.search("row")["notes"]] == ["Algorithms.md"]
+        assert [item["path"] for item in reader.search("os.readdir pg_trgm")["notes"]] == [
+            "Tools.md"
+        ]
+        assert reader.search("algo")["notes"] == []
+        assert [item["path"] for item in reader.search("- row --")["notes"]] == ["Algorithms.md"]
+        assert [item["path"] for item in reader.search("algorithms", scope="title")["notes"]] == [
+            "Algorithms.md"
+        ]
+
+
+def test_whole_word_search_is_correct_across_stream_chunks(tmp_path):
+    root = _vault(tmp_path)
+    block = 64 * 1024
+    # End side: "go" ends exactly at the first block and the next block continues it.
+    end_text = "y" * (block - 3) + " go" + "ing on"
+    # Start side: the carried text starts at "go", but the character before it is "a".
+    start = block - 240
+    start_text = "y" * (start - 2) + " a" + "go" + " " * (block - start - 2) + "end"
+    (root / "End.md").write_text(end_text, encoding="utf-8")
+    (root / "Start.md").write_text(start_text, encoding="utf-8")
+    (root / "Tail.md").write_text("y" * (block - 3) + " go", encoding="utf-8")
+    with VaultReader(_settings(root)) as reader:
+        paths = {item["path"] for item in reader.search("go", scope="content")["notes"]}
+        assert paths == {"Tail.md"}
+
+
+def test_search_ranking_is_stable_across_cursor_pages(tmp_path):
+    root = _vault(tmp_path)
+    (root / "Engineering/Backoff.md").write_text("retry jitter budget", encoding="utf-8")
+    with VaultReader(_settings(root)) as reader:
+        paths = []
+        cursor = None
+        while True:
+            page = reader.search("retry jitter budget", limit=1, cursor=cursor)
+            paths.extend(item["path"] for item in page["notes"])
+            if (cursor := page["next_cursor"]) is None:
+                break
+        assert paths == [
+            "Engineering/Backoff.md",
+            "Engineering/Retry Policies.md",
+            "Computer Science/Retry Policies.md",
+        ]
+
+
 def test_configuration_validates_paths_scope_and_draft_destination(tmp_path):
     root = _vault(tmp_path)
     config = tmp_path / "config.toml"
@@ -233,7 +304,7 @@ def test_configuration_validates_paths_scope_and_draft_destination(tmp_path):
         f'[vault]\nroot = "{root}"\nallowed = ["Engineering"]\nexcluded = ["Engineering"]\n',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="Allowed path is missing or unsafe"):
+    with pytest.raises(ValueError, match="Allowed path is also excluded: Engineering"):
         VaultReader(load_vault_settings(config))
 
     config.write_text(

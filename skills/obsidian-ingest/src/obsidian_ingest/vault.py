@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import codecs
+import functools
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 from dataclasses import dataclass
@@ -21,8 +23,14 @@ MAX_SNIPPET_CHARS = 240
 MAX_NOTE_READ_CHARS = 8000
 MAX_NOTE_RESPONSE_BYTES = 16 * 1024
 MAX_CURSOR_LENGTH = 4096
-CURSOR_VERSION = 1
+CURSOR_VERSION = 2
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+@functools.lru_cache(maxsize=256)
+def _word_pattern(term: str) -> re.Pattern[str]:
+    """Match a casefolded term only where it is not part of a longer word."""
+    return re.compile(r"(?<!\w)" + re.escape(term) + r"(?!\w)")
 
 
 class NoteUnavailable(RuntimeError):
@@ -161,6 +169,11 @@ class VaultReader:
         for allowed in self.settings.allowed:
             if allowed == "*":
                 continue
+            if self._excluded(allowed):
+                raise ValueError(
+                    f"Allowed path is also excluded: {allowed}; remove it from one list, or "
+                    "exclude only a subfolder of it"
+                )
             try:
                 fd = self._open_relative(allowed)
             except NoteUnavailable as error:
@@ -241,40 +254,52 @@ class VaultReader:
 
     def _scan_file(
         self, relative: str, terms: tuple[str, ...] = (), *, search_content: bool = False
-    ) -> tuple[str, bool, str]:
+    ) -> tuple[str, frozenset[str], str]:
+        """Hash a note and return which search terms its content contains as whole words."""
         fd = self._open_relative(relative)
         digest = hashlib.sha256()
         decoder = codecs.getincrementaldecoder("utf-8")()
+        patterns = {term: _word_pattern(term) for term in terms} if search_content else {}
         carry = ""
         found_terms: set[str] = set()
         snippet = ""
-        carry_length = max(MAX_SNIPPET_CHARS, max((len(term) for term in terms), default=0))
+        # Keep enough text to re-find a term cut by a block boundary, plus one
+        # character on each side for the word-boundary checks.
+        carry_length = max(MAX_SNIPPET_CHARS, max((len(term) for term in terms), default=0) + 2)
+
+        def scan(text: str, *, first: bool, final: bool) -> None:
+            nonlocal snippet
+            folded = text.casefold()
+            for term, pattern in patterns.items():
+                if term in found_terms:
+                    continue
+                for match in pattern.finditer(folded):
+                    # A match touching either edge of a carried block may be part of a
+                    # longer word; it is decided in the block that holds both neighbours.
+                    if (first or match.start() > 0) and (final or match.end() < len(folded)):
+                        found_terms.add(term)
+                        if not snippet:
+                            snippet = self._snippet(text, match.start())
+                        break
+
         try:
             with os.fdopen(fd, "rb") as file:
+                first = True
                 while block := file.read(64 * 1024):
                     digest.update(block)
                     decoded = decoder.decode(block)
-                    if search_content:
+                    if patterns:
                         combined = carry + decoded
-                        folded = combined.casefold()
-                        for term in terms:
-                            if term not in found_terms and term in folded:
-                                found_terms.add(term)
-                                if not snippet:
-                                    snippet = self._snippet(combined, (term,))
+                        scan(combined, first=first, final=False)
+                        # The carry still starts at the file's start if nothing was cut.
+                        first = first and len(combined) <= carry_length
                         carry = combined[-carry_length:]
                 decoded = decoder.decode(b"", final=True)
-                if search_content:
-                    combined = carry + decoded
-                    folded = combined.casefold()
-                    for term in terms:
-                        if term not in found_terms and term in folded:
-                            found_terms.add(term)
-                            if not snippet:
-                                snippet = self._snippet(combined, (term,))
+                if patterns:
+                    scan(carry + decoded, first=first, final=True)
         except (OSError, UnicodeDecodeError) as error:
             raise NoteUnavailable from error
-        return "sha256:" + digest.hexdigest(), all(term in found_terms for term in terms), snippet
+        return "sha256:" + digest.hexdigest(), frozenset(found_terms), snippet
 
     def _register(self, relative: str, revision: str) -> NoteReference:
         note_id = "note_" + secrets.token_urlsafe(18)
@@ -344,39 +369,55 @@ class VaultReader:
         ):
             raise ValueError(f"INVALID_ARGUMENT: limit must be between 1 and {MAX_SEARCH_LIMIT}")
         offset = self._decode_cursor(cursor, query, scope) if cursor is not None else 0
-        terms = tuple(term.casefold() for term in query.split())
-        page = []
-        matched = 0
-        for relative in self._paths():
+        # Each word is matched on its own as a whole word; notes matching more distinct
+        # words rank first.
+        # Words without a letter or digit (such as "-") would match almost every note.
+        terms = tuple(
+            dict.fromkeys(
+                term.casefold() for term in query.split() if any(c.isalnum() for c in term)
+            )
+        )
+        candidates = []
+        for position, relative in enumerate(self._paths()):
             try:
-                revision, content_matches, snippet = self._scan_file(
+                revision, content_terms, snippet = self._scan_file(
                     relative, terms, search_content=scope != "title" and bool(terms)
                 )
             except NoteUnavailable:
                 continue
             title = Path(relative).stem
-            title_matches = all(term in title.casefold() for term in terms)
-            found = (
-                not terms
-                or (scope == "title" and title_matches)
-                or (scope == "content" and content_matches)
-                or (scope == "both" and (title_matches or content_matches))
+            folded_title = title.casefold()
+            title_terms = frozenset(
+                term for term in terms if _word_pattern(term).search(folded_title)
             )
-            if not found:
+            if scope == "title":
+                found = title_terms
+            elif scope == "content":
+                found = content_terms
+            else:
+                found = title_terms | content_terms
+            if terms and not found:
                 continue
-            if matched >= offset and len(page) < limit:
-                reference = self._register(relative, revision)
-                page.append(
-                    {
-                        "note_id": reference.note_id,
-                        "path": relative,
-                        "title": title,
-                        "revision": reference.revision,
-                        "snippet": snippet if content_matches else "",
-                        "linkable": reference.linkable,
-                    }
-                )
-            matched += 1
+            rank = (-len(found), -len(title_terms), position)
+            candidates.append((rank, relative, title, revision, snippet, content_terms, found))
+        candidates.sort(key=lambda candidate: candidate[0])
+        matched = len(candidates)
+        page = []
+        for _, relative, title, revision, snippet, content_terms, terms_found in candidates[
+            offset : offset + limit
+        ]:
+            reference = self._register(relative, revision)
+            page.append(
+                {
+                    "note_id": reference.note_id,
+                    "path": relative,
+                    "title": title,
+                    "revision": reference.revision,
+                    "matched_terms": [term for term in terms if term in terms_found],
+                    "snippet": snippet if content_terms else "",
+                    "linkable": reference.linkable,
+                }
+            )
         next_offset = offset + len(page)
         has_more = matched > next_offset
         had_page = bool(page)
@@ -404,11 +445,7 @@ class VaultReader:
         return {"notes": [], "limit": limit, "next_cursor": None}
 
     @staticmethod
-    def _snippet(content: str, terms: tuple[str, ...]) -> str:
-        if not terms:
-            return ""
-        folded = content.casefold()
-        position = min((found for term in terms if (found := folded.find(term)) >= 0), default=0)
+    def _snippet(content: str, position: int) -> str:
         start = max(0, position - MAX_SNIPPET_CHARS // 3)
         return content[start : start + MAX_SNIPPET_CHARS].replace("\n", " ")
 

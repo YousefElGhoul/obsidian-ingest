@@ -26,8 +26,8 @@ from obsidian_ingest.source import (
 from obsidian_ingest.source_cache import SourceCache, SourceCacheError
 from obsidian_ingest.vault import NoteChanged, NoteUnavailable, VaultReader
 
-DEFAULT_PAGE_SIZE = 40
-MAX_PAGE_SIZE = 80
+DEFAULT_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 200
 MAX_PAGE_ENVELOPE_BYTES = 20 * 1024
 # Leave room for the surrounding JSON-RPC result and server metadata.
 ENVELOPE_HEADROOM_BYTES = 1024
@@ -182,15 +182,21 @@ def exclusions(source: Source) -> list[dict[str, Any]]:
     ]
 
 
+SEGMENT_FIELDS = ("source_index", "start", "duration", "text")
+
+
 def _segment_page_data(
-    segments: list[dict[str, Any]], offset: int, limit: int, total: int
+    segments: list[list[Any]], offset: int, limit: int, total: int
 ) -> dict[str, Any]:
     next_offset = offset + len(segments)
     return {
+        # Rows instead of objects: repeating four keys per atom tripled a page's size.
+        "fields": list(SEGMENT_FIELDS),
         "segments": segments,
         "offset": offset,
         "limit": limit,
         "total_segments": total,
+        "remaining_segments": max(total - next_offset, 0),
         "next_offset": next_offset if next_offset < total else None,
     }
 
@@ -198,21 +204,19 @@ def _segment_page_data(
 def segment_page(
     entries: tuple[tuple[int, TranscriptSegment], ...], offset: int, limit: int
 ) -> dict[str, Any]:
-    """Page whole transcript atoms, shrinking the page to fit the response limit."""
+    """Page whole transcript atoms, shrinking the page to fit the response limit.
+
+    A limit above MAX_PAGE_SIZE is capped rather than rejected: weak models often ask for
+    more, and a rejection costs them a turn. The page reports the limit actually applied.
+    """
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be a nonnegative integer")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
-    segments: list[dict[str, Any]] = []
+    limit = min(limit, MAX_PAGE_SIZE)
+    segments: list[list[Any]] = []
     for source_index, segment in entries[offset : offset + limit]:
-        segments.append(
-            {
-                "source_index": source_index,
-                "text": segment.text,
-                "start": segment.start,
-                "duration": segment.duration,
-            }
-        )
+        segments.append([source_index, segment.start, segment.duration, segment.text])
         page = _segment_page_data(segments, offset, limit, len(entries))
         if not fits_envelope(page, MAX_PAGE_ENVELOPE_BYTES):
             segments.pop()
@@ -293,13 +297,16 @@ def write_draft(
     settings: DraftWriterSettings,
     source: Source,
     *,
-    title: str,
     contents: str,
+    filename: str | None = None,
     timestamps: tuple[float, ...] = (),
     related_notes: list[dict[str, str]] | None = None,
     vault: VaultReader | None = None,
 ) -> dict[str, str]:
-    """Create a draft; related notes are `{note_id, reason}` handles from `vault`."""
+    """Create a draft named from `filename` or the leading H1.
+
+    Related notes are `{note_id, reason}` handles from `vault`.
+    """
     verified: tuple[tuple[str, str], ...] = ()
     if related_notes:
         if vault is None:
@@ -309,8 +316,8 @@ def write_draft(
         verified = verified_related_notes(vault, related_notes)
     result = create_draft(
         settings,
-        title=title,
         contents=contents,
+        filename=filename,
         source=source.metadata,
         timestamps=timestamps,
         related_notes=verified,

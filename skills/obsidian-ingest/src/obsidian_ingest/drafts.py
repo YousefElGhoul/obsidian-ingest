@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import stat
+import unicodedata
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
@@ -24,6 +25,7 @@ _WINDOWS_RESERVED_NAMES = {
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$")
 _SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+_MAX_STEM_BYTES = 120
 _RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "related notes"}
 
 
@@ -51,18 +53,73 @@ def _draft_folder_parts(folder: str) -> tuple[str, ...]:
     return parts
 
 
-def _validate_title(title: str) -> str:
-    if not isinstance(title, str) or not title.strip():
-        raise ValueError("title must not be empty")
-    if title != title.strip() or title in {".", ".."}:
-        raise ValueError("title must be a trimmed filename title")
-    if _UNSAFE_FILENAME.search(title) or title.endswith((" ", ".")):
-        raise ValueError("title contains characters that are unsafe in a filename")
-    if title.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
-        raise ValueError("title is a reserved filename")
-    if len(title.encode("utf-8")) > 240:
-        raise ValueError("title is too long for a portable filename")
-    return title
+def _slugify(text: str) -> str:
+    """Lowercase kebab-case stem: letters and digits kept, everything else a word break.
+
+    The result contains no path separators, dots, or control characters.
+    """
+    text = unicodedata.normalize("NFC", text)
+    stem = "-".join("".join(ch if ch.isalnum() else " " for ch in text).split()).lower()
+    stem = stem.encode("utf-8")[:_MAX_STEM_BYTES].decode("utf-8", errors="ignore").rstrip("-")
+    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+        stem += "-note"
+    return stem
+
+
+def _leading_h1(contents: str) -> str | None:
+    """Return the text of an ATX H1 on the first non-blank line, if there is one."""
+    for line in contents.splitlines():
+        if not line.strip():
+            continue
+        heading = _ATX_HEADING.match(line)
+        if heading and heading.group(1) == "#":
+            return re.sub(r"(?:^|[ \t]+)#+[ \t]*$", "", heading.group(2) or "").strip()
+        return None
+    return None
+
+
+def _draft_stem(filename: str | None, contents: str) -> str:
+    if filename is not None:
+        if not isinstance(filename, str):
+            raise TypeError("filename must be a string")
+        name = filename[:-3] if filename.lower().endswith(".md") else filename
+    else:
+        name = _leading_h1(contents) if isinstance(contents, str) else None
+    stem = _slugify(name) if name is not None else ""
+    if not stem:
+        raise ValueError(
+            "contents must start with an H1 title (# Title) or a filename must be given"
+        )
+    return stem
+
+
+_PROVENANCE_HEADINGS = _RESERVED_HEADINGS - {"related notes"}
+
+
+def _strip_trailing_source_section(contents: str) -> str:
+    """Drop an agent-written Source section when it is the last section of the body.
+
+    The writer appends verified provenance, so a final agent-written one is redundant.
+    A Source section followed by further headings is still rejected by validation.
+    """
+    lines = contents.splitlines(keepends=True)
+    in_fence = False
+    start = None
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        heading = None if in_fence else _ATX_HEADING.match(line.rstrip("\r\n"))
+        if heading:
+            text = re.sub(r"[ \t]+#+[ \t]*$", "", heading.group(2) or "").strip().casefold()
+            start = index if text in _PROVENANCE_HEADINGS else None
+    if start is None:
+        return contents
+    body = "".join(lines[:start]).rstrip()
+    while body.endswith(("---", "***")):
+        body = body[:-3].rstrip()
+    return body + "\n" if body else contents
 
 
 def _render_draft(
@@ -172,7 +229,6 @@ def _validate_body(contents: str) -> None:
     lines = contents.splitlines()
     in_fence = False
     fence_marker = ""
-    first_heading_checked = False
     for index, line in enumerate(lines):
         stripped = line.lstrip(" ")
         if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
@@ -205,16 +261,8 @@ def _validate_body(contents: str) -> None:
                         "Related Notes must be generated from verified note references"
                     )
                 raise ValueError("contents must not include a Source or provenance section")
-            if not first_heading_checked and heading.group(1) in ("#", "##"):
-                preceding = lines[:index]
-                if all(not item.strip() for item in preceding):
-                    raise ValueError(
-                        "contents must be body-only and must not start with an H1 title"
-                    )
-            first_heading_checked = True
             continue
-        setext = _SETEXT_HEADING.match(line)
-        if setext and index > 0 and lines[index - 1].strip():
+        if _SETEXT_HEADING.match(line) and index > 0 and lines[index - 1].strip():
             title = lines[index - 1].strip()
             if title.casefold() in _RESERVED_HEADINGS:
                 if title.casefold() == "related notes":
@@ -222,13 +270,6 @@ def _validate_body(contents: str) -> None:
                         "Related Notes must be generated from verified note references"
                     )
                 raise ValueError("contents must not include a Source or provenance section")
-            if setext.group(1).startswith("=") and all(
-                not item.strip() for item in lines[: index - 1]
-            ):
-                raise ValueError("contents must be body-only and must not start with an H1 title")
-            first_heading_checked = True
-        elif line.strip() and not first_heading_checked:
-            first_heading_checked = True
 
 
 def _open_directory_chain(root_fd: int, parts: tuple[str, ...]) -> int:
@@ -285,11 +326,11 @@ def _write_staged_file(staging_fd: int, contents: bytes) -> None:
         raise
 
 
-def _publish_staged_file(directory_fd: int, staging_fd: int, title: str) -> str:
+def _publish_staged_file(directory_fd: int, staging_fd: int, stem: str) -> str:
     index = 1
     while True:
-        suffix = "" if index == 1 else f" ({index})"
-        filename = f"{title}{suffix}.md"
+        suffix = "" if index == 1 else f"-{index}"
+        filename = f"{stem}{suffix}.md"
         try:
             os.link(
                 ".draft.tmp",
@@ -349,20 +390,24 @@ def _require_writer_capabilities() -> None:
 def create_draft(
     settings: DraftWriterSettings,
     *,
-    title: str,
     contents: str,
     source: SourceMetadata,
+    filename: str | None = None,
     timestamps: tuple[float, ...] = (),
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
 ) -> DraftResult:
     """Create a new draft beneath the configured folder, never modifying a note.
 
-    Existing names receive a numeric suffix. Directory traversal uses file
-    descriptors and rejects symlinks in the configured folder path. The configured
-    directory tree must not be concurrently moved or modified by an untrusted process.
+    The filename is the kebab-case slug of `filename`, or of the contents' leading H1,
+    which stays in the file. Existing names receive a `-2`, `-3`, ... suffix. Directory
+    traversal uses file descriptors and rejects symlinks in the configured folder path.
+    The configured directory tree must not be concurrently moved or modified by an
+    untrusted process.
     """
-    title = _validate_title(title)
+    stem = _draft_stem(filename, contents)
+    if isinstance(contents, str):
+        contents = _strip_trailing_source_section(contents)
     parts = _draft_folder_parts(settings.draft_folder)
     payload = _render_draft(contents, source, timestamps, related_notes, leading_link)
     _require_writer_capabilities()
@@ -379,11 +424,11 @@ def create_draft(
             staging_name, staging_fd = _create_staging_directory(directory_fd)
             try:
                 _write_staged_file(staging_fd, payload)
-                filename = _publish_staged_file(directory_fd, staging_fd, title)
+                published = _publish_staged_file(directory_fd, staging_fd, stem)
             finally:
                 _cleanup_staging(directory_fd, staging_name, staging_fd)
         finally:
             os.close(directory_fd)
     finally:
         os.close(root_fd)
-    return DraftResult(resolved_vault.joinpath(*parts, filename))
+    return DraftResult(resolved_vault.joinpath(*parts, published))

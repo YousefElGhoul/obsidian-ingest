@@ -138,6 +138,30 @@ def test_setup_requires_explicit_scope_and_never_overwrites_settings(tmp_path) -
     assert config.read_text(encoding="utf-8") == "preserve me"
 
 
+def test_setup_flags_create_settings_without_prompting(tmp_path, monkeypatch, capsys) -> None:
+    vault = tmp_path / "vault"
+    (vault / "Notes/Private").mkdir(parents=True)
+    config = tmp_path / "settings.toml"
+    monkeypatch.setattr("builtins.input", lambda _: pytest.fail("flags must not prompt"))
+    base = ["obsidian-ingest", "setup", "--config", str(config), "--vault-root", str(vault)]
+
+    monkeypatch.setattr("sys.argv", base)
+    with pytest.raises(ValueError, match="at least one --allow"):
+        cli.main()
+    assert not config.exists()
+
+    flags = ["--allow", "Notes", "--allow", "00 Inbox/AI Drafts", "--exclude", "Notes/Private"]
+    monkeypatch.setattr("sys.argv", [*base, *flags])
+    cli.main()
+    settings = load_vault_settings(config)
+    assert settings.root == vault
+    assert settings.allowed == ("Notes", "00 Inbox/AI Drafts")
+    assert settings.excluded == ("Notes/Private",)
+    assert settings.draft_folder == "00 Inbox/AI Drafts"
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert "Saved trusted settings" in capsys.readouterr().out
+
+
 def test_cli_vault_search_and_path_read_use_scoped_configuration(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -214,8 +238,7 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
             "obsidian-ingest",
             "create-draft",
             metadata.source_id,
-            "Retry budget",
-            "A retry budget limits aggregate load.",
+            "# Retry budget: why?\n\nA retry budget limits aggregate load.",
             "--config",
             str(config),
             "--related-note",
@@ -225,7 +248,9 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
     )
     cli.main()
     created = json.loads(capsys.readouterr().out)
+    assert Path(created["path"]).name == "retry-budget-why.md"
     contents = Path(created["path"]).read_text(encoding="utf-8")
+    assert contents.startswith("# Retry budget: why?\n\nA retry budget limits aggregate load.")
     assert "## Related Notes\n\n- [[Notes/Retry.md]]: Explains retry policy." in contents
 
     monkeypatch.setattr(
@@ -246,7 +271,7 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
     )
     cli.main()
     edit = json.loads(capsys.readouterr().out)
-    assert Path(edit["path"]).name.startswith("(EDIT) Retry")
+    assert Path(edit["path"]).name == "edit-retry.md"
     assert target.read_text(encoding="utf-8") == "Canonical note stays unchanged."
 
 
@@ -381,18 +406,14 @@ def test_cli_source_operations_reuse_persistent_cache(
             "2",
             *db,
         )
-        texts.extend(segment["text"] for segment in page["segments"])
+        texts.extend(segment[3] for segment in page["segments"])
         offset = page["next_offset"]
     assert texts == ["First atom", "Second atom", "Third atom"]
     raw = _ok(monkeypatch, capsys, "read-transcript", source_id, "--include-excluded", *db)
-    assert raw["segments"][-1] == {
-        "source_index": 3,
-        "text": "Sponsor atom",
-        "start": 2,
-        "duration": 1,
-    }
+    assert raw["fields"] == ["source_index", "start", "duration", "text"]
+    assert raw["segments"][-1] == [3, 2, 1, "Sponsor atom"]
     chapter = _ok(monkeypatch, capsys, "read-chapter", source_id, "0", "--offset", "1", *db)
-    assert [segment["text"] for segment in chapter["segments"]] == ["Second atom", "Third atom"]
+    assert [segment[3] for segment in chapter["segments"]] == ["Second atom", "Third atom"]
 
     refreshed = _ok(monkeypatch, capsys, "ingest-source", URL, "--refresh", *db)
     assert (refreshed["source_id"], refreshed["cached"]) == (source_id, False)
@@ -404,7 +425,7 @@ def test_cli_source_errors_use_shared_codes(monkeypatch, capsys, tmp_path, fake_
     source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
     cases = [
         (("get-source-overview", "missing"), "SOURCE_NOT_FOUND", "Unknown source_id"),
-        (("read-transcript", source_id, "--limit", "81"), "INVALID_ARGUMENT", "limit must be"),
+        (("read-transcript", source_id, "--limit", "0"), "INVALID_ARGUMENT", "limit must be"),
         (("read-transcript", source_id, "--offset", "-1"), "INVALID_ARGUMENT", "offset must"),
         (
             ("read-transcript", source_id, "--start", "10", "--end", "1"),
@@ -438,7 +459,7 @@ def test_cli_search_cursor_continues_across_invocations(monkeypatch, capsys, tmp
             args += ["--cursor", cursor]
         page = _ok(monkeypatch, capsys, *args)
         assert all(
-            set(note) == {"path", "title", "revision", "snippet", "linkable"}
+            set(note) == {"path", "title", "revision", "matched_terms", "snippet", "linkable"}
             for note in page["notes"]
         )
         paths.extend(note["path"] for note in page["notes"])
@@ -590,8 +611,7 @@ def test_cli_publication_is_create_only_with_verified_links(
         capsys,
         "create-draft",
         source_id,
-        "Retry budget",
-        "Body.",
+        "# Retry budget\n\nBody.",
         "--timestamp",
         "1",
         "--related-note",
@@ -603,21 +623,36 @@ def test_cli_publication_is_create_only_with_verified_links(
     text = Path(draft["path"]).read_text(encoding="utf-8")
     assert "- [[Notes/Fixture 1.md]]: Shared idea." in text
     assert "[00:01](https://www.youtube.com/watch?v=video-123&t=1s)" in text
+    assert Path(draft["path"]).name == "retry-budget.md"
     duplicate = _ok(
-        monkeypatch, capsys, "create-draft", source_id, "Retry budget", "Body.", *config, *db
+        monkeypatch, capsys, "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db
     )
-    assert Path(duplicate["path"]).name == "Retry budget (2).md"
+    assert Path(duplicate["path"]).name == "retry-budget-2.md"
+    named = _ok(
+        monkeypatch,
+        capsys,
+        "create-draft",
+        source_id,
+        "# Title: kept verbatim?\n\nBody.",
+        "--filename",
+        "../My_File.md",
+        *config,
+        *db,
+    )
+    assert Path(named["path"]) == vault / "00 Inbox/AI Drafts/my-file.md"
+    assert Path(named["path"]).read_text(encoding="utf-8").startswith("# Title: kept verbatim?")
 
     drafts = vault / "00 Inbox/AI Drafts"
     before = sorted(drafts.iterdir())
     for args, code in (
-        (("create-draft", source_id, "Bad", "# Title\n\nBody"), "INVALID_ARGUMENT"),
+        (("create-draft", source_id, "# Bad\n\n## Source\nX\n\n## More\nY"), "INVALID_ARGUMENT"),
+        (("create-draft", source_id, "Body without a title"), "INVALID_ARGUMENT"),
+        (("create-draft", source_id, "# Bad", "--filename", "///"), "INVALID_ARGUMENT"),
         (
             (
                 "create-draft",
                 source_id,
-                "Bad",
-                "Body",
+                "# Bad\n\nBody",
                 "--related-note",
                 "Private/Fixture secret.md",
                 "Hidden.",
@@ -648,7 +683,7 @@ def test_cli_publication_is_create_only_with_verified_links(
             ),
             "NOTE_UNAVAILABLE",
         ),
-        (("create-draft", "missing", "Bad", "Body"), "SOURCE_NOT_FOUND"),
+        (("create-draft", "missing", "# Bad\n\nBody"), "SOURCE_NOT_FOUND"),
     ):
         error = _fail(monkeypatch, capsys, *args, *config, *db)
         assert error["code"] == code
@@ -669,5 +704,6 @@ def test_cli_publication_is_create_only_with_verified_links(
         *config,
         *db,
     )
+    assert Path(edit["path"]).name == "edit-fixture-1.md"
     assert Path(edit["path"]).read_text(encoding="utf-8").startswith("[[Notes/Fixture 1.md]]")
     assert {path: path.read_bytes() for path in canonical} == canonical

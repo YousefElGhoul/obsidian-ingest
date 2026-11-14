@@ -16,13 +16,15 @@ cache, access policy, and create-only publication; the agent owns judgment and s
 Restricted setups expose only this MCP and disable general shell/filesystem tools.
 Trusted setups allow normal host tools and may use CLI or MCP. Either interface's
 writer remains create-only; an agent with shell access can bypass it. Neither MCP
-alone nor an installation prompt creates an OS sandbox.
+alone nor the install instructions create an OS sandbox.
 
 **Current gate: live Hermes trials.** Code for the former parity, acquisition, and
-curation-guidance milestones has been implemented under user approval and verified by
-automated tests and diff review. The next actionable item is milestone 1 below. It
-needs an explicitly authorized disposable Hermes profile, a disposable test vault, and
-the user-provided herdr-app pane hook; without them, report the trial as blocked. Do
+curation-guidance milestones is implemented and verified by automated tests and diff
+review. A first restricted-mode install trial succeeded; useful ingestion has not. The
+next actionable item is milestone 1 below: first make weak-model ingestion follow the
+whole workflow, then the remaining setup checks. Trials follow the protocol in
+[`AGENTS.md`](AGENTS.md) (Hermes as an `hc` child agent in a throwaway profile with a
+disposable test vault; abort and report if no throwaway profile can be created). Do
 not implement all milestones at once. No staging, commits, or pushes without explicit
 approval.
 
@@ -48,7 +50,10 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 - Vault scopes, verified generated links, and create-only drafts and `(EDIT)`
   suggestions exist. Canonical notes must remain untouched throughout this roadmap.
 - `SKILL.md` guides candidate consolidation, existing-note comparison, and attribution.
-- Hermes setup is the prompt in `references/hermes.md`; it has not been validated live.
+- Installation: give an agent the skill's `SKILL.md` link and ask it to install the
+  skill and its tools; it follows `references/install.md` (Hermes notes in
+  `references/hermes.md`). `obsidian-ingest setup` accepts flags and then never prompts.
+  Restricted-mode install was validated once live (Hermes v0.23.0, 2026-11-14).
 - `videos.txt` is a plain URL manifest consumed by `scripts/evaluate.py`, which records
   MCP responses without an agent or draft writes.
 
@@ -56,29 +61,35 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 
 ### 1. Live Hermes Setup and Curation Trials
 
-**Problem:** Automated tests establish deterministic behavior, not that the setup
-prompt works in a real host or that the guidance produces useful Markdown and UX.
+**Problem:** Automated tests establish deterministic behavior, not that the install
+steps work in a real host or that the guidance produces useful Markdown and UX. The
+first trial (restricted mode, frontier-model install) installed and verified
+correctly; weak-model ingestion mostly failed. Details are in `trial-reports/`.
 
-**Reuse/change surface:** `references/hermes.md`, `SKILL.md`, `videos.txt`, and Hermes
-through the user-provided herdr-app pane hook. Fix concrete failures in the smallest
-relevant place. No agent runner, installer framework, or scoring/benchmark framework.
+**Reuse/change surface:** `SKILL.md`, `references/install.md`, `references/hermes.md`,
+`videos.txt`, and Hermes run per the trial protocol in [`AGENTS.md`](AGENTS.md). Fix
+concrete failures in the smallest relevant place. No agent runner, installer framework,
+or scoring/benchmark framework.
 
-- [ ] Validate the installation prompt end to end in an explicitly authorized
-  disposable profile: restricted MCP-only and trusted CLI/MCP modes, explicit
-  profile/scope/approval questions, preserved unrelated settings, backups, reported
-  changes, effective fresh-session tools without dummy notes, repeat setup without
-  duplicated registrations or broadened scope, and following the reported undo steps.
-  Let Hermes discover its current commands; no version pin or fixed config schema.
-- [ ] In the same pane workflow, verify launch from an unrelated directory,
-  restart/cache reuse, and response spillover behavior for transcript and note pages.
-- [ ] Feed user-selected manifest URLs one at a time. Inspect the actual tools, UX, and
-  generated files in the disposable test vault: attribution/timestamps, usefulness,
-  overlap, uncertainty and diagnostics use, related links, edit suggestions, zero-note
-  choices, and preserved canonical notes. Distinguish failures from successful
-  zero-note outcomes; never publish dummy drafts or retry known success.
+- [ ] Make weak-model ingestion follow the whole workflow from a bare URL. Observed with
+  an open-weight model (Nemotron Ultra): the agent skipped the vault search/comparison
+  and stopped after `ingest_source` to ask what to do. `SKILL.md` now opens by treating
+  a bare URL as a complete request; that change is not yet verified live. Rerun ingestions until drafts or explained
+  zero-note results appear, then inspect the generated files in the test vault:
+  usefulness as Zettelkasten notes, attribution/timestamps, overlap, uncertainty and
+  diagnostics use, related links, edit suggestions, zero-note choices, and preserved
+  canonical notes. Distinguish failures from successful zero-note outcomes; never
+  publish dummy drafts or retry known success.
+- [ ] Validate the remaining install paths in a throwaway profile: trusted CLI/MCP
+  mode, installing from a GitHub `SKILL.md` link (clone into a stable location), repeat
+  setup without duplicated registrations or broadened scope, and following the
+  reported undo steps. Let Hermes discover its current commands; no version pin or
+  fixed config schema.
+- [ ] Verify restart/cache reuse and response spillover behavior for transcript and
+  note pages.
 
-**Dependencies/risks:** Needs user-authorized host configuration access, the pane hook,
-and live sources; outcomes vary by model. Hermes must stop if requested restrictions
+**Dependencies/risks:** Needs a throwaway Hermes profile, a disposable test vault, and
+live sources; outcomes vary by model. Hermes must stop if requested restrictions
 cannot be established. Record the version tested as an observation, not a version gate.
 
 **Acceptance/done:** Setup succeeds in both modes, effective permissions match the
@@ -96,14 +107,14 @@ semantic deduplication, mandatory critics, and claims of exhaustive vault search
 **Problem/evidence:** Unit tests and packaging alone do not establish a usable public
 installation. Release claims need a complete installed-skill trial.
 
-**Reuse/change surface:** Stabilized skill, CLI/MCP, cache, setup prompt, hands-on trials,
+**Reuse/change surface:** Stabilized skill, CLI/MCP, cache, install steps, hands-on trials,
 distribution metadata, and documentation. No new product subsystem.
 
 - [ ] Verify clean installation from the actual distributed skill artifact, launch
   outside the repo, restart/cache reuse, and update without losing trusted settings.
   Cache recreation is acceptable when its schema changes (reset steps are in the README).
-- [ ] Run the installed-skill URL-manifest trial through Hermes in herdr-app with a
-  test vault. Review usefulness, factual fidelity, timestamps, response bounds,
+- [ ] Run the installed-skill URL-manifest trial through Hermes per the trial protocol
+  with a test vault. Review usefulness, factual fidelity, timestamps, response bounds,
   zero-note behavior, draft paths, both setup modes, and canonical-note preservation.
 - [ ] Review packaging, dependency declarations, licensing, and exclusion of private
   artifacts. Run required Ruff formatting/lint, pytest, and `git diff --check`.
@@ -117,7 +128,7 @@ as tested. Harness-neutral architecture does not guarantee identical host behavi
 
 **Acceptance/done:** A new Linux user can install, explicitly configure scope, curate a
 source into attributed drafts or an explained zero-note result, and restore their
-Hermes configuration using the setup prompt's documented undo steps.
+Hermes configuration using the install report's undo steps.
 
 **Deferred:** Visual processing, Instagram, STT, native Windows, and OpenCode validation
 are not alpha gates.
@@ -156,7 +167,7 @@ delivery only as needed. Expose every application operation through both CLI and
   stale media/settings, partial artifacts, repeated requests, and absolute timestamps
   after seeking/clipping. Test OCR error/disagreement/no-text cases, SQLite image
   refresh invalidation, disposable exports, and actual Hermes MCP image delivery.
-  Exercise Python through CLI and inspect agent behavior through the app-pane workflow.
+  Exercise Python through CLI and inspect agent behavior through live Hermes trials.
 
 **Dependencies/risks:** FFmpeg and optional OCR are external programs. Host image routing
 and auxiliary inference vary; local processing does not imply local model inference.
@@ -204,11 +215,13 @@ hosted STT, and background workers.
 mocked I/O, and temporary vaults. Keep parser/filesystem unit tests and a small
 model-free MCP transport check. No agent is needed to test deterministic behavior.
 
-**Installation, Markdown, and UX:** The coding agent uses a user-provided herdr-app
-hook to create/control a pane running Hermes. Give Hermes the installation prompt,
-verify setup, feed user-selected manifest URLs one by one, and inspect the test vault
-and returned outcomes. Record enough context to reproduce concrete failures (URL,
-setup mode, model/harness, steps, output/error); do not build scoring infrastructure.
+**Installation, Markdown, and UX:** Follow the live-trial protocol in
+[`AGENTS.md`](AGENTS.md): the coding agent runs Hermes as an `hc` child agent in a
+throwaway profile, asks a frontier model to install the skill from its `SKILL.md` link,
+then sends bare manifest URLs to a weaker model in parallel fresh sessions and inspects
+the test vault. Record each trial in `trial-reports/` with enough context to reproduce
+concrete failures (URL, setup mode, model/harness, steps, output/error); do not build
+scoring infrastructure.
 
 Use real troublesome sources selected by the user to inspect incorrect terms,
 caption/visual disagreements, missing coverage, overlapping candidates, and legitimate
@@ -220,7 +233,7 @@ from automated tests; do not use private vaults or copy private artifacts into t
 
 - [ ] Validate OpenCode end to end with a disposable vault and documented skill/MCP
   setup. Not a current priority or alpha dependency.
-- [ ] Add prompt-based installation guidance for further harnesses as optional adapters,
+- [ ] Add install notes for further harnesses beside `references/hermes.md`,
   using host-supported mechanisms rather than version-pinned profile-conversion scripts.
 - [ ] Expand providers/languages or native Windows support only for concrete demand.
 - [ ] Improve transcript navigation, indexing, or semantic retrieval only after observed

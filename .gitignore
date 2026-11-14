@@ -22,3 +22,6 @@ wheels/
 /.idea/
 /.vscode/
 /.zed/
+
+# Live harness trial reports and session exports (private)
+/trial-reports/

@@ -1,7 +1,5 @@
 """Application functions for verified vault connections and edit proposals."""
 
-import re
-
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.vault import NoteChanged, NoteUnavailable, VaultReader
@@ -99,15 +97,6 @@ def create_edit_suggestion(
     if not target.linkable:
         raise ValueError("NOTE_NOT_LINKABLE: target note has a path that cannot be wikilinked")
 
-    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", target.title).strip(" .-") or "Note"
-    prefix = "(EDIT) "
-    title_bytes = title.encode("utf-8")[: 240 - len(prefix.encode())]
-    while True:
-        try:
-            title = title_bytes.decode("utf-8").rstrip(" .-") or "Note"
-            break
-        except UnicodeDecodeError:
-            title_bytes = title_bytes[:-1]
     contents = (
         f"## Suggested Change\n\n{change_summary.strip()}\n\n"
         f"## Why\n\n{reasoning.strip()}\n\n"
@@ -115,7 +104,7 @@ def create_edit_suggestion(
     )
     return create_draft(
         settings,
-        title=prefix + title,
+        filename=f"edit-{target.title}",
         contents=contents,
         source=source,
         timestamps=timestamps,

@@ -100,18 +100,20 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             draft_tool = next(tool for tool in tools.tools if tool.name == "create_draft")
             assert set(draft_tool.input_schema["properties"]) == {
                 "source_id",
-                "title",
                 "contents",
+                "filename",
                 "timestamps",
                 "related_notes",
             }
+            assert set(draft_tool.input_schema["required"]) == {"source_id", "contents"}
+            assert "H1" in draft_tool.description
             related_schema = draft_tool.input_schema["properties"]["related_notes"]
             assert related_schema["anyOf"][0]["items"]["$ref"] == "#/$defs/RelatedNoteInput"
             related_item_schema = draft_tool.input_schema["$defs"]["RelatedNoteInput"]
             assert set(related_item_schema["required"]) == {"note_id", "reason"}
             assert "revision" in related_item_schema["properties"]
             transcript_tool = next(tool for tool in tools.tools if tool.name == "read_transcript")
-            assert transcript_tool.input_schema["properties"]["limit"]["default"] == 40
+            assert transcript_tool.input_schema["properties"]["limit"]["default"] == 100
 
             ingested = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
             source_id = ingested["source_id"]
@@ -174,7 +176,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 < mcp_server.MAX_PAGE_ENVELOPE_BYTES
             )
             assert first_page["limit"] == 2
-            assert [segment["text"] for segment in first_page["segments"]] == [
+            assert [segment[3] for segment in first_page["segments"]] == [
                 "First atom",
                 "Second atom at same time",
             ]
@@ -184,7 +186,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     "read_transcript", {"source_id": source_id, "offset": 2, "limit": 2}
                 )
             )
-            assert [segment["text"] for segment in second_page["segments"]] == ["Third atom"]
+            assert [segment[3] for segment in second_page["segments"]] == ["Third atom"]
             assert second_page["next_offset"] is None
             raw_page = _tool_data(
                 await client.call_tool(
@@ -192,8 +194,8 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     {"source_id": source_id, "include_excluded": True, "offset": 3},
                 )
             )
-            assert [segment["text"] for segment in raw_page["segments"]] == ["Sponsor atom"]
-            assert raw_page["segments"][0]["source_index"] == 3
+            assert [segment[3] for segment in raw_page["segments"]] == ["Sponsor atom"]
+            assert raw_page["segments"][0][0] == 3
 
             chapter_page = _tool_data(
                 await client.call_tool(
@@ -201,7 +203,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     {"source_id": source_id, "chapter_index": 0, "limit": 2, "offset": 1},
                 )
             )
-            assert [segment["text"] for segment in chapter_page["segments"]] == [
+            assert [segment[3] for segment in chapter_page["segments"]] == [
                 "Second atom at same time",
                 "Third atom",
             ]
@@ -222,38 +224,69 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     "create_draft",
                     {
                         "source_id": source_id,
-                        "title": "A useful note",
-                        "contents": "Agent-authored content.",
+                        "contents": "# A useful note: why?\n\nAgent-authored content.",
                         "timestamps": [1.0],
                     },
                 )
             )
             draft_path = Path(draft["path"])
-            assert draft_path == vault / "00 Inbox/AI Drafts/A useful note.md"
+            assert draft_path == vault / "00 Inbox/AI Drafts/a-useful-note-why.md"
             draft_contents = draft_path.read_text(encoding="utf-8")
-            assert draft_contents.startswith("Agent-authored content.\n\n## Source")
+            assert draft_contents.startswith(
+                "# A useful note: why?\n\nAgent-authored content.\n\n## Source"
+            )
             assert "https://www.youtube.com/watch?v=video-123" in draft_contents
             assert "1s" in draft_contents
+
+            duplicate = _tool_data(
+                await client.call_tool(
+                    "create_draft",
+                    {"source_id": source_id, "contents": "# A useful note: why?\n\nAgain."},
+                )
+            )
+            assert Path(duplicate["path"]).name == "a-useful-note-why-2.md"
+
+            named = _tool_data(
+                await client.call_tool(
+                    "create_draft",
+                    {
+                        "source_id": source_id,
+                        "contents": "# Title: kept verbatim?\n\nBody.",
+                        "filename": "../My_File.md",
+                    },
+                )
+            )
+            assert Path(named["path"]) == vault / "00 Inbox/AI Drafts/my-file.md"
+            assert Path(named["path"]).read_text(encoding="utf-8").startswith("# Title: kept")
+
+            before = sorted((vault / "00 Inbox/AI Drafts").iterdir())
+            untitled = await client.call_tool(
+                "create_draft", {"source_id": source_id, "contents": "Body without a title."}
+            )
+            assert untitled.is_error
+            assert "INVALID_ARGUMENT: contents must start with an H1" in untitled.content[0].text
+            assert sorted((vault / "00 Inbox/AI Drafts").iterdir()) == before
 
             invalid_draft = await client.call_tool(
                 "create_draft",
                 {
                     "source_id": source_id,
-                    "title": "Invalid formatting",
-                    "contents": "# Agent title\n\nBody",
+                    "contents": "# Invalid formatting\n\n## Sources\nAgent list\n\n## Notes\nBody",
                 },
             )
             assert invalid_draft.is_error
-            assert "must not start with an H1 title" in invalid_draft.content[0].text
-            assert not (vault / "00 Inbox/AI Drafts/Invalid formatting.md").exists()
+            assert "must not include a Source" in invalid_draft.content[0].text
+            assert not (vault / "00 Inbox/AI Drafts/invalid-formatting.md").exists()
 
             referenced_draft = _tool_data(
                 await client.call_tool(
                     "create_draft",
                     {
                         "source_id": source_id,
-                        "title": "References included",
-                        "contents": "Body.\n\n## References\n- [Paper](https://example.com)",
+                        "contents": (
+                            "# References included\n\n"
+                            "Body.\n\n## References\n- [Paper](https://example.com)"
+                        ),
                     },
                 )
             )
@@ -265,11 +298,17 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert missing.is_error
             assert "SOURCE_NOT_FOUND: Unknown source_id" in missing.content[0].text
 
+            # Above the maximum is capped, not rejected; the page reports what was applied.
+            capped = await client.call_tool(
+                "read_transcript", {"source_id": source_id, "limit": 500}
+            )
+            assert not capped.is_error
+            assert json.loads(capped.content[0].text)["limit"] == 200
             invalid_page = await client.call_tool(
-                "read_transcript", {"source_id": source_id, "limit": 81}
+                "read_transcript", {"source_id": source_id, "limit": 0}
             )
             assert invalid_page.is_error
-            assert "INVALID_ARGUMENT: limit must be" in invalid_page.content[0].text
+            assert "INVALID_ARGUMENT: limit" in invalid_page.content[0].text
 
     asyncio.run(exercise_tools())
     ingest.assert_called_once_with(URL, exclude_sponsors=True)
@@ -318,8 +357,7 @@ def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch) -> 
                     "create_draft",
                     {
                         "source_id": source_id,
-                        "title": "After restart",
-                        "contents": "Useful content.",
+                        "contents": "# After restart\n\nUseful content.",
                     },
                 )
             )
@@ -396,10 +434,15 @@ def test_long_transcript_pages_are_bounded_and_preserve_every_atom(tmp_path, mon
     for tool in ("read_transcript", "read_chapter"):
         pages = asyncio.run(read_pages(tool))
         actual = [segment for page in pages for segment in page["segments"]]
-        assert [segment["text"] for segment in actual] == [segment.text for segment in segments]
-        assert [segment["source_index"] for segment in actual] == list(range(180))
+        assert [segment[3] for segment in actual] == [segment.text for segment in segments]
+        assert [segment[0] for segment in actual] == list(range(180))
         assert all(page["total_segments"] == 180 for page in pages)
         assert all(page["limit"] == mcp_server.DEFAULT_PAGE_SIZE for page in pages)
+        assert [page["remaining_segments"] for page in pages][-1] == 0
+        assert all(
+            page["remaining_segments"] == 180 - page["offset"] - len(page["segments"])
+            for page in pages
+        )
 
 
 def test_single_oversized_atom_fails_without_truncation():
@@ -450,21 +493,20 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
             page = _tool_data(
                 await client.call_tool("read_transcript", {"source_id": seeded.source_id})
             )
-            assert page["segments"][0]["text"] == "First atom"
+            assert page["segments"][0][3] == "First atom"
             result = _tool_data(
                 await client.call_tool(
                     "create_draft",
                     {
                         "source_id": seeded.source_id,
-                        "title": "Restarted source",
-                        "contents": "A useful body.",
+                        "contents": "# Restarted source\n\nA useful body.",
                         "timestamps": [1.5],
                     },
                 )
             )
             contents = Path(result["path"]).read_text(encoding="utf-8")
             assert contents == (
-                "A useful body.\n\n## Source\n\n"
+                "# Restarted source\n\nA useful body.\n\n## Source\n\n"
                 "- Source: A useful explanation\n"
                 "- URL: https://www.youtube.com/watch?v=video-123\n"
                 "- Creator: A creator\n"
@@ -643,8 +685,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_draft",
                     {
                         "source_id": source_id,
-                        "title": "Retry budgets",
-                        "contents": "A retry budget limits aggregate load.",
+                        "contents": "# Retry budgets\n\nA retry budget limits aggregate load.",
                         "related_notes": [
                             note_ref
                             | {
@@ -674,8 +715,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_draft",
                     {
                         "source_id": source_id,
-                        "title": "Unicode path",
-                        "contents": "This is the related insight.",
+                        "contents": "# Unicode path\n\nThis is the related insight.",
                         "related_notes": [
                             {
                                 "note_id": unicode_note["note_id"],
@@ -711,7 +751,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
             )
             edit_path = Path(edit["path"])
             edit_text = edit_path.read_text(encoding="utf-8")
-            assert edit_path.name.startswith("(EDIT) Retry Policies")
+            assert edit_path.name == "edit-retry-policies.md"
             assert edit_text.startswith("[[Engineering/Retry Policies.md]]\n\n## Suggested Change")
             assert "## Proposed Content\n\nA retry budget caps retries across clients." in edit_text
             assert "## Source" in edit_text
@@ -729,15 +769,14 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     },
                 )
             )
-            assert Path(collision["path"]).name == "(EDIT) Retry Policies (2).md"
+            assert Path(collision["path"]).name == "edit-retry-policies-2.md"
             assert target.read_text(encoding="utf-8") == modified
 
             invalid = await client.call_tool(
                 "create_draft",
                 {
                     "source_id": source_id,
-                    "title": "Broken link",
-                    "contents": "Body",
+                    "contents": "# Broken link\n\nBody",
                     "related_notes": [
                         {
                             "note_id": "note_unknown",
@@ -749,14 +788,13 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
             )
             assert invalid.is_error
             assert "NOTE_UNAVAILABLE" in invalid.content[0].text
-            assert not (vault / "00 Inbox/AI Drafts/Broken link.md").exists()
+            assert not (vault / "00 Inbox/AI Drafts/broken-link.md").exists()
 
             injected = await client.call_tool(
                 "create_draft",
                 {
                     "source_id": source_id,
-                    "title": "User wikilink",
-                    "contents": "Body with [[Unverified Note]] and [a Markdown link](https://example.com).",
+                    "contents": "# User wikilink\n\nBody with [[Unverified Note]] and [a Markdown link](https://example.com).",
                 },
             )
             assert not injected.is_error
@@ -1093,7 +1131,7 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monk
             source_id = _tool_data(await client.call_tool("ingest_source", {"url": URL}))[
                 "source_id"
             ]
-            draft = {"source_id": source_id, "title": "T", "contents": "Body."}
+            draft = {"source_id": source_id, "contents": "# T\n\nBody."}
             malformed = [
                 ("read_transcript", {"source_id": source_id, "offset": True}, "offset"),
                 ("read_transcript", {"source_id": source_id, "limit": False}, "limit"),
@@ -1104,6 +1142,9 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monk
                 ("read_transcript", {"source_id": source_id, "start": "1"}, "start"),
                 ("read_transcript", {"source_id": source_id, "include_excluded": 1}, "include"),
                 ("read_transcript", {"source_id": source_id, "include_excluded": "true"}, "incl"),
+                ("read_transcript", {"source_id": source_id, "limit": 0}, "limit"),
+                ("read_transcript", {"source_id": source_id, "offset": -1}, "offset"),
+                ("search_vault", {"query": "retry", "limit": 50}, "limit"),
                 ("read_transcript", {"source_id": 123}, "source_id"),
                 ("read_transcript", {}, "source_id"),
                 ("read_transcript", {"source_id": source_id, "unknown": 1}, "unknown"),
@@ -1122,6 +1163,7 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monk
                     draft | {"related_notes": [{"note_id": "n", "reason": "r", "x": 1}]},
                     "related_notes",
                 ),
+                ("create_draft", draft | {"filename": 5}, "filename"),
             ]
             for tool, arguments, field in malformed:
                 result = await client.call_tool(tool, arguments)
@@ -1136,6 +1178,6 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monk
                 )
             )
             assert page["offset"] == 0
-            assert not (vault / "00 Inbox/AI Drafts/T.md").exists()
+            assert not (vault / "00 Inbox/AI Drafts/t.md").exists()
 
     asyncio.run(exercise())

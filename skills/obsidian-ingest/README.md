@@ -12,20 +12,18 @@ npx skills add <owner>/obsidian-ingest --skill obsidian-ingest
 
 ## Setup
 
-Requires network access for YouTube extraction. For Hermes, use the
-[installation prompt](references/hermes.md): select the profile/session, permission
-mode, vault root, allowed paths, exclusions, and draft folder explicitly. Hermes
-discovers its current setup commands and verifies the effective configuration; no
-particular Hermes version is required by the prompt. Prompt-based setup has not yet
-been validated end to end. Hermes is optional; no second harness is currently claimed
-as end-to-end validated.
+Requires network access for YouTube extraction. The intended setup is to give an agent
+this skill's `SKILL.md` link and ask it to install the skill and its tools; it follows
+[references/install.md](references/install.md), with Hermes details in
+[references/hermes.md](references/hermes.md). That flow has been validated once on
+Hermes v0.23.0 in restricted mode; no other harness is validated end to end.
 
-For standalone use with another harness, install Python 3.13+ and [uv](https://docs.astral.sh/uv/),
-then run from this directory:
+Manually, install Python 3.13+ and [uv](https://docs.astral.sh/uv/), then run from this
+directory (omit the flags to be prompted instead):
 
 ```bash
-uv sync
-uv run obsidian-ingest setup
+uv sync --no-dev
+uv run --no-dev obsidian-ingest setup --vault-root /path/to/vault --allow Notes
 ```
 
 The setup prompts for the vault root, allowed paths, exclusions, and draft folder. It
@@ -35,11 +33,11 @@ the settings elsewhere. The server refuses to guess a vault or broaden permissio
 
 For MCP, configure the host to launch `mcp/server.py` using `uv run` from this skill
 directory or absolute paths. Choose restricted (MCP-only) or trusted (normal host
-tools, CLI or MCP) mode as described in `SKILL.md`; MCP is not an OS sandbox.
+tools, CLI or MCP) mode as described in `references/details.md`; MCP is not an OS sandbox.
 
 The `obsidian-ingest` CLI exposes the same operations as MCP for users who
 intentionally run commands with their ordinary host permissions; only identifiers and
-envelopes differ. See `SKILL.md` for the workflow, evidence limits, and transport
+envelopes differ. See `SKILL.md` for the workflow and `references/details.md` for evidence limits and transport
 differences, and the repository README for result, error, cache, and diagnostics details.
 
 This skill extracts YouTube metadata and existing English JSON3 or VTT captions. It

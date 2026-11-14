@@ -19,7 +19,7 @@ from mcp import ClientSession, StdioServerParameters
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 ROOT = SKILL_ROOT.parents[1]
-_PAGE_SIZE = 80
+_PAGE_SIZE = 200
 
 
 class EvaluationFailure(RuntimeError):

@@ -92,11 +92,12 @@ until they are implemented or deliberately dropped.
   MCP and disable general shell/filesystem tools; trusted setups allow normal host
   tools and CLI or MCP. Our writer remains create-only in both. An agent with shell
   access can bypass it; MCP alone is not an OS sandbox. Do not add an unsafe writer mode.
-- Use prompt-based harness setup instructions specifying desired outcomes and verifying
-  effective permissions with the host's current supported commands. Do not build or
-  harden version-pinned profile converters. Preserve unrelated config, obtain explicit
-  scope/mode choices, and report changes/undo steps; prompts do not guarantee immunity
-  to breaking host changes.
+- Install by giving an agent the skill's `SKILL.md` link; it follows
+  `references/install.md` (harness notes such as `references/hermes.md` are hints, not
+  version pins), specifying desired outcomes and verifying effective permissions with
+  the host's current supported commands. Do not build or harden version-pinned profile
+  converters. Preserve unrelated config, obtain explicit scope/mode choices, and report
+  changes/undo steps; instructions do not guarantee immunity to breaking host changes.
 - The writer uses POSIX directory-relative/no-follow operations and hard-link
   publication. Do not claim it prevents a process with filesystem permissions from
   moving an already-open destination directory; the configured tree must be trusted
@@ -104,11 +105,22 @@ until they are implemented or deliberately dropped.
 - Test filesystem boundaries with temporary directories, never a real vault. Automated
   tests must use fake extraction data and mocked I/O, not live services. Never copy
   private vaults, media, or credentials into the repository.
-- Test installation, agent-written Markdown, and UX through Hermes in a dedicated
-  herdr-app pane using the user-provided control hook and selected URL manifest.
-  Inspect the actual test vault. If the hook is absent, report the trial as blocked;
-  do not substitute a custom runner. Keep live trials separate from automated tests,
-  without golden prose, quality scores, or a benchmark framework.
+- Test installation, agent-written Markdown, and UX in live trials: run Hermes as an
+  `hc` child agent in a throwaway profile with a disposable test vault; if a throwaway
+  profile cannot be created, abort and report the trial. Read earlier reports first.
+  - Install with a frontier model; ingest with a weaker/open-weight model, because the
+    skill must carry weak models.
+  - Run all ingestions in parallel, each in its own fresh session, sending only the
+    bare URL; the skill carries the instructions.
+  - Judge drafts by usefulness in a human-first knowledge base / Zettelkasten (atomic,
+    own words, linked, worth rereading), not LLM-first wiki criteria.
+  - Review the install transcript step by step and each ingest transcript against the
+    skill's workflow steps; list the agent's mistakes at the end of each trial.
+  - Record every trial in the gitignored `trial-reports/` directory: harness, models,
+    sources, per-source success/failure, and mistakes.
+  Inspect the actual test vault. Do not substitute a custom runner. Keep live trials
+  separate from automated tests, without golden prose, quality scores, or a benchmark
+  framework.
 - Add dependencies only for concrete needs. Avoid premature async, generic provider
   frameworks, persistence, and compatibility layers without a real consumer.
 - Do not commit or push unless explicitly requested.
