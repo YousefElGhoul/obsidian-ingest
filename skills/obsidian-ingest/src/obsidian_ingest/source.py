@@ -1,9 +1,11 @@
 """Normalized source ingestion and read-only navigation, independent of adapters."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 
+from obsidian_ingest.diagnostics import TimingObservations, observe_timing
 from obsidian_ingest.extractor import ContentCategory, Provider, detect_provider
+from obsidian_ingest.extractor.acquisition import Acquisition, OriginalCaption
 from obsidian_ingest.extractor.metadata import (
     Chapter,
     ExclusionLookup,
@@ -16,10 +18,18 @@ from obsidian_ingest.filtering import FilteredTranscript, filter_source_transcri
 
 @dataclass(frozen=True, slots=True)
 class Source:
+    """One capture. ``acquisition`` is None only when provenance was never recorded.
+
+    ``original_caption`` carries the raw response from a fresh acquisition to the cache;
+    it is not loaded on cache reads and does not take part in equality.
+    """
+
     metadata: SourceMetadata
     transcript: Transcript
     exclusion_lookup: ExclusionLookup
     filtered_transcript: FilteredTranscript
+    acquisition: Acquisition | None = None
+    original_caption: OriginalCaption | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +41,10 @@ class SourceOverview:
     original_segment_count: int
     retained_segment_count: int
     excluded_segment_count: int
+    caption_language: str
+    caption_generated: bool
+    acquisition: Acquisition | None
+    timing: TimingObservations
 
 
 def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
@@ -42,14 +56,23 @@ def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
         from obsidian_ingest.extractor.providers.youtube import get_youtube_content
 
         categories = ("sponsor",) if exclude_sponsors else ()
-        metadata, transcript, lookup = get_youtube_content(url, categories)
-        filtered = filter_source_transcript(metadata, transcript, lookup)
-        return Source(metadata, transcript, lookup, filtered)
+        content = get_youtube_content(url, categories)
+        filtered = filter_source_transcript(
+            content.metadata, content.transcript, content.exclusions
+        )
+        return Source(
+            content.metadata,
+            content.transcript,
+            content.exclusions,
+            filtered,
+            content.acquisition,
+            content.original_caption,
+        )
     raise ValueError(f"Source ingestion is not supported for provider: {provider}")
 
 
 def get_source_overview(source: Source) -> SourceOverview:
-    """Expose normalized source context and the SponsorBlock outcome without transcript text."""
+    """Expose normalized source context, filtering outcome, and caption observations."""
     return SourceOverview(
         metadata=source.metadata,
         content_category=categorize_content(source.metadata),
@@ -58,6 +81,10 @@ def get_source_overview(source: Source) -> SourceOverview:
         original_segment_count=len(source.transcript.segments),
         retained_segment_count=len(source.filtered_transcript.retained_indices),
         excluded_segment_count=len(source.filtered_transcript.excluded),
+        caption_language=source.transcript.language,
+        caption_generated=source.transcript.is_generated,
+        acquisition=source.acquisition,
+        timing=observe_timing(source.metadata, source.transcript),
     )
 
 

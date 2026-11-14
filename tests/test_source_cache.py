@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from obsidian_ingest import source_cache
+from obsidian_ingest.extractor.acquisition import CaptionError, CaptionFormat, OriginalCaption
 from obsidian_ingest.extractor.metadata import ExcludedRange, ExclusionLookup, ExclusionStatus
 from obsidian_ingest.extractor.providers import youtube
 from obsidian_ingest.extractor.providers.youtube import sponsorblock
@@ -19,6 +20,17 @@ from obsidian_ingest.source import Source, ingest_source
 from obsidian_ingest.source_cache import SourceCache, SourceCacheError, default_cache_path
 
 URL = "https://www.youtube.com/watch?v=video-123"
+CAPTIONS = json.dumps(
+    {
+        "events": [
+            {"tStartMs": 125, "dDurationMs": 2000, "segs": [{"utf8": "Original\nwords"}]},
+            {"tStartMs": 1000, "dDurationMs": 500, "segs": [{"utf8": "Sponsor"}]},
+            {"tStartMs": 1000, "dDurationMs": 100, "segs": [{"utf8": "Same start"}]},
+            {"tStartMs": 2125, "dDurationMs": 750, "segs": [{"utf8": "Next"}]},
+        ]
+    }
+).encode()
+VTT = b"WEBVTT\n\n00:00.125 --> 00:02.125\nOriginal\nwords\n\n00:02.125 --> 00:02.875\nNext\n"
 
 
 @pytest.fixture
@@ -47,16 +59,7 @@ def extraction(monkeypatch):
         "chapters": [{"title": "Main", "start_time": 0, "end_time": 600.125}],
         "subtitles": {"en-US": [{"ext": "json3", "url": "https://example.com/captions"}]},
     }
-    ydl.urlopen.return_value.read.return_value = json.dumps(
-        {
-            "events": [
-                {"tStartMs": 125, "dDurationMs": 2000, "segs": [{"utf8": "Original\nwords"}]},
-                {"tStartMs": 1000, "dDurationMs": 500, "segs": [{"utf8": "Sponsor"}]},
-                {"tStartMs": 1000, "dDurationMs": 100, "segs": [{"utf8": "Same start"}]},
-                {"tStartMs": 2125, "dDurationMs": 750, "segs": [{"utf8": "Next"}]},
-            ]
-        }
-    ).encode()
+    ydl.urlopen.return_value.read.return_value = CAPTIONS
 
     def exclusions(ydl, info, categories):
         return ExclusionLookup(
@@ -110,10 +113,18 @@ def test_miss_hit_equivalent_urls_and_complete_round_trip(tmp_path, extraction):
     lookup.assert_not_called()
     with closing(sqlite3.connect(database)) as connection:
         payload = json.loads(connection.execute("SELECT payload FROM sources").fetchone()[0])
-    assert payload["extraction"]["extractor"] == "yt-dlp"
-    assert payload["extraction"]["extractor_version"]
-    assert datetime.fromisoformat(payload["extraction"]["extracted_at"]).tzinfo is not None
-    assert set(payload) == {"version", "extraction", "metadata", "transcript", "exclusion_lookup"}
+        caption_rows = connection.execute("SELECT format, data FROM caption_payloads").fetchall()
+    assert payload["acquisition"]["extractor"] == "yt-dlp"
+    assert payload["acquisition"]["extractor_version"]
+    assert datetime.fromisoformat(payload["acquisition"]["acquired_at"]).tzinfo is not None
+    assert payload["acquisition"]["caption"]["format"] == "json3"
+    assert set(payload) == {"version", "acquisition", "metadata", "transcript", "exclusion_lookup"}
+    # The original response is stored once, separately from normalized atoms.
+    assert caption_rows == [("json3", CAPTIONS)]
+    assert "events" not in json.dumps(payload)
+    original = restarted.original_caption(first.source_id)
+    assert original == OriginalCaption(CaptionFormat.JSON3, CAPTIONS)
+    assert hit.source.original_caption is None
 
 
 @pytest.mark.parametrize("first_option", [True, False])
@@ -168,6 +179,125 @@ def test_refresh_updates_snapshot_without_changing_id(tmp_path, extraction):
     assert cache.get(first.source_id) == refreshed.source
 
 
+def _rows(path, query):
+    with closing(sqlite3.connect(path)) as connection:
+        return connection.execute(query).fetchall()
+
+
+def test_refresh_replaces_capture_and_cascades_derived_rows(tmp_path, extraction):
+    _, ydl, _ = extraction
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    (old_capture,) = _rows(cache.path, "SELECT capture_id FROM sources")[0]
+    # Stand-in for future capture-derived data (corrections/images); not a product table.
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE derived (capture_id TEXT NOT NULL "
+            "REFERENCES sources(capture_id) ON DELETE CASCADE)"
+        )
+        connection.execute("INSERT INTO derived VALUES (?)", (old_capture,))
+    ydl.extract_info.return_value["subtitles"] = {
+        "en-US": [{"ext": "vtt", "url": "https://example.com/vtt"}]
+    }
+    ydl.urlopen.return_value.read.return_value = VTT
+    refreshed = cache.ingest(URL, refresh=True)
+
+    assert refreshed.source_id == first.source_id
+    (new_capture,) = _rows(cache.path, "SELECT capture_id FROM sources")[0]
+    assert new_capture != old_capture
+    assert _rows(cache.path, "SELECT count(*) FROM sources") == [(1,)]
+    assert _rows(cache.path, "SELECT capture_id, format FROM caption_payloads") == [
+        (new_capture, "vtt")
+    ]
+    assert _rows(cache.path, "SELECT * FROM derived") == []
+    assert cache.original_caption(first.source_id) == OriginalCaption(CaptionFormat.VTT, VTT)
+    assert cache.get(first.source_id).acquisition.caption.format == CaptionFormat.VTT
+
+
+@pytest.mark.parametrize("failure", ["extraction", "empty", "malformed", "unsupported"])
+def test_failed_refresh_keeps_previous_capture_and_payload(tmp_path, extraction, failure):
+    _, ydl, _ = extraction
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    before = (
+        _rows(cache.path, "SELECT * FROM sources"),
+        _rows(cache.path, "SELECT * FROM caption_payloads"),
+    )
+    if failure == "extraction":
+        ydl.extract_info.side_effect = RuntimeError("Network down")
+        expected = RuntimeError
+    elif failure == "empty":
+        ydl.urlopen.return_value.read.return_value = b""
+        expected = CaptionError
+    elif failure == "malformed":
+        ydl.urlopen.return_value.read.return_value = b"{not json"
+        expected = CaptionError
+    else:
+        ydl.extract_info.return_value["subtitles"] = {"en": [{"ext": "srv3", "url": "u"}]}
+        expected = CaptionError
+    with pytest.raises(expected):
+        cache.ingest(URL, refresh=True)
+    after = (
+        _rows(cache.path, "SELECT * FROM sources"),
+        _rows(cache.path, "SELECT * FROM caption_payloads"),
+    )
+    assert after == before
+    assert cache.get(first.source_id) == first.source
+    assert cache.original_caption(first.source_id).data == CAPTIONS
+
+
+def test_vtt_only_source_ingests_and_round_trips(tmp_path, extraction):
+    _, ydl, _ = extraction
+    ydl.extract_info.return_value["subtitles"] = {
+        "en-US": [
+            {"ext": "srv1", "url": "https://example.com/srv1"},
+            {"ext": "vtt", "url": "https://example.com/vtt?signature=secret"},
+        ]
+    }
+    ydl.urlopen.return_value.read.return_value = VTT
+    cache = SourceCache(tmp_path / "sources.db")
+    result = cache.ingest(URL, exclude_sponsors=False)
+    segments = result.source.transcript.segments
+    assert [(item.text, item.start, item.duration) for item in segments] == [
+        ("Original\nwords", 0.125, 2.0),
+        ("Next", 2.125, 0.75),
+    ]
+    ydl.urlopen.assert_called_once_with("https://example.com/vtt?signature=secret")
+    assert SourceCache(cache.path).get(result.source_id) == result.source
+    (stored,) = _rows(cache.path, "SELECT payload FROM sources")[0]
+    assert "signature=secret" not in stored
+
+
+def test_source_without_recorded_acquisition_stores_no_payload(tmp_path, extraction, monkeypatch):
+    snapshot = replace(ingest_source(URL), acquisition=None, original_caption=None)
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: snapshot)
+    cache = SourceCache(tmp_path / "sources.db")
+    result = cache.ingest(URL)
+    assert result.source.acquisition is None
+    assert cache.original_caption(result.source_id) is None
+    with pytest.raises(KeyError):
+        cache.original_caption("missing")
+
+
+def test_mismatched_original_payload_is_rejected_before_writing(tmp_path, extraction, monkeypatch):
+    snapshot = ingest_source(URL)
+    forged = replace(snapshot, original_caption=OriginalCaption(CaptionFormat.JSON3, b"{}"))
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: forged)
+    cache = SourceCache(tmp_path / "sources.db")
+    with pytest.raises(ValueError, match="does not match"):
+        cache.ingest(URL)
+    assert _rows(cache.path, "SELECT count(*) FROM sources") == [(0,)]
+
+
+def test_corrupt_original_payload_fails_explicitly(tmp_path, extraction):
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute("UPDATE caption_payloads SET data = ?", (b"tampered",))
+    with pytest.raises(SourceCacheError, match="Invalid original caption.*refresh=True"):
+        cache.original_caption(first.source_id)
+
+
 def test_failed_sponsor_lookup_round_trips_and_requires_explicit_refresh(tmp_path, extraction):
     _, ydl, lookup = extraction
     lookup.side_effect = RuntimeError("SponsorBlock unavailable")
@@ -217,7 +347,8 @@ def test_corrupt_entries_fail_explicitly_and_refresh_recovers(tmp_path, extracti
     ydl.extract_info.assert_not_called()
     recovered = cache.ingest(URL, refresh=True)
     assert recovered.source_id == first.source_id
-    assert recovered.source == first.source
+    assert replace(recovered.source, acquisition=None) == replace(first.source, acquisition=None)
+    assert recovered.source.acquisition.acquired_at >= first.source.acquisition.acquired_at
 
 
 def test_missing_source_id_is_explicit(tmp_path):
@@ -265,6 +396,32 @@ def test_corrupt_database_and_incompatible_schema_fail(tmp_path):
         connection.execute("PRAGMA user_version = 99")
     with pytest.raises(SourceCacheError, match="Incompatible source cache schema"):
         SourceCache(database)
+
+
+def test_previous_schema_cache_is_kept_and_explains_reset(tmp_path):
+    database = tmp_path / "sources.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE sources (source_id TEXT PRIMARY KEY, provider TEXT NOT NULL, "
+            "native_id TEXT NOT NULL, exclude_sponsors INTEGER NOT NULL, "
+            "payload TEXT NOT NULL, checksum TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO sources VALUES ('old', 'youtube', 'v', 1, '{}', 'x')")
+        connection.execute("PRAGMA user_version = 1")
+    with pytest.raises(SourceCacheError) as raised:
+        SourceCache(database)
+    message = str(raised.value)
+    assert "schema version 1" in message
+    assert f"delete {database}" in message
+    assert "Vault notes are not affected" in message
+    assert _rows(database, "SELECT source_id FROM sources") == [("old",)]
+
+    other = tmp_path / "other.db"
+    with closing(sqlite3.connect(other)) as connection:
+        connection.execute("CREATE TABLE unrelated (x)")
+    with pytest.raises(SourceCacheError, match=f"Unrecognized source cache schema.*delete {other}"):
+        SourceCache(other)
+    assert _rows(other, "SELECT count(*) FROM unrelated") == [(0,)]
 
 
 def test_concurrent_initialization_is_safe(tmp_path):

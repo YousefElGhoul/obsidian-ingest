@@ -4,12 +4,22 @@ from unittest.mock import MagicMock
 import pytest
 
 from obsidian_ingest.extractor import Provider, detect_provider
+from obsidian_ingest.extractor.acquisition import (
+    MAX_CAPTION_BYTES,
+    CaptionError,
+    CaptionFormat,
+    OriginalCaption,
+)
 from obsidian_ingest.extractor.providers import youtube
 from obsidian_ingest.extractor.providers.youtube import (
     choose_caption_format,
     choose_caption_track,
     extract_video_id,
+    get_youtube_content,
+    parse_captions,
     parse_json3,
+    parse_vtt,
+    sponsorblock,
 )
 from obsidian_ingest.extractor.transcript import (
     TranscriptSegment,
@@ -158,6 +168,200 @@ def test_choose_caption_format_prefers_json3_then_vtt() -> None:
     formats = [{"ext": "vtt"}, {"ext": "json3"}]
     assert choose_caption_format(formats) == {"ext": "json3"}
     assert choose_caption_format([{"ext": "vtt"}]) == {"ext": "vtt"}
+
+
+def test_unsupported_caption_formats_fail_explicitly() -> None:
+    with pytest.raises(CaptionError, match="offered: srv1, ttml"):
+        choose_caption_format([{"ext": "ttml"}, {"ext": "srv1"}])
+    with pytest.raises(CaptionError, match="offered: none"):
+        choose_caption_format([])
+
+
+def test_parse_vtt_keeps_cues_multiline_overlapping_and_unicode() -> None:
+    text = (
+        "﻿WEBVTT Kind: captions\nLanguage: en\n\n"
+        "STYLE\n::cue { color: lime }\n\n"
+        "NOTE a comment\nthat spans lines\n\n"
+        "intro\n00:00:01.250 --> 00:00:04.000 align:start position:0%\n"
+        "<v Speaker>Café &amp; naïve</v>\n<c.loud>second</c> line  \n\n"
+        "00:02.000 --> 00:03.500\nOverlapping 日本語 🙂\n\n"
+        "00:00:05.000 --> 00:00:06.000\n\n"
+        "1:00:00.000 --> 1:00:00.010\n<00:00:01.000><c> rolling</c>\n\n"
+    )
+    assert parse_vtt(text) == (
+        TranscriptSegment("Café & naïve\nsecond line", 1.25, 2.75),
+        TranscriptSegment("Overlapping 日本語 🙂", 2.0, 1.5),
+        TranscriptSegment("rolling", 3600.0, 0.01),
+    )
+
+
+def test_parse_vtt_accepts_crlf() -> None:
+    assert parse_vtt("WEBVTT\r\n\r\n00:01.000 --> 00:02.000\r\nHi\r\n") == (
+        TranscriptSegment("Hi", 1.0, 1.0),
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("00:01.000 --> 00:02.000\nNo header", "missing WEBVTT header"),
+        ("WEBVTTX\n\n00:01.000 --> 00:02.000\nHi", "missing WEBVTT header"),
+        ("WEBVTT\n\n00:01 --> 00:02\nBad timing", "Malformed WebVTT cue timing"),
+        ("WEBVTT\n\nidentifier only", "Malformed WebVTT cue timing"),
+        ("WEBVTT\n\n00:01:61.000 --> 00:02.000\nHi", "Malformed WebVTT cue timing"),
+        ("WEBVTT\n\n00:03.000 --> 00:02.000\nBackwards", "ends before it starts"),
+        (
+            "WEBVTT\n\n00:03.000 --> 00:04.000\nB\n\n00:01.000 --> 00:02.000\nA",
+            "not in start-time order",
+        ),
+        # A cue without a blank line after the header must not be dropped silently.
+        (
+            "WEBVTT\n00:00.000 --> 00:01.000\nFIRST\n\n00:40.000 --> 00:41.000\nSECOND\n",
+            "cue timing inside the header block",
+        ),
+        (
+            "WEBVTT Kind: captions\nLanguage: en\n00:00.000 --> 00:01.000\nFIRST",
+            "cue timing inside the header block",
+        ),
+    ],
+)
+def test_malformed_vtt_fails_explicitly(text: str, message: str) -> None:
+    with pytest.raises(CaptionError, match=message):
+        parse_vtt(text)
+
+
+@pytest.mark.parametrize(
+    ("data", "caption_format", "message"),
+    [
+        (b"", CaptionFormat.JSON3, "Empty json3"),
+        (b"  \n", CaptionFormat.VTT, "Empty vtt"),
+        (b"\xff\xfe", CaptionFormat.JSON3, "not UTF-8"),
+        (b"{not json", CaptionFormat.JSON3, "Malformed JSON3"),
+        (b"[]", CaptionFormat.JSON3, "must be an object"),
+        (b'{"events": {}}', CaptionFormat.JSON3, "events must be a list"),
+        (b'{"events": [1]}', CaptionFormat.JSON3, "event 0 must be an object"),
+        (
+            b'{"events": [{"tStartMs": "1", "dDurationMs": 1, "segs": [{"utf8": "x"}]}]}',
+            CaptionFormat.JSON3,
+            "non-numeric tStartMs",
+        ),
+        (
+            b'{"events": [{"tStartMs": -1, "dDurationMs": 1, "segs": [{"utf8": "x"}]}]}',
+            CaptionFormat.JSON3,
+            "invalid tStartMs",
+        ),
+        (
+            b'{"events": [{"tStartMs": 1, "dDurationMs": 1, "segs": [{"utf8": 5}]}]}',
+            CaptionFormat.JSON3,
+            "non-text",
+        ),
+        (b'{"events": []}', CaptionFormat.JSON3, "no timed caption text"),
+        (b'{"wireMagic": "pb3"}', CaptionFormat.JSON3, "no timed caption text"),
+        (b"WEBVTT\n\nNOTE only\n", CaptionFormat.VTT, "no timed caption text"),
+    ],
+)
+def test_unusable_caption_responses_fail_explicitly(
+    data: bytes, caption_format: CaptionFormat, message: str
+) -> None:
+    with pytest.raises(CaptionError, match=message):
+        parse_captions(data, caption_format)
+
+
+def test_parse_captions_dispatches_by_format() -> None:
+    json3 = json.dumps(
+        {"events": [{"tStartMs": 0, "dDurationMs": 5, "segs": [{"utf8": "Ünïcode"}]}]},
+        ensure_ascii=False,
+    ).encode()
+    assert parse_captions(json3, CaptionFormat.JSON3) == (TranscriptSegment("Ünïcode", 0, 0.005),)
+    vtt = b"WEBVTT\n\n00:00.000 --> 00:00.005\n\xc3\x9cn\xc3\xafcode\n"
+    assert parse_captions(vtt, CaptionFormat.VTT) == (TranscriptSegment("Ünïcode", 0, 0.005),)
+
+
+def _content(monkeypatch: pytest.MonkeyPatch, info: dict, payload: object) -> MagicMock:
+    factory = MagicMock()
+    ydl = factory.return_value.__enter__.return_value
+    ydl.extract_info.return_value = {"id": "abc123", "duration": 10, **info}
+    ydl.urlopen.return_value.read.return_value = payload
+    monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
+    monkeypatch.setattr(
+        sponsorblock, "fetch_exclusions", MagicMock(side_effect=RuntimeError("offline"))
+    )
+    return ydl
+
+
+JSON3 = b'{"events": [{"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "Hi"}]}]}'
+
+
+@pytest.mark.parametrize(
+    ("info", "language", "generated", "translated"),
+    [
+        ({"subtitles": {"en": [{"ext": "json3", "url": "https://x/m"}]}}, "en", False, None),
+        (
+            {"automatic_captions": {"en-orig": [{"ext": "json3", "url": "https://x/o"}]}},
+            "en",
+            True,
+            False,
+        ),
+        (
+            {"automatic_captions": {"en": [{"ext": "json3", "url": "https://x/t?tlang=en"}]}},
+            "en",
+            True,
+            True,
+        ),
+        (
+            {"automatic_captions": {"en-US": [{"ext": "json3", "url": "https://x/a"}]}},
+            "en-US",
+            True,
+            None,
+        ),
+    ],
+)
+def test_content_records_caption_provenance_without_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+    info: dict,
+    language: str,
+    generated: bool,
+    translated: bool | None,
+) -> None:
+    _content(monkeypatch, info, JSON3)
+    content = get_youtube_content("https://youtu.be/abc123")
+    assert content.transcript.language == language
+    assert content.transcript.is_generated is generated
+    track = content.acquisition.caption
+    assert track.format == CaptionFormat.JSON3
+    assert track.is_translated is translated
+    assert track.payload_bytes == len(JSON3)
+    assert content.original_caption == OriginalCaption(CaptionFormat.JSON3, JSON3)
+    assert track.payload_sha256 == content.original_caption.sha256
+    assert content.acquisition.extractor == "yt-dlp"
+    assert content.acquisition.extractor_version == youtube.yt_dlp.version.__version__
+    assert content.acquisition.acquired_at.tzinfo is not None
+    assert content.exclusions.error_message == "offline"
+    # Signed caption URLs are used for retrieval only and never recorded.
+    assert "https://x" not in repr(content.acquisition)
+
+
+def test_unknown_extractor_version_stays_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    _content(monkeypatch, {"subtitles": {"en": [{"ext": "json3", "url": "u"}]}}, JSON3)
+    monkeypatch.delattr(youtube.yt_dlp.version, "__version__")
+    assert get_youtube_content("https://youtu.be/abc123").acquisition.extractor_version is None
+
+
+def test_oversized_or_non_bytes_caption_response_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    ydl = _content(monkeypatch, {"subtitles": {"en": [{"ext": "vtt", "url": "u"}]}}, b"")
+    ydl.urlopen.return_value.read.return_value = b"x" * (MAX_CAPTION_BYTES + 1)
+    with pytest.raises(CaptionError, match="exceeds"):
+        get_youtube_content("https://youtu.be/abc123")
+    ydl.urlopen.return_value.read.assert_called_with(MAX_CAPTION_BYTES + 1)
+    ydl.urlopen.return_value.read.return_value = "text"
+    with pytest.raises(CaptionError, match="did not return bytes"):
+        get_youtube_content("https://youtu.be/abc123")
+
+
+def test_selected_format_without_url_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    _content(monkeypatch, {"subtitles": {"en": [{"ext": "json3"}]}}, JSON3)
+    with pytest.raises(CaptionError, match="no URL"):
+        get_youtube_content("https://youtu.be/abc123")
 
 
 def test_detect_youtube() -> None:

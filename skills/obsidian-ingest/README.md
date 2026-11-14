@@ -12,19 +12,20 @@ npx skills add <owner>/obsidian-ingest --skill obsidian-ingest
 
 ## Setup
 
-Requires network access for YouTube extraction. For Hermes, first ask the user for
-the named profile and explicit vault root, allowed paths, exclusions, and draft folder.
-Then run `scripts/install-hermes.sh` with those values. It installs `uv` and Python
-3.13 user-locally if needed and configures only the selected Hermes 0.22.5 CLI/TUI
-profile. See [the Hermes setup guide](references/hermes.md) for repeat install and
-restore instructions.
+Requires network access for YouTube extraction. For Hermes, use the
+[installation prompt](references/hermes.md): select the profile/session, permission
+mode, vault root, allowed paths, exclusions, and draft folder explicitly. Hermes
+discovers its current setup commands and verifies the effective configuration; no
+particular Hermes version is required by the prompt. Prompt-based setup has not yet
+been validated end to end. Hermes is optional; no second harness is currently claimed
+as end-to-end validated.
 
 For standalone use with another harness, install Python 3.13+ and [uv](https://docs.astral.sh/uv/),
 then run from this directory:
 
 ```bash
 uv sync
-obsidian-ingest setup
+uv run obsidian-ingest setup
 ```
 
 The setup prompts for the vault root, allowed paths, exclusions, and draft folder. It
@@ -32,12 +33,17 @@ validates the scope, creates `config/settings.toml` with private file permission
 never overwrites an existing config. Use `obsidian-ingest setup --config PATH` to put
 the settings elsewhere. The server refuses to guess a vault or broaden permissions.
 
-Configure a non-Hermes harness to launch `mcp/server.py` using `uv run` from this
-skill directory. Expose only this server's tools to the ingestion profile; MCP
-restrictions do not sandbox other host tools.
+For MCP, configure the host to launch `mcp/server.py` using `uv run` from this skill
+directory or absolute paths. Choose restricted (MCP-only) or trusted (normal host
+tools, CLI or MCP) mode as described in `SKILL.md`; MCP is not an OS sandbox.
 
-The `obsidian-ingest` CLI offers the same individual operations for users who
-intentionally run commands with their ordinary host permissions. See `SKILL.md`.
+The `obsidian-ingest` CLI exposes the same operations as MCP for users who
+intentionally run commands with their ordinary host permissions; only identifiers and
+envelopes differ. See `SKILL.md` for the workflow, evidence limits, and transport
+differences, and the repository README for result, error, cache, and diagnostics details.
 
-This skill currently extracts YouTube metadata and existing English captions. It
-does not transcribe audio, run an agent, or support Instagram/TikTok extraction.
+This skill extracts YouTube metadata and existing English JSON3 or VTT captions. It
+does not download media, prepare frames, run OCR/STT, record corrections, run an agent,
+or support Instagram/TikTok extraction. The alpha target is Linux and English-caption
+YouTube. The repository's `TODO.md` owns the roadmap, hands-on Hermes trials, and
+deferred work.

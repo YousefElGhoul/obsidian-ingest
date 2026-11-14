@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 
@@ -95,6 +96,29 @@ def test_search_pagination_cursor_and_note_revision_reads(tmp_path):
             reader.read(
                 note["note_id"], offset=next_page["next_offset"] or 0, revision=page["revision"]
             )
+
+
+def test_search_cursor_is_stateless_but_bound_to_access_policy(tmp_path):
+    root = _vault(tmp_path)
+    with VaultReader(_settings(root)) as reader:
+        first = reader.search("retry", limit=1)
+    with VaultReader(_settings(root)) as reader:
+        second = reader.search("retry", limit=1, cursor=first["next_cursor"])
+        assert second["notes"][0]["path"] == "Engineering/Retry Policies.md"
+    with VaultReader(_settings(root, excluded=("Private", "Computer Science"))) as reader:
+        with pytest.raises(ValueError, match="INVALID_CURSOR: cursor does not match"):
+            reader.search("retry", limit=1, cursor=first["next_cursor"])
+        for malformed in ("", "!!!", "x" * 5000, first["next_cursor"][:-3]):
+            with pytest.raises(ValueError, match="INVALID_CURSOR"):
+                reader.search("retry", limit=1, cursor=malformed)
+    cursor = first["next_cursor"]
+    decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8")
+    version, fingerprint, query, scope, offset = json.loads(decoded)
+    assert (version, query, scope, offset) == (1, "retry", "both", 1)
+    assert len(fingerprint) == 32 and all(char in "0123456789abcdef" for char in fingerprint)
+    # The decoded payload reveals neither the vault root nor the configured scope.
+    for secret in (str(root), str(root.resolve()), root.name, "Private"):
+        assert secret not in decoded
 
 
 def test_relative_path_references_require_access_and_match_revision(tmp_path):

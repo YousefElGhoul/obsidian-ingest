@@ -10,7 +10,15 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from obsidian_ingest import evaluation
-from obsidian_ingest.evaluation import evaluate_video, main, parse_manifest, write_report
+from obsidian_ingest.evaluation import (
+    evaluate_source,
+    main,
+    parse_manifest,
+    report_stem,
+    write_report,
+)
+
+_URL = "https://www.youtube.com/watch?v=abcdefghijk"
 
 
 def _result(data=None, *, error: str | None = None):
@@ -89,7 +97,7 @@ class FakeSession:
 
 def test_evaluate_video_records_all_source_tool_content_without_writing_drafts() -> None:
     session = FakeSession()
-    report = asyncio.run(evaluate_video(session, "abcdefghijk", [{"name": "tool"}]))
+    report = asyncio.run(evaluate_source(session, _URL, [{"name": "tool"}]))
 
     assert report["status"] == "success"
     assert report["transcript_segment_count"] == 2
@@ -104,7 +112,8 @@ def test_evaluate_video_records_all_source_tool_content_without_writing_drafts()
         "read_chapter",
     ]
     assert all(name != "create_draft" for name, _ in session.calls)
-    assert session.calls[0][1] == {"url": "https://www.youtube.com/watch?v=abcdefghijk"}
+    assert session.calls[0][1] == {"url": _URL}
+    assert report["url"] == _URL
     assert all("include_excluded" not in arguments for _, arguments in session.calls)
     assert all(
         arguments["limit"] == 80
@@ -122,27 +131,57 @@ def test_evaluate_video_records_and_stops_on_tool_errors() -> None:
         async def call_tool(self, name, arguments):
             return _result(error="simulated ingestion failure")
 
-    report = asyncio.run(evaluate_video(FailedSession(), "abcdefghijk", []))
+    report = asyncio.run(evaluate_source(FailedSession(), _URL, []))
 
     assert report["status"] == "failed"
     assert "simulated ingestion failure" in report["error"]
     assert [call["name"] for call in report["calls"]] == ["ingest_source"]
 
 
-def test_manifest_parsing_ignores_comments_and_rejects_bad_ids(tmp_path: Path) -> None:
+def test_manifest_parsing_keeps_url_order_and_skips_comments(tmp_path: Path) -> None:
     manifest = tmp_path / "videos.txt"
-    manifest.write_text("# heading\nabcdefghijk # note\n\nABCDEFGHIJK\n", encoding="utf-8")
-    assert parse_manifest(manifest) == ("abcdefghijk", "ABCDEFGHIJK")
+    manifest.write_text(
+        f"# heading\n  {_URL}  \n\n   # indented comment\nhttps://youtu.be/ABCDEFGHIJK?t=5#frag\n",
+        encoding="utf-8",
+    )
 
-    manifest.write_text("not-a-video-id\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="line 1"):
+    assert parse_manifest(manifest) == (_URL, "https://youtu.be/ABCDEFGHIJK?t=5#frag")
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("abcdefghijk", "Invalid source URL"),
+        ("www.youtube.com/watch?v=abcdefghijk", "Invalid source URL"),
+        ("ftp://example.com/video", "Invalid source URL"),
+        ("https:///watch?v=abcdefghijk", "Invalid source URL"),
+        (f"{_URL} # note", "Invalid source URL"),
+        ("https://[bad/watch", "Invalid source URL"),
+        (_URL, "Duplicate source URL"),
+    ],
+)
+def test_manifest_parsing_rejects_malformed_lines_by_line_number(
+    tmp_path: Path, line: str, message: str
+) -> None:
+    manifest = tmp_path / "videos.txt"
+    manifest.write_text(f"# heading\n{_URL}\n\n{line}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"{message} at manifest line 4"):
         parse_manifest(manifest)
 
 
+def test_report_stem_is_stable_and_filesystem_safe() -> None:
+    stem = report_stem(_URL)
+
+    assert stem == report_stem(_URL)
+    assert stem != report_stem("https://youtu.be/abcdefghijk")
+    assert stem.startswith("mcp_eval_") and stem.replace("_", "").isalnum()
+
+
 def test_failure_report_does_not_replace_previous_success(tmp_path: Path) -> None:
-    success = {"video_id": "abcdefghijk", "status": "success"}
+    success = {"url": _URL, "status": "success"}
     previous = write_report(tmp_path, success)
-    failed = {"video_id": "abcdefghijk", "status": "failed", "error": "offline"}
+    failed = {"url": _URL, "status": "failed", "error": "offline"}
 
     failure_path = write_report(tmp_path, failed)
 
@@ -150,7 +189,8 @@ def test_failure_report_does_not_replace_previous_success(tmp_path: Path) -> Non
         previous.read_text(encoding="utf-8")
         == json.dumps(success, ensure_ascii=False, indent=2) + "\n"
     )
-    assert failure_path.name == "mcp_eval_abcdefghijk.failed.json"
+    assert previous.name == f"{report_stem(_URL)}.json"
+    assert failure_path.name == f"{report_stem(_URL)}.failed.json"
     assert json.loads(failure_path.read_text(encoding="utf-8")) == failed
 
 
@@ -158,13 +198,25 @@ def test_main_creates_output_directory_for_empty_manifest(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     manifest = tmp_path / "empty.txt"
-    manifest.write_text("# no ids\n", encoding="utf-8")
+    manifest.write_text("# no urls\n", encoding="utf-8")
     output = tmp_path / "reports"
     monkeypatch.setattr(sys, "argv", ["evaluate.py", str(manifest), str(output), "0"])
 
     assert main() == 0
     assert output.is_dir()
-    assert "Manifest has no video IDs" in capsys.readouterr().err
+    assert "Manifest has no source URLs" in capsys.readouterr().err
+
+
+def test_main_rejects_malformed_manifest_line(tmp_path: Path, monkeypatch, capsys) -> None:
+    manifest = tmp_path / "videos.txt"
+    manifest.write_text("# old format\nabcdefghijk\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", str(manifest), str(tmp_path / "reports"), "0"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 2
+    assert "Invalid source URL at manifest line 2: abcdefghijk" in capsys.readouterr().err
 
 
 def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path) -> None:
@@ -172,11 +224,11 @@ def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path
     vault.mkdir()
     server_code = (
         "import sys; from pathlib import Path; from obsidian_ingest.cli import _run_mcp; "
-        "_run_mcp(Path(sys.argv[1]), '00 Inbox/AI Drafts')"
+        "_run_mcp(Path(sys.argv[1]), '00 Inbox/AI Drafts', Path(sys.argv[2]))"
     )
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-c", server_code, str(vault)],
+        args=["-c", server_code, str(vault), str(tmp_path / "cache.db")],
         cwd=str(Path(__file__).resolve().parents[1]),
         env={
             **os.environ,

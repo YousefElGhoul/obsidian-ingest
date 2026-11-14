@@ -1,5 +1,6 @@
 """Human-readable source and SponsorBlock diagnostics without transcript partitioning."""
 
+from obsidian_ingest.diagnostics import source_diagnostics
 from obsidian_ingest.extractor.metadata import categorize_content
 from obsidian_ingest.extractor.transcript import format_timestamp
 from obsidian_ingest.filtering import ExcludedSegment
@@ -34,6 +35,42 @@ def _excluded_indices(excluded: tuple[ExcludedSegment, ...], range_index: int) -
     return tuple(item.source_index for item in excluded if range_index in item.range_indices)
 
 
+def _known(value: object) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _caption_lines(source: Source) -> list[str]:
+    diagnostics = source_diagnostics(source)
+    caption = diagnostics["caption"]
+    acquisition = diagnostics["acquisition"]
+    timing = diagnostics["timing"]
+    lines = [
+        (
+            f"Captions: {caption['language']}, {caption['origin']}, "
+            f"format {_known(caption['format'])}, translated {_known(caption['translated'])}"
+        ),
+        (
+            f"Acquired: {_known(acquisition['acquired_at'])} with "
+            f"{_known(acquisition['extractor'])} {_known(acquisition['extractor_version'])}"
+        ),
+        (
+            f"Caption extent: {_known(timing['first_caption_start'])}-"
+            f"{_known(timing['last_caption_end'])} s; provider duration "
+            f"{_known(timing['provider_duration_seconds'])} s"
+        ),
+    ]
+    for gap in timing["gaps"]:
+        lines.append(f"Caption gap ({gap['position']}): {gap['start']}-{gap['end']} s")
+    if timing["gaps_truncated"]:
+        lines.append(
+            f"Caption gaps: {timing['gap_count']} total; first {len(timing['gaps'])} shown"
+        )
+    if timing["overrun_seconds"] is not None:
+        lines.append(f"Captions extend {timing['overrun_seconds']} s past provider duration")
+    lines.append(timing["note"])
+    return lines
+
+
 def format_source_inspection(source: Source) -> str:
     """Show the retained source view and filtering outcome, without creating chunks."""
     metadata = source.metadata
@@ -58,6 +95,7 @@ def format_source_inspection(source: Source) -> str:
         lines.append(f"Lookup time: {lookup.retrieved_at.isoformat()}")
     if lookup.error_message:
         lines.append(f"Sponsor filtering warning: {lookup.error_message}")
+    lines.extend(_caption_lines(source))
 
     lines.extend(["", "Sponsor ranges:"])
     if filtered.ranges:

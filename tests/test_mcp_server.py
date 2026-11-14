@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -12,7 +13,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
-from obsidian_ingest import mcp_server, source_cache
+from obsidian_ingest import cli, mcp_server, responses, source_cache
 from obsidian_ingest.config import VaultSettings
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.extractor import Provider
@@ -262,13 +263,13 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             missing = await client.call_tool("read_transcript", {"source_id": "not-ingested"})
             assert missing.is_error
-            assert "Unknown source_id" in missing.content[0].text
+            assert "SOURCE_NOT_FOUND: Unknown source_id" in missing.content[0].text
 
             invalid_page = await client.call_tool(
                 "read_transcript", {"source_id": source_id, "limit": 81}
             )
             assert invalid_page.is_error
-            assert "limit must be" in invalid_page.content[0].text
+            assert "INVALID_ARGUMENT: limit must be" in invalid_page.content[0].text
 
     asyncio.run(exercise_tools())
     ingest.assert_called_once_with(URL, exclude_sponsors=True)
@@ -404,7 +405,7 @@ def test_long_transcript_pages_are_bounded_and_preserve_every_atom(tmp_path, mon
 def test_single_oversized_atom_fails_without_truncation():
     segment = TranscriptSegment("x" * mcp_server.MAX_PAGE_ENVELOPE_BYTES, 0, 1)
     with pytest.raises(ValueError, match="segment 7 exceeds"):
-        mcp_server._segment_page(((7, segment),), 0, 40)
+        responses.segment_page(((7, segment),), 0, 40)
 
 
 def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypatch):
@@ -763,5 +764,378 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
             injected_text = injected_path.read_text(encoding="utf-8")
             assert "[[Unverified Note]]" in injected_text
             assert "[a Markdown link](https://example.com)" in injected_text
+
+    asyncio.run(exercise())
+
+
+def _cli_json(monkeypatch, capsys, *args: str):
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
+    cli.main()
+    return json.loads(capsys.readouterr().out)
+
+
+def _cli_error(monkeypatch, capsys, *args: str) -> dict:
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    return json.loads(captured.err)["error"]
+
+
+def _mcp_error_text(result) -> str:
+    """Strip the MCP framework's envelope prefix to get the shared `CODE: message` text."""
+    assert result.is_error
+    text = result.content[0].text
+    return text.split(": ", 1)[1] if text.startswith("Error executing tool ") else text
+
+
+def _without_reuse(ingest_result: dict) -> dict:
+    copy = json.loads(json.dumps(ingest_result))
+    copy["overview"]["diagnostics"]["acquisition"].pop("reused_from_cache")
+    return copy
+
+
+@pytest.fixture
+def vtt_only_youtube(monkeypatch):
+    """Fake yt-dlp offering only WebVTT captions that end 290 s before the video does."""
+    from obsidian_ingest.extractor.providers import youtube
+    from obsidian_ingest.extractor.providers.youtube import sponsorblock
+
+    factory = MagicMock()
+    ydl = factory.return_value.__enter__.return_value
+    ydl.extract_info.return_value = {
+        "id": "video-123",
+        "title": "VTT only",
+        "duration": 300,
+        "subtitles": {"en": [{"ext": "vtt", "url": "https://example.com/vtt"}]},
+    }
+    ydl.urlopen.return_value.read.return_value = (
+        b"WEBVTT\n\n00:00.000 --> 00:05.000\nSpoken start\n\n"
+        b"00:04.000 --> 00:10.000\nOverlapping end\n"
+    )
+    monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
+    monkeypatch.setattr(
+        sponsorblock, "fetch_exclusions", MagicMock(side_effect=RuntimeError("SponsorBlock down"))
+    )
+    return ydl
+
+
+def test_cli_and_mcp_expose_identical_vtt_diagnostics(
+    tmp_path, monkeypatch, capsys, vtt_only_youtube
+):
+    database = tmp_path / "cache.db"
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cli_ingest = _cli_json(monkeypatch, capsys, "ingest-source", URL, "--cache-db", str(database))
+    diagnostics = cli_ingest["overview"]["diagnostics"]
+    payload = vtt_only_youtube.urlopen.return_value.read.return_value
+    assert diagnostics["caption"] == {
+        "language": "en",
+        "origin": "manual",
+        "format": "vtt",
+        "translated": None,
+        "original_payload_bytes": len(payload),
+        "original_payload_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    assert diagnostics["acquisition"]["extractor"] == "yt-dlp"
+    assert diagnostics["acquisition"]["acquired_at"].endswith("+00:00")
+    assert diagnostics["acquisition"]["reused_from_cache"] is False
+    sponsor_filtering = cli_ingest["overview"]["sponsor_filtering"]
+    assert (sponsor_filtering["status"], sponsor_filtering["error"]) == (
+        "failed",
+        "SponsorBlock down",
+    )
+    assert diagnostics["timing"]["last_caption_end"] == 10.0
+    assert diagnostics["timing"]["provider_duration_seconds"] == 300.0
+    assert diagnostics["timing"]["gaps"] == [{"start": 10.0, "end": 300.0, "position": "trailing"}]
+    source_id = cli_ingest["source_id"]
+    cli_overview = _cli_json(
+        monkeypatch, capsys, "get-source-overview", source_id, "--cache-db", str(database)
+    )
+    assert cli_overview["diagnostics"]["acquisition"]["reused_from_cache"] is None
+    vtt_only_youtube.extract_info.side_effect = AssertionError("reuse must not re-acquire")
+    server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=database)
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            ingested = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
+            assert ingested["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is True
+            assert _without_reuse(ingested) == _without_reuse(cli_ingest) | {"cached": True}
+            overview = _tool_data(
+                await client.call_tool("get_source_overview", {"source_id": source_id})
+            )
+            assert overview == cli_overview
+
+    asyncio.run(exercise())
+
+
+def test_ingest_and_cache_errors_have_the_same_meaning_in_cli_and_mcp(
+    tmp_path, monkeypatch, capsys
+):
+    from obsidian_ingest.extractor.acquisition import CaptionError
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    database = tmp_path / "cache.db"
+    monkeypatch.setattr(
+        source_cache,
+        "ingest_source",
+        MagicMock(side_effect=CaptionError("Caption response is not valid WebVTT")),
+    )
+    server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=database)
+    old = tmp_path / "old-cache.db"
+    with closing(sqlite3.connect(old)) as connection, connection:
+        connection.execute("CREATE TABLE sources (source_id TEXT)")
+        connection.execute("PRAGMA user_version = 1")
+    # An incompatible cache must not prevent the MCP server from starting.
+    old_server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=old)
+
+    cases = [
+        (
+            ("ingest-source", URL, "--cache-db", str(database)),
+            server,
+            "ingest_source",
+            {"url": URL},
+        ),
+        (
+            ("ingest-source", "https://example.com/video", "--cache-db", str(database)),
+            server,
+            "ingest_source",
+            {"url": "https://example.com/video"},
+        ),
+        (
+            ("get-source-overview", "abc", "--cache-db", str(old)),
+            old_server,
+            "get_source_overview",
+            {"source_id": "abc"},
+        ),
+    ]
+    cli_errors = [_cli_error(monkeypatch, capsys, *args) for args, *_ in cases]
+    assert [error["code"] for error in cli_errors] == [
+        "INGEST_FAILED",
+        "INVALID_ARGUMENT",
+        "SOURCE_CACHE_ERROR",
+    ]
+    assert "not valid WebVTT" in cli_errors[0]["message"]
+    reset = cli_errors[2]["message"]
+    assert f"Incompatible source cache schema version 1 at {old}" in reset
+    assert f"delete {old}" in reset and "ingest URLs again" in reset
+
+    async def exercise() -> list[str]:
+        texts = []
+        for _, instance, tool, arguments in cases:
+            async with Client(instance) as client:
+                texts.append(_mcp_error_text(await client.call_tool(tool, arguments)))
+        return texts
+
+    assert asyncio.run(exercise()) == [
+        f"{error['code']}: {error['message']}" for error in cli_errors
+    ]
+    with closing(sqlite3.connect(old)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_cli_and_mcp_return_identical_results_except_identifiers(tmp_path, monkeypatch, capsys):
+    source = _sample_source()
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
+    vault = tmp_path / "vault"
+    (vault / "Engineering").mkdir(parents=True)
+    (vault / "Private").mkdir()
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    for index in range(3):
+        (vault / f"Engineering/Retry {index}.md").write_text("Retry budgets.", encoding="utf-8")
+    (vault / "Private/Retry secret.md").write_text("Retry secret.", encoding="utf-8")
+    config = tmp_path / "settings.toml"
+    config.write_text(
+        f'[vault]\nroot = "{vault}"\nallowed = ["*"]\nexcluded = ["Private"]\n', encoding="utf-8"
+    )
+    database = tmp_path / "cache.db"
+    vault_settings = VaultSettings(vault.resolve(), ("*",), ("Private",))
+    server = mcp_server.create_server(
+        DraftWriterSettings(vault.resolve()), cache_db=database, vault_settings=vault_settings
+    )
+    cache_args = ("--cache-db", str(database))
+    cli_ingest = _cli_json(monkeypatch, capsys, "ingest-source", URL, *cache_args)
+    source_id = cli_ingest["source_id"]
+    cli_results = {
+        "overview": _cli_json(monkeypatch, capsys, "get-source-overview", source_id, *cache_args),
+        "chapters": _cli_json(monkeypatch, capsys, "list-chapters", source_id, *cache_args),
+        "exclusions": _cli_json(monkeypatch, capsys, "list-exclusions", source_id, *cache_args),
+        "transcript": _cli_json(
+            monkeypatch, capsys, "read-transcript", source_id, "--limit", "2", *cache_args
+        ),
+        "chapter": _cli_json(
+            monkeypatch, capsys, "read-chapter", source_id, "0", "--offset", "1", *cache_args
+        ),
+    }
+    cli_search = _cli_json(
+        monkeypatch, capsys, "search-vault", "retry", "--limit", "2", "--config", str(config)
+    )
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            ingested = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
+            # Only cache reuse differs: the CLI acquired, MCP then reused that capture.
+            assert (
+                cli_ingest["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is False
+            )
+            assert ingested["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is True
+            assert _without_reuse(ingested) == _without_reuse(cli_ingest) | {"cached": True}
+            # This fake source's captions end at 3 s of a 600 s video.
+            assert ingested["overview"]["diagnostics"]["timing"]["gaps"] == [
+                {"start": 3.0, "end": 600.0, "position": "trailing"}
+            ]
+            assert (
+                cli_results["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is None
+            )
+            calls = {
+                "overview": ("get_source_overview", {}),
+                "chapters": ("list_chapters", {}),
+                "exclusions": ("list_exclusions", {}),
+                "transcript": ("read_transcript", {"limit": 2}),
+                "chapter": ("read_chapter", {"chapter_index": 0, "offset": 1}),
+            }
+            for key, (tool, arguments) in calls.items():
+                result = await client.call_tool(tool, {"source_id": source_id} | arguments)
+                assert _tool_data(result) == cli_results[key], key
+            search = json.loads(
+                (await client.call_tool("search_vault", {"query": "retry", "limit": 2}))
+                .content[0]
+                .text
+            )
+            assert all(note.pop("note_id").startswith("note_") for note in search["notes"])
+            assert search == cli_search
+            # The search cursor is shared: an MCP cursor continues a CLI search and vice versa.
+            continued = json.loads(
+                (
+                    await client.call_tool(
+                        "search_vault",
+                        {"query": "retry", "limit": 2, "cursor": cli_search["next_cursor"]},
+                    )
+                )
+                .content[0]
+                .text
+            )
+            assert [note["path"] for note in continued["notes"]] == ["Engineering/Retry 2.md"]
+            errors = {
+                "SOURCE_NOT_FOUND": ("read_transcript", {"source_id": "missing"}),
+                "INVALID_ARGUMENT": ("read_transcript", {"source_id": source_id, "offset": -1}),
+                "INVALID_CURSOR": ("search_vault", {"query": "retry", "cursor": "bogus"}),
+                "NOTE_UNAVAILABLE": ("read_vault_note", {"note_id": "note_unknown"}),
+            }
+            for code, (tool, arguments) in errors.items():
+                failure = await client.call_tool(tool, arguments)
+                assert failure.is_error
+                assert f"{code}: " in failure.content[0].text
+
+    asyncio.run(exercise())
+
+
+def test_mcp_search_cursor_survives_restart_but_not_scope_change(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "Notes").mkdir(parents=True)
+    (vault / "Private").mkdir()
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    for index in range(3):
+        (vault / f"Notes/Fixture {index}.md").write_text("fixture", encoding="utf-8")
+    settings = DraftWriterSettings(vault)
+
+    def server(excluded: tuple[str, ...]):
+        return mcp_server.create_server(
+            settings,
+            cache_db=tmp_path / "cache.db",
+            vault_settings=VaultSettings(vault, ("*",), excluded),
+        )
+
+    async def search(instance, arguments: dict):
+        async with Client(instance) as client:
+            return await client.call_tool("search_vault", arguments)
+
+    first = json.loads(
+        asyncio.run(search(server(("Private",)), {"query": "fixture", "limit": 2})).content[0].text
+    )
+    resumed = asyncio.run(
+        search(
+            server(("Private",)), {"query": "fixture", "limit": 2, "cursor": first["next_cursor"]}
+        )
+    )
+    assert [note["path"] for note in json.loads(resumed.content[0].text)["notes"]] == [
+        "Notes/Fixture 2.md"
+    ]
+    rejected = asyncio.run(
+        search(
+            server(("Private", "Notes/Fixture 2.md")),
+            {"query": "fixture", "limit": 2, "cursor": first["next_cursor"]},
+        )
+    )
+    assert rejected.is_error
+    assert "INVALID_CURSOR: " in rejected.content[0].text
+
+
+def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monkeypatch):
+    """Lenient SDK coercion must not accept what the shared layer and the CLI reject."""
+    source = _sample_source()
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
+    vault = tmp_path / "vault"
+    (vault / "Notes").mkdir(parents=True)
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    (vault / "Notes/Retry.md").write_text("Retry budgets.", encoding="utf-8")
+    server = mcp_server.create_server(
+        DraftWriterSettings(vault),
+        cache_db=tmp_path / "cache.db",
+        vault_settings=VaultSettings(vault, ("*",), ()),
+    )
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            source_id = _tool_data(await client.call_tool("ingest_source", {"url": URL}))[
+                "source_id"
+            ]
+            draft = {"source_id": source_id, "title": "T", "contents": "Body."}
+            malformed = [
+                ("read_transcript", {"source_id": source_id, "offset": True}, "offset"),
+                ("read_transcript", {"source_id": source_id, "limit": False}, "limit"),
+                ("read_transcript", {"source_id": source_id, "offset": "1"}, "offset"),
+                ("read_transcript", {"source_id": source_id, "offset": "bad"}, "offset"),
+                ("read_transcript", {"source_id": source_id, "limit": 1.5}, "limit"),
+                ("read_transcript", {"source_id": source_id, "start": True}, "start"),
+                ("read_transcript", {"source_id": source_id, "start": "1"}, "start"),
+                ("read_transcript", {"source_id": source_id, "include_excluded": 1}, "include"),
+                ("read_transcript", {"source_id": source_id, "include_excluded": "true"}, "incl"),
+                ("read_transcript", {"source_id": 123}, "source_id"),
+                ("read_transcript", {}, "source_id"),
+                ("read_transcript", {"source_id": source_id, "unknown": 1}, "unknown"),
+                ("read_chapter", {"source_id": source_id, "chapter_index": True}, "chapter"),
+                ("read_chapter", {"source_id": source_id, "chapter_index": "0"}, "chapter"),
+                ("ingest_source", {"url": URL, "refresh": "false"}, "refresh"),
+                ("ingest_source", {"url": URL, "exclude_sponsors": 0}, "exclude_sponsors"),
+                ("search_vault", {"query": "retry", "limit": True}, "limit"),
+                ("search_vault", {"query": 5}, "query"),
+                ("search_vault", {"scope": "everything"}, "scope"),
+                ("read_vault_note", {"note_id": "note_x", "offset": "0"}, "offset"),
+                ("create_draft", draft | {"timestamps": [True]}, "timestamps"),
+                ("create_draft", draft | {"timestamps": "[1]"}, "timestamps"),
+                (
+                    "create_draft",
+                    draft | {"related_notes": [{"note_id": "n", "reason": "r", "x": 1}]},
+                    "related_notes",
+                ),
+            ]
+            for tool, arguments, field in malformed:
+                result = await client.call_tool(tool, arguments)
+                assert result.is_error, (tool, arguments)
+                text = _mcp_error_text(result)
+                assert text.startswith("INVALID_ARGUMENT: "), (tool, arguments, text)
+                assert field in text, (tool, arguments, text)
+            # Valid JSON numbers still work: integers for float fields included.
+            page = _tool_data(
+                await client.call_tool(
+                    "read_transcript", {"source_id": source_id, "start": 1, "end": 2.5}
+                )
+            )
+            assert page["offset"] == 0
+            assert not (vault / "00 Inbox/AI Drafts/T.md").exists()
 
     asyncio.run(exercise())

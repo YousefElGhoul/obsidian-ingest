@@ -1,11 +1,20 @@
-import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
+import yt_dlp.version
 
 from obsidian_ingest.extractor import Provider
+from obsidian_ingest.extractor.acquisition import (
+    MAX_CAPTION_BYTES,
+    Acquisition,
+    CaptionError,
+    CaptionFormat,
+    OriginalCaption,
+    describe_original,
+)
 from obsidian_ingest.extractor.metadata import (
     Chapter,
     ExclusionLookup,
@@ -14,10 +23,30 @@ from obsidian_ingest.extractor.metadata import (
     SourceMetadata,
     YouTubeMetadata,
 )
+from obsidian_ingest.extractor.providers.youtube.captions import (
+    parse_captions,
+    parse_json3,
+    parse_vtt,
+)
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 
+__all__ = (
+    "YouTubeContent",
+    "choose_caption_format",
+    "choose_caption_track",
+    "extract_video_id",
+    "get_youtube_content",
+    "get_youtube_metadata",
+    "get_youtube_subtitles",
+    "normalize_youtube_metadata",
+    "parse_captions",
+    "parse_json3",
+    "parse_vtt",
+)
 
-def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
+
+def _select_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
+    """Return the yt-dlp track key, generated flag, and offered formats."""
     for tracks, is_generated in (
         (info.get("subtitles") or {}, False),
         (info.get("automatic_captions") or {}, True),
@@ -32,27 +61,43 @@ def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
                 )
             )
             if original_english:
-                track_key = original_english[0]
-                return track_key.removesuffix("-orig"), True, tracks[track_key]
+                return original_english[0], True, tracks[original_english[0]]
 
         if "en" in tracks:
             return "en", is_generated, tracks["en"]
 
         english_variants = sorted(lang for lang in tracks if lang.startswith("en-"))
         if english_variants:
-            language = english_variants[0]
-            return language, is_generated, tracks[language]
+            return english_variants[0], is_generated, tracks[english_variants[0]]
 
     raise ValueError("No English captions available")
 
 
+def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
+    track_key, is_generated, formats = _select_caption_track(info)
+    return track_key.removesuffix("-orig"), is_generated, formats
+
+
 def choose_caption_format(formats: list[dict]) -> dict:
-    for preferred in ("json3", "vtt"):
+    for preferred in CaptionFormat:
         for caption_format in formats:
-            if caption_format.get("ext") == preferred:
+            if caption_format.get("ext") == preferred.value:
                 return caption_format
 
-    raise ValueError("No supported caption format available")
+    offered = ", ".join(sorted({str(item.get("ext")) for item in formats})) or "none"
+    raise CaptionError(
+        f"No supported caption format available (supported: json3, vtt; offered: {offered})"
+    )
+
+
+def _translation_status(track_key: str, caption_format: dict) -> bool | None:
+    """yt-dlp marks machine translations with tlang and native ASR with -orig; else unknown."""
+    query = parse_qs(urlparse(str(caption_format.get("url") or "")).query)
+    if "tlang" in query:
+        return True
+    if track_key.endswith("-orig"):
+        return False
+    return None
 
 
 def extract_video_id(url: str) -> str:
@@ -79,25 +124,13 @@ def extract_video_id(url: str) -> str:
     return str(video_id)
 
 
-def parse_json3(captions: dict) -> tuple[TranscriptSegment, ...]:
-    segments = []
-    for event in captions.get("events", []):
-        segs = event.get("segs")
-        if not segs or "tStartMs" not in event or "dDurationMs" not in event:
-            continue
-
-        text = "".join(segment.get("utf8", "") for segment in segs).strip()
-        if not text:
-            continue
-
-        segments.append(
-            TranscriptSegment(
-                text=text,
-                start=event["tStartMs"] / 1000,
-                duration=event["dDurationMs"] / 1000,
-            )
-        )
-    return tuple(segments)
+@dataclass(frozen=True, slots=True)
+class _Captions:
+    language: str
+    is_generated: bool
+    segments: tuple[TranscriptSegment, ...]
+    original: OriginalCaption
+    is_translated: bool | None
 
 
 def get_youtube_subtitles(url: str) -> tuple[str, str, bool, tuple[TranscriptSegment, ...]]:
@@ -108,19 +141,39 @@ def get_youtube_subtitles(url: str) -> tuple[str, str, bool, tuple[TranscriptSeg
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        language, is_generated, segments = _read_captions(ydl, info)
+        captions = _read_captions(ydl, info)
 
-    return video_id, language, is_generated, segments
+    return video_id, captions.language, captions.is_generated, captions.segments
 
 
-def _read_captions(
-    ydl: yt_dlp.YoutubeDL, info: dict
-) -> tuple[str, bool, tuple[TranscriptSegment, ...]]:
-    language, is_generated, formats = choose_caption_track(info)
+def _read_response(response: Any) -> bytes:
+    data = response.read(MAX_CAPTION_BYTES + 1)
+    if not isinstance(data, bytes):
+        raise CaptionError("Caption response did not return bytes")
+    if len(data) > MAX_CAPTION_BYTES:
+        raise CaptionError(f"Caption response exceeds {MAX_CAPTION_BYTES} bytes")
+    return data
+
+
+def _read_captions(ydl: yt_dlp.YoutubeDL, info: dict) -> _Captions:
+    track_key, is_generated, formats = _select_caption_track(info)
     caption = choose_caption_format(formats)
-    response = ydl.urlopen(caption["url"])
-    captions = json.loads(response.read().decode("utf-8"))
-    return language, is_generated, parse_json3(captions)
+    if not isinstance(caption.get("url"), str) or not caption["url"]:
+        raise CaptionError("Selected caption format has no URL")
+    caption_format = CaptionFormat(caption["ext"])
+    data = _read_response(ydl.urlopen(caption["url"]))
+    return _Captions(
+        language=track_key.removesuffix("-orig"),
+        is_generated=is_generated,
+        segments=parse_captions(data, caption_format),
+        original=OriginalCaption(caption_format, data),
+        is_translated=_translation_status(track_key, caption),
+    )
+
+
+def _yt_dlp_version() -> str | None:
+    version = getattr(yt_dlp.version, "__version__", None)
+    return version if isinstance(version, str) and version else None
 
 
 def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMetadata]:
@@ -130,9 +183,16 @@ def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMeta
     return info, normalize_youtube_metadata(info, url)
 
 
-def get_youtube_content(
-    url: str, categories: tuple[str, ...] = ("sponsor",)
-) -> tuple[SourceMetadata, Transcript, ExclusionLookup]:
+@dataclass(frozen=True, slots=True)
+class YouTubeContent:
+    metadata: SourceMetadata
+    transcript: Transcript
+    exclusions: ExclusionLookup
+    acquisition: Acquisition
+    original_caption: OriginalCaption
+
+
+def get_youtube_content(url: str, categories: tuple[str, ...] = ("sponsor",)) -> YouTubeContent:
     """Build metadata, captions, and best-effort exclusions from one extraction snapshot."""
     opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -149,9 +209,22 @@ def get_youtube_content(
                 categories=categories,
                 error_message=str(error) or type(error).__name__,
             )
-        language, generated, segments = _read_captions(ydl, info)
-    transcript = Transcript(metadata.source_id, language, language, generated, segments)
-    return metadata, transcript, exclusions
+        captions = _read_captions(ydl, info)
+    acquired_at = datetime.now(UTC)
+    transcript = Transcript(
+        metadata.source_id,
+        captions.language,
+        captions.language,
+        captions.is_generated,
+        captions.segments,
+    )
+    acquisition = Acquisition(
+        acquired_at=acquired_at,
+        extractor="yt-dlp",
+        extractor_version=_yt_dlp_version(),
+        caption=describe_original(captions.original, captions.is_translated),
+    )
+    return YouTubeContent(metadata, transcript, exclusions, acquisition, captions.original)
 
 
 def get_youtube_metadata(url: str) -> SourceMetadata:

@@ -1,120 +1,118 @@
-"""Thin local MCP adapter for source navigation and create-only draft writing."""
+"""Thin local MCP adapter for source navigation and create-only draft writing.
 
-import json
+Operations, validation, limits, result data, and error codes live in
+`obsidian_ingest.responses`; this module only maps tool arguments and envelopes.
+"""
+
+import inspect
+from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict, get_type_hints
 
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model, with_config
 
 from mcp.server import MCPServer
+from obsidian_ingest import responses
 from obsidian_ingest.config import VaultSettings
-from obsidian_ingest.curation import create_edit_suggestion as write_edit_suggestion
-from obsidian_ingest.curation import verified_related_notes
 from obsidian_ingest.drafts import DraftWriterSettings
-from obsidian_ingest.drafts import create_draft as write_draft
-from obsidian_ingest.extractor.metadata import Chapter
-from obsidian_ingest.extractor.transcript import TranscriptSegment
-from obsidian_ingest.source import (
-    Source,
-    get_source_overview,
-    read_chapter_entries,
-    read_transcript_entries,
+from obsidian_ingest.responses import (
+    DEFAULT_NOTE_READ_LIMIT,
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_PAGE_ENVELOPE_BYTES,
+    MAX_PAGE_SIZE,
+    compact_json,
 )
-from obsidian_ingest.source import list_chapters as get_application_chapters
-from obsidian_ingest.source_cache import SourceCache, SourceCacheError
-from obsidian_ingest.vault import NoteChanged, NoteUnavailable, VaultReader
+from obsidian_ingest.source import Source
+from obsidian_ingest.source_cache import SourceCache
+from obsidian_ingest.vault import VaultReader
 
-DEFAULT_PAGE_SIZE = 40
-MAX_PAGE_SIZE = 80
-MAX_PAGE_ENVELOPE_BYTES = 20 * 1024
+__all__ = ["DEFAULT_PAGE_SIZE", "MAX_PAGE_ENVELOPE_BYTES", "MAX_PAGE_SIZE", "create_server"]
 
 
+_STRICT_ARGUMENTS = ConfigDict(strict=True, extra="forbid")
+
+
+@with_config(_STRICT_ARGUMENTS)
 class RelatedNoteInput(TypedDict):
     note_id: str
     reason: str
     revision: NotRequired[str]
 
 
-def _source_overview(source: Source) -> dict[str, Any]:
-    overview = get_source_overview(source)
-    metadata = overview.metadata
-    return {
-        "title": metadata.title,
-        "creator": metadata.creator_name,
-        "source_url": metadata.original_url,
-        "canonical_url": metadata.canonical_url,
-        "duration_seconds": metadata.duration_seconds,
-        "description": metadata.description,
-        "provider": metadata.provider.value,
-        "native_format": metadata.native_format.value,
-        "content_category": (
-            overview.content_category.value if overview.content_category is not None else None
-        ),
-        "chapter_count": overview.chapter_count,
-        "sponsor_filtering": {
-            "status": overview.exclusion_lookup.status.value,
-            "enabled": bool(overview.exclusion_lookup.categories),
-            "categories": list(overview.exclusion_lookup.categories),
-            "error": overview.exclusion_lookup.error_message,
-            "original_segments": overview.original_segment_count,
-            "retained_segments": overview.retained_segment_count,
-            "excluded_segments": overview.excluded_segment_count,
-        },
-    }
+def _strict_argument_model(function: Callable[..., Any]) -> type[BaseModel]:
+    """Build a strict model of a tool's parameters: no coercion and no unknown arguments."""
+    hints = get_type_hints(function)
+    fields: dict[str, Any] = {}
+    for name, parameter in inspect.signature(function).parameters.items():
+        default = ... if parameter.default is inspect.Parameter.empty else parameter.default
+        fields[name] = (hints[name], default)
+    return create_model(f"{function.__name__}_arguments", __config__=_STRICT_ARGUMENTS, **fields)
 
 
-def _segment_page(
-    entries: tuple[tuple[int, TranscriptSegment], ...], offset: int, limit: int
-) -> str:
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise ValueError("offset must be a nonnegative integer")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
-        raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
-    segments = []
-    for source_index, segment in entries[offset : offset + limit]:
-        segments.append(
-            {
-                "source_index": source_index,
-                "text": segment.text,
-                "start": segment.start,
-                "duration": segment.duration,
-            }
-        )
-        next_offset = offset + len(segments)
-        page = {
-            "segments": segments,
-            "offset": offset,
-            "limit": limit,
-            "total_segments": len(entries),
-            "next_offset": next_offset if next_offset < len(entries) else None,
-        }
-        text = json.dumps(page, ensure_ascii=False, separators=(",", ":"))
-        envelope = json.dumps(
-            {"content": [{"type": "text", "text": text}]},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        # Leave room for the surrounding JSON-RPC result and server metadata.
-        if len(envelope) > MAX_PAGE_ENVELOPE_BYTES - 1024:
-            segments.pop()
-            if not segments:
-                raise ValueError(
-                    f"Transcript segment {source_index} exceeds the {MAX_PAGE_ENVELOPE_BYTES}-byte response limit"
-                )
-            break
-    next_offset = offset + len(segments)
-    page = {
-        "segments": segments,
-        "offset": offset,
-        "limit": limit,
-        "total_segments": len(entries),
-        "next_offset": next_offset if next_offset < len(entries) else None,
-    }
-    return json.dumps(page, ensure_ascii=False, separators=(",", ":"))
+def _describe_invalid_arguments(error: ValidationError) -> str:
+    # Field locations and messages only; rejected values are the caller's data.
+    problems = (
+        f"{'.'.join(str(part) for part in item['loc']) or 'arguments'}: {item['msg']}"
+        for item in error.errors(include_url=False)
+    )
+    return "; ".join(problems)
 
 
-def _chapter_data(index: int, chapter: Chapter) -> dict[str, Any]:
-    return {"index": index, "title": chapter.title, "start": chapter.start, "end": chapter.end}
+class _StrictArgumentServer(MCPServer):
+    """Reject arguments the shared layer would reject before the SDK's lenient coercion.
+
+    The SDK validates in lax mode (true -> 1, "5" -> 5, JSON strings -> lists) and ignores
+    unknown arguments, and reports schema failures as uncoded text. Validating the raw
+    arguments strictly first gives the CLI's meaning: every malformed, missing, or unknown
+    argument is ``INVALID_ARGUMENT``.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._strict_models: dict[str, type[BaseModel]] = {}
+
+    def tool(self, *args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
+        register = super().tool(*args, **kwargs)
+
+        def decorator(function: Callable[..., Any]) -> Any:
+            name = kwargs.get("name") or function.__name__
+            self._strict_models[name] = _strict_argument_model(function)
+            return register(function)
+
+        return decorator
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        model = self._strict_models.get(name)
+        if model is not None:
+            try:
+                model.model_validate(arguments)
+            except ValidationError as error:
+                raise ToolError(
+                    f"Error executing tool {name}: "
+                    f"INVALID_ARGUMENT: {_describe_invalid_arguments(error)}"
+                ) from error
+        return await super().call_tool(name, arguments, context)
+
+
+def _tool_errors[**P, R](function: Callable[P, R]) -> Callable[P, R]:
+    """Report expected application failures as coded tool errors."""
+
+    @wraps(function)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return function(*args, **kwargs)
+        except ToolError:
+            raise
+        except Exception as error:
+            mapped = responses.as_operation_error(error)
+            if mapped is None:
+                raise
+            raise ToolError(str(mapped)) from error
+
+    return wrapper
 
 
 def create_server(
@@ -124,72 +122,54 @@ def create_server(
     vault_settings: VaultSettings | None = None,
 ) -> MCPServer:
     """Create an MCP server backed by persistent, option-specific source handles."""
-    server = MCPServer("obsidian-ingest")
+    server = _StrictArgumentServer("obsidian-ingest")
     if vault_settings is not None and (
         settings.vault_path.resolve() != vault_settings.root.resolve()
         or settings.draft_folder != vault_settings.draft_folder
     ):
         raise ValueError("Draft writer settings must match trusted vault configuration")
     vault = VaultReader(vault_settings) if vault_settings is not None else None
-    cache = SourceCache(cache_db)
+    opened: list[SourceCache] = []
 
-    def get_source(source_id: str) -> Source:
-        try:
-            return cache.get(source_id)
-        except KeyError as error:
-            raise ToolError(f"Unknown source_id: {source_id}; ingest the URL first") from error
-        except SourceCacheError as error:
-            raise ToolError(str(error)) from error
+    def cache() -> SourceCache:
+        # Open per use until it succeeds, like each CLI invocation: an unusable cache is
+        # reported as SOURCE_CACHE_ERROR by source tools instead of preventing startup,
+        # and vault tools keep working.
+        if not opened:
+            opened.append(SourceCache(cache_db))
+        return opened[0]
+
+    def load_source(source_id: str) -> Source:
+        return responses.load_source(cache(), source_id)
 
     @server.tool()
+    @_tool_errors
     def ingest_source(
         url: str, exclude_sponsors: bool = True, refresh: bool = False
     ) -> dict[str, Any]:
         """Reuse a persistent source; refresh explicitly re-extracts. Sponsors excluded by default."""
-        try:
-            result = cache.ingest(url, exclude_sponsors=exclude_sponsors, refresh=refresh)
-        except Exception as error:
-            raise ToolError(f"Could not ingest source: {error}") from error
-        return {
-            "source_id": result.source_id,
-            "cached": result.cached,
-            "overview": _source_overview(result.source),
-        }
+        return responses.ingest(cache(), url, exclude_sponsors=exclude_sponsors, refresh=refresh)
 
     @server.tool()
+    @_tool_errors
     def get_source_overview(source_id: str) -> dict[str, Any]:
-        """Get source metadata and sponsor-filtering outcome without transcript text."""
-        return _source_overview(get_source(source_id))
+        """Get source metadata, sponsor filtering, and caption diagnostics without transcript text."""
+        return responses.source_overview(load_source(source_id))
 
     @server.tool()
+    @_tool_errors
     def list_chapters(source_id: str) -> list[dict[str, Any]]:
         """List creator chapters with zero-based indices."""
-        return [
-            _chapter_data(index, chapter)
-            for index, chapter in enumerate(get_application_chapters(get_source(source_id)))
-        ]
+        return responses.chapters(load_source(source_id))
 
     @server.tool()
+    @_tool_errors
     def list_exclusions(source_id: str) -> list[dict[str, Any]]:
         """List sponsor ranges and original transcript indices they exclude."""
-        source = get_source(source_id)
-        return [
-            {
-                "range_index": range_index,
-                "start": exclusion.start,
-                "end": exclusion.end,
-                "reason": exclusion.reason,
-                "provenance": exclusion.provenance,
-                "source_indices": [
-                    segment.source_index
-                    for segment in source.filtered_transcript.excluded
-                    if range_index in segment.range_indices
-                ],
-            }
-            for range_index, exclusion in enumerate(source.exclusion_lookup.ranges)
-        ]
+        return responses.exclusions(load_source(source_id))
 
     @server.tool(structured_output=False)
+    @_tool_errors
     def read_transcript(
         source_id: str,
         start: float | None = None,
@@ -199,19 +179,18 @@ def create_server(
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> str:
         """Read compact JSON pages; follow next_offset until null. Whole atoms are preserved."""
-        source = get_source(source_id)
-        try:
-            entries = read_transcript_entries(
-                source,
-                start=start,
-                end=end,
-                include_excluded=include_excluded,
-            )
-            return _segment_page(entries, offset, limit)
-        except (TypeError, ValueError) as error:
-            raise ToolError(str(error)) from error
+        page = responses.transcript_page(
+            load_source(source_id),
+            start=start,
+            end=end,
+            include_excluded=include_excluded,
+            offset=offset,
+            limit=limit,
+        )
+        return compact_json(page)
 
     @server.tool(structured_output=False)
+    @_tool_errors
     def read_chapter(
         source_id: str,
         chapter_index: int,
@@ -220,18 +199,17 @@ def create_server(
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> str:
         """Read compact JSON chapter pages; follow next_offset until null."""
-        source = get_source(source_id)
-        try:
-            entries = read_chapter_entries(
-                source,
-                chapter_index,
-                include_excluded=include_excluded,
-            )
-            return _segment_page(entries, offset, limit)
-        except (IndexError, TypeError, ValueError) as error:
-            raise ToolError(str(error)) from error
+        page = responses.chapter_page(
+            load_source(source_id),
+            chapter_index,
+            include_excluded=include_excluded,
+            offset=offset,
+            limit=limit,
+        )
+        return compact_json(page)
 
     @server.tool()
+    @_tool_errors
     def create_draft(
         source_id: str,
         title: str,
@@ -240,62 +218,48 @@ def create_server(
         related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
         """Create a source-attributed draft; contents is the Markdown body only, with no title H1 or source section."""
-        source = get_source(source_id)
-        try:
-            verified_links = ()
-            if related_notes:
-                if vault is None:
-                    raise ValueError(
-                        "NOTE_UNAVAILABLE: verified vault links require trusted vault settings"
-                    )
-                verified_links = verified_related_notes(vault, related_notes)
-            result = write_draft(
-                settings,
-                title=title,
-                contents=contents,
-                source=source.metadata,
-                timestamps=tuple(timestamps or ()),
-                related_notes=verified_links,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            raise ToolError(f"Could not create draft: {error}") from error
-        return {"path": str(result.path)}
+        return responses.write_draft(
+            settings,
+            load_source(source_id),
+            title=title,
+            contents=contents,
+            timestamps=tuple(timestamps or ()),
+            related_notes=[dict(item) for item in related_notes] if related_notes else None,
+            vault=vault,
+        )
 
     if vault is not None:
 
         @server.tool(structured_output=False)
+        @_tool_errors
         def search_vault(
             query: str = "",
             scope: Literal["title", "content", "both"] = "both",
             cursor: str | None = None,
-            limit: int = 10,
+            limit: int = DEFAULT_SEARCH_LIMIT,
         ) -> str:
             """Search accessible Markdown note titles and content; empty query browses notes."""
-            try:
-                result = vault.search(query, scope=scope, cursor=cursor, limit=limit)
-            except ValueError as error:
-                raise ToolError(str(error)) from error
-            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            return compact_json(
+                responses.search_vault(vault, query, scope=scope, cursor=cursor, limit=limit)
+            )
 
         @server.tool(structured_output=False)
+        @_tool_errors
         def read_vault_note(
             note_id: str,
             offset: int = 0,
-            limit: int = 4000,
+            limit: int = DEFAULT_NOTE_READ_LIMIT,
             revision: str | None = None,
         ) -> str:
             """Read bounded pages of one accessible note; pass its revision on continuation pages."""
-            try:
-                result = vault.read(note_id, offset=offset, limit=limit, revision=revision)
-            except NoteChanged as error:
-                raise ToolError("NOTE_CHANGED: note changed; search and read it again") from error
-            except NoteUnavailable as error:
-                raise ToolError("NOTE_UNAVAILABLE: note is unavailable") from error
-            except ValueError as error:
-                raise ToolError(str(error)) from error
-            return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            return compact_json(
+                responses.read_vault_note(
+                    vault, note_id, offset=offset, limit=limit, revision=revision
+                )
+            )
 
         @server.tool()
+        @_tool_errors
         def create_edit_suggestion(
             source_id: str,
             target_note_id: str,
@@ -306,21 +270,16 @@ def create_server(
             timestamps: list[float] | None = None,
         ) -> dict[str, str]:
             """Create a review-only (EDIT) draft for a verified accessible note; never changes it."""
-            source = get_source(source_id)
-            try:
-                result = write_edit_suggestion(
-                    settings,
-                    source=source.metadata,
-                    vault=vault,
-                    target_note_id=target_note_id,
-                    target_revision=target_revision,
-                    change_summary=change_summary,
-                    reasoning=reasoning,
-                    proposed_content=proposed_content,
-                    timestamps=tuple(timestamps or ()),
-                )
-            except (OSError, RuntimeError, TypeError, ValueError) as error:
-                raise ToolError(f"Could not create edit suggestion: {error}") from error
-            return {"path": str(result.path)}
+            return responses.write_edit_suggestion(
+                settings,
+                load_source(source_id),
+                vault,
+                target_note_id=target_note_id,
+                target_revision=target_revision,
+                change_summary=change_summary,
+                reasoning=reasoning,
+                proposed_content=proposed_content,
+                timestamps=tuple(timestamps or ()),
+            )
 
     return server

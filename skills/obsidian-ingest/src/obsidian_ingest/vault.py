@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import codecs
 import hashlib
-import hmac
 import json
 import os
 import secrets
@@ -21,6 +20,8 @@ MAX_QUERY_LENGTH = 256
 MAX_SNIPPET_CHARS = 240
 MAX_NOTE_READ_CHARS = 8000
 MAX_NOTE_RESPONSE_BYTES = 16 * 1024
+MAX_CURSOR_LENGTH = 4096
+CURSOR_VERSION = 1
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -80,7 +81,6 @@ class VaultReader:
         self.settings = settings
         self.root = settings.root.resolve(strict=True)
         self._root_fd = os.open(self.root, _DIRECTORY_FLAGS)
-        self._secret = secrets.token_bytes(32)
         self._references: dict[str, NoteReference] = {}
         try:
             self._validate_settings()
@@ -287,37 +287,48 @@ class VaultReader:
         self._references[note_id] = reference
         return reference
 
-    def _cursor(self, query: str, scope: str, offset: int) -> str:
-        payload = json.dumps([query, scope, offset], separators=(",", ":")).encode()
-        signed = (
-            len(payload).to_bytes(2, "big") + payload + hmac.digest(self._secret, payload, "sha256")
+    def _policy_fingerprint(self) -> str:
+        """Identify the current access policy without revealing the vault root or scope."""
+        policy = json.dumps(
+            [str(self.root), list(self.settings.allowed), list(self.settings.excluded)],
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
-        return base64.urlsafe_b64encode(signed).decode().rstrip("=")
+        return hashlib.sha256(policy.encode()).hexdigest()[:32]
+
+    def _cursor(self, query: str, scope: str, offset: int) -> str:
+        # The cursor is a stateless continuation hint, not a capability: every search
+        # re-applies the current access policy, so a forged offset cannot widen access.
+        payload = json.dumps(
+            [CURSOR_VERSION, self._policy_fingerprint(), query, scope, offset],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
     def _decode_cursor(self, cursor: str, query: str, scope: str) -> int:
         try:
-            if not isinstance(cursor, str) or len(cursor) > 8192:
+            if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
                 raise ValueError
-            encoded = cursor.encode()
+            encoded = cursor.encode("ascii")
             raw = base64.b64decode(
                 encoded + b"=" * (-len(encoded) % 4), altchars=b"-_", validate=True
             )
-            payload_size = int.from_bytes(raw[:2], "big")
-            payload = raw[2 : 2 + payload_size]
-            signature = raw[2 + payload_size :]
-            expected = hmac.digest(self._secret, payload, "sha256")
-            cursor_query, cursor_scope, offset = json.loads(payload)
-            if (
-                len(raw) != payload_size + 34
-                or not hmac.compare_digest(signature, expected)
-                or (cursor_query, cursor_scope) != (query, scope)
-            ):
-                raise ValueError
-            if type(offset) is not int or offset < 0:
-                raise ValueError
-            return offset
-        except (ValueError, TypeError, json.JSONDecodeError) as error:
-            raise ValueError("INVALID_CURSOR") from error
+            version, fingerprint, cursor_query, cursor_scope, offset = json.loads(raw)
+        except (ValueError, TypeError, UnicodeError) as error:
+            raise ValueError("INVALID_CURSOR: cursor is malformed; restart the search") from error
+        if (
+            version != CURSOR_VERSION
+            or fingerprint != self._policy_fingerprint()
+            or (cursor_query, cursor_scope) != (query, scope)
+            or type(offset) is not int
+            or offset < 0
+        ):
+            raise ValueError(
+                "INVALID_CURSOR: cursor does not match this query, scope, or vault "
+                "configuration; restart the search"
+            )
+        return offset
 
     def search(
         self, query: str = "", *, scope: str = "both", cursor: str | None = None, limit: int = 10

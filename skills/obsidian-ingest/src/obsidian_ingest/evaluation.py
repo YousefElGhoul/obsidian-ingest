@@ -2,15 +2,16 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.client.stdio import stdio_client
 
@@ -18,7 +19,6 @@ from mcp import ClientSession, StdioServerParameters
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 ROOT = SKILL_ROOT.parents[1]
-_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _PAGE_SIZE = 80
 
 
@@ -27,15 +27,38 @@ class EvaluationFailure(RuntimeError):
 
 
 def parse_manifest(path: Path) -> tuple[str, ...]:
-    ids = []
+    """Return source URLs in file order: one absolute http(s) URL per line.
+
+    Blank lines and lines whose first non-space character is `#` are ignored. Inline
+    comments are not supported because `#` may belong to a URL fragment.
+    """
+    urls: list[str] = []
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        video_id = raw_line.split("#", 1)[0].strip()
-        if not video_id:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
             continue
-        if not _VIDEO_ID.fullmatch(video_id):
-            raise ValueError(f"Invalid video ID at manifest line {line_number}: {video_id}")
-        ids.append(video_id)
-    return tuple(ids)
+        if not _is_source_url(line):
+            raise ValueError(f"Invalid source URL at manifest line {line_number}: {line}")
+        if line in urls:
+            raise ValueError(f"Duplicate source URL at manifest line {line_number}: {line}")
+        urls.append(line)
+    return tuple(urls)
+
+
+def _is_source_url(value: str) -> bool:
+    if any(character.isspace() for character in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        hostname = parts.hostname
+    except ValueError:
+        return False
+    return parts.scheme in {"http", "https"} and bool(hostname)
+
+
+def report_stem(url: str) -> str:
+    """Return a stable, filesystem-safe report filename stem for a source URL."""
+    return f"mcp_eval_{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _result_data(result) -> dict[str, Any]:
@@ -104,10 +127,8 @@ async def _read_all_pages(
         offset = next_offset
 
 
-async def evaluate_video(session, video_id: str, tool_schemas: list[dict]) -> dict[str, Any]:
-    url = f"https://www.youtube.com/watch?v={video_id}"
+async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "video_id": video_id,
         "url": url,
         "status": "failed",
         "tool_schemas": tool_schemas,
@@ -155,10 +176,10 @@ async def evaluate_video(session, video_id: str, tool_schemas: list[dict]) -> di
 
 
 def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
-    video_id = report["video_id"]
-    destination = output_dir / f"mcp_eval_{video_id}.json"
+    stem = report_stem(report["url"])
+    destination = output_dir / f"{stem}.json"
     if report["status"] != "success" and destination.exists():
-        destination = output_dir / f"mcp_eval_{video_id}.failed.json"
+        destination = output_dir / f"{stem}.failed.json"
 
     temporary_path = None
     try:
@@ -186,7 +207,7 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
     return destination
 
 
-async def run_batch(video_ids: tuple[str, ...], output_dir: Path, delay_seconds: float) -> int:
+async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: float) -> int:
     with TemporaryDirectory(prefix="obsidian-ingest-evaluation-") as temporary_vault:
         server = StdioServerParameters(
             command="uv",
@@ -209,28 +230,28 @@ async def run_batch(video_ids: tuple[str, ...], output_dir: Path, delay_seconds:
             tools = await session.list_tools()
             tool_schemas = [tool.model_dump(mode="json") for tool in tools.tools]
             failures = 0
-            for index, video_id in enumerate(video_ids):
+            for index, url in enumerate(urls):
                 if index and delay_seconds:
                     await asyncio.sleep(delay_seconds)
-                print(f"[{index + 1}/{len(video_ids)}] Inspecting {video_id}", file=sys.stderr)
-                report = await evaluate_video(session, video_id, tool_schemas)
+                print(f"[{index + 1}/{len(urls)}] Inspecting {url}", file=sys.stderr)
+                report = await evaluate_source(session, url, tool_schemas)
                 try:
                     path = write_report(output_dir, report)
                 except OSError as error:
                     failures += 1
-                    print(f"FAILED {video_id}: could not save report: {error}", file=sys.stderr)
+                    print(f"FAILED {url}: could not save report: {error}", file=sys.stderr)
                     continue
                 if report["status"] == "success":
                     print(
-                        f"SUCCESS {video_id}: {report['transcript_segment_count']} retained "
+                        f"SUCCESS {url}: {report['transcript_segment_count']} retained "
                         f"segments, report: {path}",
                         file=sys.stderr,
                     )
                 else:
                     failures += 1
-                    print(f"FAILED {video_id}: {report['error']}; report: {path}", file=sys.stderr)
+                    print(f"FAILED {url}: {report['error']}; report: {path}", file=sys.stderr)
             print(
-                f"Summary: {len(video_ids) - failures} succeeded, {failures} failed.",
+                f"Summary: {len(urls) - failures} succeeded, {failures} failed.",
                 file=sys.stderr,
             )
             return 1 if failures else 0
@@ -238,7 +259,10 @@ async def run_batch(video_ids: tuple[str, ...], output_dir: Path, delay_seconds:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Save the source-tool content exposed to an agent over local MCP."
+        description=(
+            "Save the source-tool content exposed to an agent over local MCP for each URL in "
+            "a manifest: one http(s) URL per line; blank lines and full-line # comments allowed."
+        )
     )
     parser.add_argument("manifest", nargs="?", type=Path, default=ROOT / "videos.txt")
     parser.add_argument("output_dir", nargs="?", type=Path, default=ROOT / "outputs_archive")
@@ -256,13 +280,13 @@ def main() -> int:
     if not math.isfinite(args.delay_seconds) or args.delay_seconds < 0:
         parser.error("Delay must be finite and nonnegative")
     try:
-        video_ids = parse_manifest(args.manifest)
+        urls = parse_manifest(args.manifest)
     except ValueError as error:
         parser.error(str(error))
-    if not video_ids:
-        print("Manifest has no video IDs.", file=sys.stderr)
+    if not urls:
+        print("Manifest has no source URLs.", file=sys.stderr)
         return 0
-    return asyncio.run(run_batch(video_ids, args.output_dir, args.delay_seconds))
+    return asyncio.run(run_batch(urls, args.output_dir, args.delay_seconds))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "mcp>=2.3.0,<3",
-    "ruamel.yaml>=0.18.10,<0.19",
+    "pydantic>=2,<3",
     "yt-dlp>=2026.8.19",
 ]
 

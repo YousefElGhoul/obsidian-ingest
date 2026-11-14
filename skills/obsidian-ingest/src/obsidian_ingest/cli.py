@@ -2,20 +2,47 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
+from obsidian_ingest import responses
 from obsidian_ingest.config import default_config_path, load_vault_settings
 from obsidian_ingest.extractor.metadata import fetch_metadata
 from obsidian_ingest.extractor.transcript import print_transcript
-from obsidian_ingest.source import (
-    list_chapters,
-    read_chapter_entries,
-    read_transcript_entries,
-)
+from obsidian_ingest.responses import OperationError
 from obsidian_ingest.source_cache import SourceCache
+
+TOOL_COMMANDS = frozenset(
+    {
+        "ingest-source",
+        "get-source-overview",
+        "list-chapters",
+        "list-exclusions",
+        "read-transcript",
+        "read-chapter",
+        "create-draft",
+        "search-vault",
+        "read-vault-note",
+        "create-edit-suggestion",
+    }
+)
+
+
+class _Parser(argparse.ArgumentParser):
+    """Report invalid tool arguments with the same coded error shape as other failures."""
+
+    def error(self, message: str) -> NoReturn:
+        # Subparsers report their own errors; the top-level parser reports leftovers.
+        command = self.prog.split()[-1]
+        if command == "obsidian-ingest":
+            command = next((value for value in sys.argv[1:] if not value.startswith("-")), "")
+        if command in TOOL_COMMANDS:
+            _emit_error(OperationError("INVALID_ARGUMENT", message))
+            raise SystemExit(2)
+        super().error(message)
 
 
 def _run_mcp(
@@ -52,33 +79,32 @@ def _emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, default=_json_default))
 
 
+def _emit_error(error: OperationError) -> None:
+    """Write one coded JSON error to stderr; the code meaning matches MCP tool errors."""
+    print(
+        json.dumps({"error": {"code": error.code, "message": error.message}}, ensure_ascii=False),
+        file=sys.stderr,
+    )
+
+
 def _cache(args) -> SourceCache:
     return SourceCache(args.cache_db)
 
 
 def _vault(path: Path | None):
-    selected = path or default_config_path()
-    if not selected.is_file():
-        raise ValueError(
-            f"Trusted config not found: {selected}; copy "
-            "config/settings.example.toml to config/settings.toml and edit it"
-        )
-    settings = load_vault_settings(selected)
     from obsidian_ingest.vault import VaultReader
 
-    return VaultReader(settings)
-
-
-def _source_overview(source) -> dict:
-    from obsidian_ingest.mcp_server import _source_overview as serialize_overview
-
-    return serialize_overview(source)
-
-
-def _segment_page(entries, offset: int, limit: int) -> dict:
-    from obsidian_ingest.mcp_server import _segment_page as serialize_page
-
-    return json.loads(serialize_page(entries, offset, limit))
+    selected = path or default_config_path()
+    if not selected.is_file():
+        raise OperationError(
+            "CONFIG_ERROR",
+            f"Trusted config not found: {selected}; copy "
+            "config/settings.example.toml to config/settings.toml and edit it",
+        )
+    try:
+        return VaultReader(load_vault_settings(selected))
+    except (TypeError, ValueError) as error:
+        raise OperationError("CONFIG_ERROR", str(error)) from error
 
 
 def _tool_parsers(subparsers) -> None:
@@ -110,7 +136,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--end", type=float)
     parser.add_argument("--include-excluded", action="store_true")
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=40)
+    parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
     parser.add_argument("--cache-db", type=Path)
 
     parser = subparsers.add_parser("read-chapter", help="Read a bounded creator-chapter page")
@@ -118,7 +144,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("chapter_index", type=int)
     parser.add_argument("--include-excluded", action="store_true")
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=40)
+    parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
     parser.add_argument("--cache-db", type=Path)
 
     parser = subparsers.add_parser("create-draft", help="Create a source-attributed Markdown draft")
@@ -127,7 +153,11 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("contents", help="Markdown body only; no H1 or source section")
     parser.add_argument("--timestamp", type=float, action="append", default=[])
     parser.add_argument(
-        "--related-note", nargs=3, action="append", metavar=("PATH", "REVISION", "REASON")
+        "--related-note",
+        nargs=2,
+        action="append",
+        metavar=("PATH", "REASON"),
+        help="Verified vault-relative note to link; repeatable; no revision is required",
     )
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
@@ -135,8 +165,8 @@ def _tool_parsers(subparsers) -> None:
     parser = subparsers.add_parser("search-vault", help="Search accessible Markdown notes")
     parser.add_argument("query", nargs="?", default="")
     parser.add_argument("--scope", choices=("title", "content", "both"), default="both")
-    parser.add_argument("--cursor")
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--cursor", help="next_cursor from an earlier search with the same query")
+    parser.add_argument("--limit", type=int, default=responses.DEFAULT_SEARCH_LIMIT)
     parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser(
@@ -144,8 +174,8 @@ def _tool_parsers(subparsers) -> None:
     )
     parser.add_argument("path")
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=4000)
-    parser.add_argument("--revision")
+    parser.add_argument("--limit", type=int, default=responses.DEFAULT_NOTE_READ_LIMIT)
+    parser.add_argument("--revision", help="Required for continuation pages (offset > 0)")
     parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser("create-edit-suggestion", help="Create a review-only edit draft")
@@ -199,7 +229,7 @@ def _setup(destination: Path, input_fn=input) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="obsidian-ingest")
+    parser = _Parser(prog="obsidian-ingest")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     transcript_parser = subparsers.add_parser("transcript", help="Print source captions")
@@ -240,126 +270,114 @@ def main() -> None:
         destination = _setup(args.config)
         print(f"Saved trusted settings to {destination}")
     else:
-        _run_tool_command(args)
+        try:
+            _emit(_run_tool_command(args))
+        except Exception as error:
+            mapped = responses.as_operation_error(error)
+            if mapped is None:
+                raise
+            _emit_error(mapped)
+            raise SystemExit(1) from None
 
 
-def _run_tool_command(args) -> None:
-    from obsidian_ingest.curation import create_edit_suggestion, verified_related_notes
-    from obsidian_ingest.drafts import DraftWriterSettings, create_draft
-
+def _run_tool_command(args) -> Any:
+    """Run one tool command through the same application functions as MCP."""
     if args.command == "ingest-source":
-        result = _cache(args).ingest(
-            args.url, exclude_sponsors=not args.include_sponsors, refresh=args.refresh
+        return responses.ingest(
+            _cache(args), args.url, exclude_sponsors=not args.include_sponsors, refresh=args.refresh
         )
-        _emit(
-            {
-                "source_id": result.source_id,
-                "cached": result.cached,
-                "overview": _source_overview(result.source),
-            }
-        )
-        return
 
-    if args.command in {
-        "get-source-overview",
-        "list-chapters",
-        "list-exclusions",
-        "read-transcript",
-        "read-chapter",
-    }:
-        source = _cache(args).get(args.source_id)
-        if args.command == "get-source-overview":
-            _emit(_source_overview(source))
-        elif args.command == "list-chapters":
-            _emit(
-                [
-                    {"index": index, "title": item.title, "start": item.start, "end": item.end}
-                    for index, item in enumerate(list_chapters(source))
-                ]
-            )
-        elif args.command == "list-exclusions":
-            _emit(
-                [
-                    {
-                        "range_index": range_index,
-                        "start": exclusion.start,
-                        "end": exclusion.end,
-                        "reason": exclusion.reason,
-                        "provenance": exclusion.provenance,
-                        "source_indices": [
-                            segment.source_index
-                            for segment in source.filtered_transcript.excluded
-                            if range_index in segment.range_indices
-                        ],
-                    }
-                    for range_index, exclusion in enumerate(source.exclusion_lookup.ranges)
-                ]
-            )
-        elif args.command == "read-transcript":
-            entries = read_transcript_entries(
-                source,
-                start=args.start,
-                end=args.end,
-                include_excluded=args.include_excluded,
-            )
-            _emit(_segment_page(entries, args.offset, args.limit))
-        else:
-            entries = read_chapter_entries(
-                source, args.chapter_index, include_excluded=args.include_excluded
-            )
-            _emit(_segment_page(entries, args.offset, args.limit))
-        return
-
-    if args.command == "search-vault":
+    if args.command in {"search-vault", "read-vault-note"}:
         with _vault(args.config) as vault:
-            _emit(vault.search(args.query, scope=args.scope, cursor=args.cursor, limit=args.limit))
-        return
-
-    if args.command == "read-vault-note":
-        with _vault(args.config) as vault:
+            if args.command == "search-vault":
+                return responses.search_vault(
+                    vault,
+                    args.query,
+                    scope=args.scope,
+                    cursor=args.cursor,
+                    limit=args.limit,
+                    identifier="path",
+                )
+            # Paths replace MCP handles; revision checks stay in VaultReader.read.
             reference = vault.get_path_reference(args.path, args.revision)
-            page = vault.read(
+            return responses.read_vault_note(
+                vault,
                 reference.note_id,
                 offset=args.offset,
                 limit=args.limit,
                 revision=args.revision,
+                identifier="path",
             )
-            page.pop("note_id")
-            _emit(page)
-        return
 
-    source = _cache(args).get(args.source_id)
+    source = responses.load_source(_cache(args), args.source_id)
+    if args.command == "get-source-overview":
+        return responses.source_overview(source)
+    if args.command == "list-chapters":
+        return responses.chapters(source)
+    if args.command == "list-exclusions":
+        return responses.exclusions(source)
+    if args.command == "read-transcript":
+        return responses.transcript_page(
+            source,
+            start=args.start,
+            end=args.end,
+            include_excluded=args.include_excluded,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    if args.command == "read-chapter":
+        return responses.chapter_page(
+            source,
+            args.chapter_index,
+            include_excluded=args.include_excluded,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    return _run_write_command(args, source)
+
+
+def _path_handle(vault, path: str, label: str) -> str:
+    """Translate a CLI vault-relative path into the handle the shared operations accept."""
+    from obsidian_ingest.vault import NoteUnavailable
+
+    try:
+        return vault.get_path_reference(path).note_id
+    except NoteUnavailable as error:
+        raise OperationError("NOTE_UNAVAILABLE", f"{label} is unavailable") from error
+
+
+def _run_write_command(args, source) -> dict[str, str]:
+    from obsidian_ingest.drafts import DraftWriterSettings
+
     with _vault(args.config) as vault:
-        settings = vault.settings
-        writer_settings = DraftWriterSettings(settings.root, settings.draft_folder)
+        writer_settings = DraftWriterSettings(vault.settings.root, vault.settings.draft_folder)
         if args.command == "create-draft":
-            references = []
-            for path, revision, reason in args.related_note or ():
-                note = vault.get_path_reference(path, revision)
-                references.append({"note_id": note.note_id, "revision": revision, "reason": reason})
-            related = verified_related_notes(vault, references)
-            result = create_draft(
+            # Ordinary related links need only current access, matching MCP note handles.
+            related = [
+                {"note_id": _path_handle(vault, path, "related note"), "reason": reason}
+                for path, reason in args.related_note or ()
+            ]
+            return responses.write_draft(
                 writer_settings,
+                source,
                 title=args.title,
                 contents=args.contents,
-                source=source.metadata,
                 timestamps=tuple(args.timestamp),
                 related_notes=related,
-            )
-        else:
-            target = vault.get_path_reference(args.target_path, args.target_revision)
-            result = create_edit_suggestion(
-                writer_settings,
-                source=source.metadata,
                 vault=vault,
-                target_note_id=target.note_id,
-                target_revision=args.target_revision,
-                change_summary=args.change_summary,
-                reasoning=args.reasoning,
-                proposed_content=args.proposed_content,
-                timestamps=tuple(args.timestamp),
             )
-    _emit({"path": str(result.path)})
+        # The target revision is checked by the shared edit-suggestion operation.
+        return responses.write_edit_suggestion(
+            writer_settings,
+            source,
+            vault,
+            target_note_id=_path_handle(vault, args.target_path, "target note"),
+            target_revision=args.target_revision,
+            change_summary=args.change_summary,
+            reasoning=args.reasoning,
+            proposed_content=args.proposed_content,
+            timestamps=tuple(args.timestamp),
+        )
 
 
 def _json_default(value: object) -> str:

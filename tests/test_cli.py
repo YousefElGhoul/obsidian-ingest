@@ -1,14 +1,22 @@
+import base64
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from obsidian_ingest import cli
+from obsidian_ingest import cli, source_cache
 from obsidian_ingest.config import default_config_path, load_vault_settings
+from obsidian_ingest.extractor.metadata import ExcludedRange, ExclusionLookup, ExclusionStatus
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
+from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+from obsidian_ingest.filtering import filter_source_transcript
+from obsidian_ingest.source import Source
 from obsidian_ingest.vault import VaultReader
 
 
@@ -212,7 +220,6 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
             str(config),
             "--related-note",
             target_path,
-            note["revision"],
             "Explains retry policy.",
         ],
     )
@@ -241,3 +248,426 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
     edit = json.loads(capsys.readouterr().out)
     assert Path(edit["path"]).name.startswith("(EDIT) Retry")
     assert target.read_text(encoding="utf-8") == "Canonical note stays unchanged."
+
+
+# --- Application behavior exercised through the CLI -----------------------------------
+
+URL = "https://www.youtube.com/watch?v=video-123"
+
+
+def _sample_source() -> Source:
+    metadata = normalize_youtube_metadata(
+        {
+            "id": "video-123",
+            "title": "A useful explanation",
+            "channel": "A creator",
+            "duration": 600,
+            "chapters": [{"title": "Main idea", "start_time": 0, "end_time": 20}],
+        },
+        URL,
+    )
+    transcript = Transcript(
+        "video-123",
+        "en",
+        "en",
+        False,
+        (
+            TranscriptSegment("First atom", 0, 1),
+            TranscriptSegment("Second atom", 1, 0.5),
+            TranscriptSegment("Third atom", 1, 1),
+            TranscriptSegment("Sponsor atom", 2, 1),
+        ),
+    )
+    lookup = ExclusionLookup(
+        (ExcludedRange(2, 3, "sponsor", "SponsorBlock"),),
+        ExclusionStatus.COMPLETE,
+        "SponsorBlock",
+        ("sponsor",),
+    )
+    return Source(
+        metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
+    )
+
+
+def _run(monkeypatch, capsys, *args: str) -> tuple[int, Any, dict | None]:
+    """Run one CLI invocation; each call opens fresh cache and vault state like a new process."""
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
+    code = 0
+    try:
+        cli.main()
+    except SystemExit as error:
+        code = error.code
+    captured = capsys.readouterr()
+    output = json.loads(captured.out) if captured.out.strip() else None
+    error = json.loads(captured.err)["error"] if captured.err.strip() else None
+    return code, output, error
+
+
+def _ok(monkeypatch, capsys, *args: str) -> Any:
+    code, output, error = _run(monkeypatch, capsys, *args)
+    assert (code, error) == (0, None)
+    return output
+
+
+def _fail(monkeypatch, capsys, *args: str) -> dict:
+    code, output, error = _run(monkeypatch, capsys, *args)
+    assert code != 0 and output is None and error is not None
+    return error
+
+
+def _config(tmp_path: Path, vault: Path, excluded: tuple[str, ...] = ("Private",)) -> Path:
+    config = tmp_path / "settings.toml"
+    config.write_text(
+        f'[vault]\nroot = "{vault}"\nallowed = ["*"]\nexcluded = {json.dumps(list(excluded))}\n',
+        encoding="utf-8",
+    )
+    return config
+
+
+def _vault_fixture(tmp_path: Path) -> Path:
+    vault = tmp_path / "vault"
+    (vault / "Notes").mkdir(parents=True)
+    (vault / "Private").mkdir()
+    (vault / "00 Inbox/AI Drafts").mkdir(parents=True)
+    for index in range(5):
+        (vault / f"Notes/Fixture {index}.md").write_text(f"fixture body {index}", encoding="utf-8")
+    (vault / "Private/Fixture secret.md").write_text("fixture SECRET_MARKER", encoding="utf-8")
+    return vault
+
+
+@pytest.fixture
+def fake_extraction(monkeypatch):
+    source = _sample_source()
+    extraction = MagicMock(side_effect=lambda url, exclude_sponsors=True: source)
+    monkeypatch.setattr(source_cache, "ingest_source", extraction)
+    return extraction
+
+
+def test_cli_source_operations_reuse_persistent_cache(
+    monkeypatch, capsys, tmp_path, fake_extraction
+) -> None:
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    first = _ok(monkeypatch, capsys, "ingest-source", URL, *db)
+    assert first["cached"] is False
+    assert first["overview"]["sponsor_filtering"]["excluded_segments"] == 1
+    again = _ok(monkeypatch, capsys, "ingest-source", "https://youtu.be/video-123", *db)
+    assert (again["source_id"], again["cached"]) == (first["source_id"], True)
+    assert fake_extraction.call_count == 1
+    source_id = first["source_id"]
+
+    # Cache reuse is known only at ingest; a later read by handle reports it as unknown.
+    assert first["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is False
+    assert again["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is True
+    overview = _ok(monkeypatch, capsys, "get-source-overview", source_id, *db)
+    assert overview["diagnostics"]["acquisition"]["reused_from_cache"] is None
+    first["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] = None
+    assert overview == first["overview"]
+    assert _ok(monkeypatch, capsys, "list-chapters", source_id, *db) == [
+        {"index": 0, "title": "Main idea", "start": 0.0, "end": 20.0}
+    ]
+    assert _ok(monkeypatch, capsys, "list-exclusions", source_id, *db)[0]["source_indices"] == [3]
+
+    texts = []
+    offset = 0
+    while offset is not None:
+        page = _ok(
+            monkeypatch,
+            capsys,
+            "read-transcript",
+            source_id,
+            "--offset",
+            str(offset),
+            "--limit",
+            "2",
+            *db,
+        )
+        texts.extend(segment["text"] for segment in page["segments"])
+        offset = page["next_offset"]
+    assert texts == ["First atom", "Second atom", "Third atom"]
+    raw = _ok(monkeypatch, capsys, "read-transcript", source_id, "--include-excluded", *db)
+    assert raw["segments"][-1] == {
+        "source_index": 3,
+        "text": "Sponsor atom",
+        "start": 2,
+        "duration": 1,
+    }
+    chapter = _ok(monkeypatch, capsys, "read-chapter", source_id, "0", "--offset", "1", *db)
+    assert [segment["text"] for segment in chapter["segments"]] == ["Second atom", "Third atom"]
+
+    refreshed = _ok(monkeypatch, capsys, "ingest-source", URL, "--refresh", *db)
+    assert (refreshed["source_id"], refreshed["cached"]) == (source_id, False)
+    assert fake_extraction.call_count == 2
+
+
+def test_cli_source_errors_use_shared_codes(monkeypatch, capsys, tmp_path, fake_extraction):
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    cases = [
+        (("get-source-overview", "missing"), "SOURCE_NOT_FOUND", "Unknown source_id"),
+        (("read-transcript", source_id, "--limit", "81"), "INVALID_ARGUMENT", "limit must be"),
+        (("read-transcript", source_id, "--offset", "-1"), "INVALID_ARGUMENT", "offset must"),
+        (
+            ("read-transcript", source_id, "--start", "10", "--end", "1"),
+            "INVALID_ARGUMENT",
+            "end must not precede start",
+        ),
+        (("read-chapter", source_id, "4"), "INVALID_ARGUMENT", "chapter_index 4 out of range"),
+    ]
+    for args, code, message in cases:
+        error = _fail(monkeypatch, capsys, *args, *db)
+        assert error["code"] == code
+        assert message in error["message"]
+
+    code, _, error = _run(monkeypatch, capsys, "read-transcript", source_id, "--offset", "x", *db)
+    assert code == 2 and error["code"] == "INVALID_ARGUMENT"
+    code, _, error = _run(monkeypatch, capsys, "list-chapters", source_id, "extra", *db)
+    assert code == 2 and error["code"] == "INVALID_ARGUMENT"
+    fake_extraction.side_effect = RuntimeError("network down")
+    error = _fail(monkeypatch, capsys, "ingest-source", URL, "--include-sponsors", *db)
+    assert error["code"] == "INGEST_FAILED"
+
+
+def test_cli_search_cursor_continues_across_invocations(monkeypatch, capsys, tmp_path):
+    vault = _vault_fixture(tmp_path)
+    config = ("--config", str(_config(tmp_path, vault)))
+    paths = []
+    cursor = None
+    while True:
+        args = ["search-vault", "fixture", "--limit", "2", *config]
+        if cursor:
+            args += ["--cursor", cursor]
+        page = _ok(monkeypatch, capsys, *args)
+        assert all(
+            set(note) == {"path", "title", "revision", "snippet", "linkable"}
+            for note in page["notes"]
+        )
+        paths.extend(note["path"] for note in page["notes"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert paths == [f"Notes/Fixture {index}.md" for index in range(5)]
+
+
+def test_cli_search_cursor_is_untrusted_and_bound_to_query_and_scope(monkeypatch, capsys, tmp_path):
+    vault = _vault_fixture(tmp_path)
+    config_path = _config(tmp_path, vault)
+    config = ("--config", str(config_path))
+    cursor = _ok(monkeypatch, capsys, "search-vault", "fixture", "--limit", "2", *config)[
+        "next_cursor"
+    ]
+    for args in (
+        ("search-vault", "fixture", "--cursor", "not a cursor"),
+        ("search-vault", "fixture", "--cursor", base64.urlsafe_b64encode(b"[1]").decode()),
+        ("search-vault", "other", "--cursor", cursor),
+        ("search-vault", "fixture", "--scope", "title", "--cursor", cursor),
+    ):
+        assert _fail(monkeypatch, capsys, *args, *config)["code"] == "INVALID_CURSOR"
+
+    # Narrowing the trusted scope invalidates outstanding cursors.
+    _config(tmp_path, vault, ("Private", "Notes/Fixture 4.md"))
+    error = _fail(monkeypatch, capsys, "search-vault", "fixture", "--cursor", cursor, *config)
+    assert error["code"] == "INVALID_CURSOR"
+
+    # A forged cursor that matches the current policy is only an offset: it never
+    # surfaces excluded notes.
+    with VaultReader(load_vault_settings(config_path)) as reader:
+        forged = reader._cursor("fixture", "both", 0)
+    page = _ok(monkeypatch, capsys, "search-vault", "fixture", "--cursor", forged, *config)
+    serialized = json.dumps(page)
+    assert "Private" not in serialized and "SECRET_MARKER" not in serialized
+    assert "Notes/Fixture 4.md" not in serialized
+
+
+def test_cli_search_cursor_survives_separate_processes(tmp_path):
+    vault = _vault_fixture(tmp_path)
+    config = _config(tmp_path, vault)
+    code = (
+        "import sys; from obsidian_ingest.cli import main; sys.argv[0] = 'obsidian-ingest'; main()"
+    )
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "skills/obsidian-ingest/src"),
+    }
+
+    def run(*args: str) -> dict:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                "search-vault",
+                "fixture",
+                "--limit",
+                "3",
+                "--config",
+                str(config),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        return json.loads(completed.stdout)
+
+    first = run()
+    second = run("--cursor", first["next_cursor"])
+    assert [note["path"] for note in second["notes"]] == [
+        "Notes/Fixture 3.md",
+        "Notes/Fixture 4.md",
+    ]
+    assert second["next_cursor"] is None
+
+
+def test_cli_note_reads_check_revisions_and_exclusions(monkeypatch, capsys, tmp_path):
+    vault = _vault_fixture(tmp_path)
+    note = vault / "Notes/Fixture 0.md"
+    note.write_text("0123456789abcdef", encoding="utf-8")
+    config = ("--config", str(_config(tmp_path, vault)))
+    first = _ok(
+        monkeypatch, capsys, "read-vault-note", "Notes/Fixture 0.md", "--limit", "10", *config
+    )
+    assert (first["text"], first["next_offset"]) == ("0123456789", 10)
+    assert "note_id" not in first
+    error = _fail(
+        monkeypatch, capsys, "read-vault-note", "Notes/Fixture 0.md", "--offset", "10", *config
+    )
+    assert error["code"] == "INVALID_ARGUMENT" and "revision is required" in error["message"]
+    rest = _ok(
+        monkeypatch,
+        capsys,
+        "read-vault-note",
+        "Notes/Fixture 0.md",
+        "--offset",
+        "10",
+        "--revision",
+        first["revision"],
+        *config,
+    )
+    assert rest["text"] == "abcdef" and rest["next_offset"] is None
+
+    note.write_text("changed by a human", encoding="utf-8")
+    error = _fail(
+        monkeypatch,
+        capsys,
+        "read-vault-note",
+        "Notes/Fixture 0.md",
+        "--offset",
+        "10",
+        "--revision",
+        first["revision"],
+        *config,
+    )
+    assert error["code"] == "NOTE_CHANGED"
+    for path in ("Private/Fixture secret.md", "../outside.md", "Notes/Missing.md", "Notes"):
+        error = _fail(monkeypatch, capsys, "read-vault-note", path, *config)
+        assert error == {"code": "NOTE_UNAVAILABLE", "message": "note is unavailable"}
+
+
+def test_cli_missing_config_is_reported(monkeypatch, capsys, tmp_path):
+    error = _fail(monkeypatch, capsys, "search-vault", "--config", str(tmp_path / "missing.toml"))
+    assert error["code"] == "CONFIG_ERROR"
+
+
+def test_cli_publication_is_create_only_with_verified_links(
+    monkeypatch, capsys, tmp_path, fake_extraction
+):
+    vault = _vault_fixture(tmp_path)
+    target = vault / "Notes/Fixture 1.md"
+    config = ("--config", str(_config(tmp_path, vault)))
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    revision = _ok(monkeypatch, capsys, "read-vault-note", "Notes/Fixture 1.md", *config)[
+        "revision"
+    ]
+    canonical = {path: path.read_bytes() for path in vault.rglob("*.md")}
+
+    # Ordinary related links need no revision and survive harmless human edits.
+    target.write_text("edited by a human", encoding="utf-8")
+    canonical[target] = target.read_bytes()
+    draft = _ok(
+        monkeypatch,
+        capsys,
+        "create-draft",
+        source_id,
+        "Retry budget",
+        "Body.",
+        "--timestamp",
+        "1",
+        "--related-note",
+        "Notes/Fixture 1.md",
+        "Shared idea.",
+        *config,
+        *db,
+    )
+    text = Path(draft["path"]).read_text(encoding="utf-8")
+    assert "- [[Notes/Fixture 1.md]]: Shared idea." in text
+    assert "[00:01](https://www.youtube.com/watch?v=video-123&t=1s)" in text
+    duplicate = _ok(
+        monkeypatch, capsys, "create-draft", source_id, "Retry budget", "Body.", *config, *db
+    )
+    assert Path(duplicate["path"]).name == "Retry budget (2).md"
+
+    drafts = vault / "00 Inbox/AI Drafts"
+    before = sorted(drafts.iterdir())
+    for args, code in (
+        (("create-draft", source_id, "Bad", "# Title\n\nBody"), "INVALID_ARGUMENT"),
+        (
+            (
+                "create-draft",
+                source_id,
+                "Bad",
+                "Body",
+                "--related-note",
+                "Private/Fixture secret.md",
+                "Hidden.",
+            ),
+            "NOTE_UNAVAILABLE",
+        ),
+        (
+            (
+                "create-edit-suggestion",
+                source_id,
+                "Notes/Fixture 1.md",
+                revision,
+                "Summary",
+                "Reason",
+                "Proposal",
+            ),
+            "NOTE_CHANGED",
+        ),
+        (
+            (
+                "create-edit-suggestion",
+                source_id,
+                "Private/Fixture secret.md",
+                revision,
+                "Summary",
+                "Reason",
+                "Proposal",
+            ),
+            "NOTE_UNAVAILABLE",
+        ),
+        (("create-draft", "missing", "Bad", "Body"), "SOURCE_NOT_FOUND"),
+    ):
+        error = _fail(monkeypatch, capsys, *args, *config, *db)
+        assert error["code"] == code
+        assert "SECRET_MARKER" not in error["message"]
+    assert sorted(drafts.iterdir()) == before
+
+    current = _ok(monkeypatch, capsys, "read-vault-note", "Notes/Fixture 1.md", *config)["revision"]
+    edit = _ok(
+        monkeypatch,
+        capsys,
+        "create-edit-suggestion",
+        source_id,
+        "Notes/Fixture 1.md",
+        current,
+        "Add detail",
+        "The source adds context.",
+        "New paragraph.",
+        *config,
+        *db,
+    )
+    assert Path(edit["path"]).read_text(encoding="utf-8").startswith("[[Notes/Fixture 1.md]]")
+    assert {path: path.read_bytes() for path in canonical} == canonical
