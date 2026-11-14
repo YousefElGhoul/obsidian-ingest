@@ -40,6 +40,11 @@ authorizes permission changes.
   retained transcript. A `limit` above 200 is capped at 200.
   Each page lists its `fields` once; every segment is a row `[source_index, start,
   duration, text]`.
+- `get_thumbnail(source_id)` is optional, for vision-capable models: it fetches the
+  video's 480x360 thumbnail on demand (MCP returns the image plus `{mime_type, width,
+  height, url}`; the CLI `get-thumbnail` saves it under `~/.cache/obsidian-ingest/` and
+  prints its `path` with the same fields). `THUMBNAIL_UNAVAILABLE` if it can't be
+  fetched. Nothing depends on it.
 - `search_vault`: `query`, `scope` (`title`, `content`, `both`), `cursor`, `limit`
   (1–20). Each query word is matched on its own, case-insensitive and as a whole word
   (`go` doesn't match "going"), in filenames and content. Notes that match more distinct words come first, and

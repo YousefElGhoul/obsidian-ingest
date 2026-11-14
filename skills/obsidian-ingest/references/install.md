@@ -80,8 +80,8 @@ args:    run --no-dev --project <skill> python <skill>/mcp/server.py
          --config <skill>/config/settings.toml [--cache-db <cache file>]
 ```
 
-Allow exactly these ten tools: `ingest_source`, `get_source_overview`,
-`list_chapters`, `list_exclusions`, `read_transcript`, `read_chapter`,
+Allow exactly these eleven tools: `ingest_source`, `get_source_overview`,
+`list_chapters`, `list_exclusions`, `read_transcript`, `read_chapter`, `get_thumbnail`,
 `create_draft`, `search_vault`, `read_vault_note`, `create_edit_suggestion`. Disable
 MCP resources and prompts. If the server reports a different tool list, use what it
 reports and tell the user. In trusted CLI-only mode, registration is optional: use
@@ -114,7 +114,7 @@ final check in a fresh session. In trusted mode, change nothing in this step.
 
 ## 7. Verify with the harness's own commands
 
-- The MCP server connects and lists the ten tools (on Hermes: `mcp test`).
+- The MCP server connects and lists the eleven tools (on Hermes: `mcp test`).
 - A fresh session started from an unrelated directory loads the skill and exposes only
   the intended tools. Prefer the harness's own tool listing or banner. If those
   disagree, say so instead of writing scripts against the harness's internals.

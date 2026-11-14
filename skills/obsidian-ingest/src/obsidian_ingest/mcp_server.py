@@ -10,6 +10,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict, get_type_hints
 
+from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model, with_config
 
@@ -215,6 +216,14 @@ def create_server(
             limit=limit,
         )
         return compact_json(page)
+
+    @server.tool(structured_output=False)
+    @_tool_errors
+    def get_thumbnail(source_id: str) -> list[Image | str]:
+        """Optional: fetch the video's thumbnail image for a vision-capable model. Not needed to understand the video; skip it if you cannot view images."""
+        result = responses.thumbnail(load_source(source_id))
+        image = Image(data=result.data, format=result.image.mime_type.removeprefix("image/"))
+        return [image, compact_json(result.summary())]
 
     @server.tool()
     @_tool_errors

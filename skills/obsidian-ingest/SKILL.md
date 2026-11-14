@@ -75,6 +75,8 @@ example (05:12) or (1:03:56).
   "Verification is the most important workflow". Do not end with a moral or lesson of your
   own; if you add anything, label it as your comment.
 - Zero notes is a fine result.
+- If you can view images and the thumbnail would help, you may call `get_thumbnail`. It
+  is never required.
 
 ## Rules
 

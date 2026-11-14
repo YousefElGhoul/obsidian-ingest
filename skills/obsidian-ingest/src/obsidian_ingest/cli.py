@@ -23,6 +23,7 @@ TOOL_COMMANDS = frozenset(
         "list-exclusions",
         "read-transcript",
         "read-chapter",
+        "get-thumbnail",
         "create-draft",
         "search-vault",
         "read-vault-note",
@@ -146,6 +147,13 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--include-excluded", action="store_true")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
+    parser.add_argument("--cache-db", type=Path)
+
+    parser = subparsers.add_parser(
+        "get-thumbnail",
+        help="Optional: save the video's thumbnail to a disposable cache and print its path",
+    )
+    parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
 
     parser = subparsers.add_parser("create-draft", help="Create a source-attributed Markdown draft")
@@ -358,6 +366,8 @@ def _run_tool_command(args) -> Any:
             )
 
     source = responses.load_source(_cache(args), args.source_id)
+    if args.command == "get-thumbnail":
+        return _save_thumbnail(responses.thumbnail(source), source.metadata.source_id)
     if args.command == "get-source-overview":
         return responses.source_overview(source)
     if args.command == "list-chapters":
@@ -383,6 +393,24 @@ def _run_tool_command(args) -> Any:
             limit=args.limit,
         )
     return _run_write_command(args, source)
+
+
+def _thumbnail_dir() -> Path:
+    """A disposable host-local cache, never the vault."""
+    cache = os.environ.get("XDG_CACHE_HOME")
+    root = Path(cache) if cache and Path(cache).is_absolute() else Path.home() / ".cache"
+    return root / "obsidian-ingest/thumbnails"
+
+
+def _save_thumbnail(result: responses.Thumbnail, source_id: str) -> dict[str, object]:
+    """The CLI cannot return image content, so it hands over a file path instead."""
+    directory = _thumbnail_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{source_id}.{result.image.extension}"
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(result.data)
+    os.replace(temporary, path)
+    return {"path": str(path)} | result.summary()
 
 
 def _path_handle(vault, path: str, label: str) -> str:

@@ -29,7 +29,7 @@ hermes -p <profile> mcp add obsidian-ingest --command <absolute uv> --connect-ti
 
 ```bash
 hermes -p <profile> config set mcp_servers.obsidian-ingest.tools \
-  '{"include":["ingest_source","get_source_overview","list_chapters","list_exclusions","read_transcript","read_chapter","create_draft","search_vault","read_vault_note","create_edit_suggestion"],"resources":false,"prompts":false}'
+  '{"include":["ingest_source","get_source_overview","list_chapters","list_exclusions","read_transcript","read_chapter","get_thumbnail","create_draft","search_vault","read_vault_note","create_edit_suggestion"],"resources":false,"prompts":false}'
 hermes -p <profile> mcp test obsidian-ingest
 ```
 
@@ -69,10 +69,10 @@ hermes -p <profile> chat --cli --in <unrelated directory> \
 
 ## Verify
 
-- `hermes -p <profile> mcp test obsidian-ingest` lists the ten tools.
+- `hermes -p <profile> mcp test obsidian-ingest` lists the eleven tools.
 - Start the curation command above and type `/exit`. The banner lists the MCP tools and
   `Activated skills: obsidian-ingest`. In the trial the banner counted 14 tools while the
-  agent received only the 10 allowed ones (the other four are MCP resource and prompt
+  agent received only the allowed ones (the other four are MCP resource and prompt
   helpers that are disabled). Report such a mismatch rather than probing Hermes'
   internals.
 - `hermes -p <profile> tools list` shows `skills` enabled, and `mcp list` shows the other

@@ -252,5 +252,6 @@ def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path
         "list_exclusions",
         "read_transcript",
         "read_chapter",
+        "get_thumbnail",
         "create_draft",
     }

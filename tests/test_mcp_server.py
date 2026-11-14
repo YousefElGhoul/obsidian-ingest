@@ -110,6 +110,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "list_exclusions",
                 "read_transcript",
                 "read_chapter",
+                "get_thumbnail",
                 "create_draft",
             }
             draft_tool = next(tool for tool in tools.tools if tool.name == "create_draft")

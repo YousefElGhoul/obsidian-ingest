@@ -58,6 +58,10 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
   skill and its tools; it follows `references/install.md` (Hermes notes in
   `references/hermes.md`). `obsidian-ingest setup` accepts flags and then never prompts.
   Restricted-mode install was validated once live (Hermes v0.23.0, 2026-11-14).
+- An optional `get_thumbnail` tool (CLI `get-thumbnail`) fetches a YouTube thumbnail on
+  demand for vision-capable models: bounded, not cached, not part of ingest. It is the
+  first scoped image delivery from milestone 3. Hermes v0.23.0 forwards the MCP image to
+  the model (verified in trial run 27).
 - `videos.txt` is a plain URL manifest consumed by `scripts/evaluate.py`, which records
   MCP responses without an agent or draft writes.
 

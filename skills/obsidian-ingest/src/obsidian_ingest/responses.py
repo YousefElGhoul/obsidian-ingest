@@ -8,6 +8,7 @@ in their own envelopes.
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from obsidian_ingest.curation import create_edit_suggestion, verified_related_notes
@@ -15,7 +16,12 @@ from obsidian_ingest.diagnostics import source_diagnostics
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
 from obsidian_ingest.extractor import Provider, detect_provider
 from obsidian_ingest.extractor.providers.youtube import extract_video_id
+from obsidian_ingest.extractor.providers.youtube.thumbnail import (
+    ThumbnailError,
+    fetch_youtube_thumbnail,
+)
 from obsidian_ingest.extractor.transcript import TranscriptSegment, format_timestamp
+from obsidian_ingest.images import ImageInfo, identify_image
 from obsidian_ingest.reading import (
     TOKEN_PLACEHOLDER,
     advance_token,
@@ -275,6 +281,34 @@ def chapter_page(
 ) -> dict[str, Any]:
     entries = read_chapter_entries(source, chapter_index, include_excluded=include_excluded)
     return segment_page(entries, offset, limit)
+
+
+@dataclass(frozen=True, slots=True)
+class Thumbnail:
+    data: bytes
+    image: ImageInfo
+    url: str
+
+    def summary(self) -> dict[str, Any]:
+        """The metadata both transports return next to the image itself."""
+        return {
+            "mime_type": self.image.mime_type,
+            "width": self.image.width,
+            "height": self.image.height,
+            "url": self.url,
+        }
+
+
+def thumbnail(source: Source) -> Thumbnail:
+    """Fetch the source's thumbnail on demand; optional, for vision-capable agents."""
+    if source.metadata.provider != Provider.YOUTUBE:
+        raise OperationError("THUMBNAIL_UNAVAILABLE", "this source has no thumbnail")
+    try:
+        data, url = fetch_youtube_thumbnail(source.metadata.source_id)
+        image = identify_image(data)
+    except (ThumbnailError, ValueError) as error:
+        raise OperationError("THUMBNAIL_UNAVAILABLE", str(error)) from error
+    return Thumbnail(data, image, url)
 
 
 def _with_identifier(item: dict[str, Any], identifier: NoteIdentifier) -> dict[str, Any]:

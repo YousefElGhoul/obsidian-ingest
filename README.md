@@ -118,6 +118,7 @@ as `INVALID_ARGUMENT: <field>: <reason>`, matching the CLI's argument checks.
 | `NOTE_UNAVAILABLE` | Unknown, excluded, missing, or otherwise inaccessible note (deliberately indistinguishable) |
 | `NOTE_CHANGED` | The note's revision no longer matches; search and read it again |
 | `NOTE_NOT_LINKABLE` | The note path cannot be emitted as a safe wikilink |
+| `THUMBNAIL_UNAVAILABLE` | The thumbnail could not be fetched within the bounds (missing, too large, not an image, or a network error) |
 | `INCOMPLETE_READ` | A write's `read_token` is missing or does not cover the whole retained transcript; continue reading from the named offset |
 | `WRITE_FAILED` | Operating-system or runtime failure, such as rejected draft publication |
 | `CONFIG_ERROR` | CLI only: trusted config missing or invalid (MCP fails at startup instead) |
@@ -145,6 +146,7 @@ obsidian-ingest list-chapters SOURCE_ID
 obsidian-ingest list-exclusions SOURCE_ID
 obsidian-ingest read-transcript SOURCE_ID [--start SEC] [--end SEC] [--include-excluded] [--offset N] [--limit N] [--read-token TOKEN]
 obsidian-ingest read-chapter SOURCE_ID CHAPTER_INDEX [--include-excluded] [--offset N] [--limit N]
+obsidian-ingest get-thumbnail SOURCE_ID   # optional; saves the image to ~/.cache/obsidian-ingest/thumbnails/
 obsidian-ingest search-vault [QUERY] [--scope title|content|both] [--cursor TOKEN] [--limit N]
 obsidian-ingest read-vault-note VAULT_RELATIVE_PATH [--revision SHA256] [--offset N] [--limit N]
 obsidian-ingest create-draft SOURCE_ID CONTENTS [--filename NAME] [--timestamp SEC|MM:SS] [--related-note PATH REASON] --read-token TOKEN
@@ -422,6 +424,12 @@ destination outside the accessible, non-excluded area. Unknown config keys are e
 
 The configured server adds three tools:
 
+- `get_thumbnail(source_id)` optionally fetches the video's thumbnail (480x360 `hqdefault`,
+  falling back to 320x180) from `i.ytimg.com`, built from the video ID only: a 10 s
+  timeout, at most 2 MB, with the type taken from the image bytes. MCP returns the image
+  plus `{mime_type, width, height, url}`. The CLI writes the file to a disposable
+  `$XDG_CACHE_HOME/obsidian-ingest/thumbnails/` (never the vault) and prints its `path`
+  with the same fields. Thumbnails are not cached in SQLite and are not part of ingest.
 - `search_vault(query="", scope="both", cursor=None, limit=10)` searches note titles
   and/or content; an empty query browses accessible notes, including old AI drafts.
   Query length is limited to 256 characters. `scope` is `title`, `content`, or `both`;
