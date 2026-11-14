@@ -12,8 +12,10 @@ Write few notes: usually 0–3 per video, at most 5. A person will review every 
 ## Steps
 
 1. `ingest_source(url)`. Keep the `source_id`.
-2. Read the whole transcript: `read_transcript` with `limit` 200, following
-   `next_offset` until it is `null` and `remaining_segments` is 0. Never stop early.
+2. Read the whole transcript in order: `read_transcript` with `limit` 200, passing
+   each page's `next_offset` and `read_token` to the next call until `next_offset` is
+   `null`. Keep the last `read_token`: every write needs it, and writing is refused
+   until the whole transcript has been read.
 3. Write down the ideas worth keeping. An idea is something a person would look up
    again months later: a technique, mechanism, tradeoff, gotcha, or mental model that
    the speaker states. Not ideas: what happens in the video, how a video game works
@@ -32,6 +34,7 @@ Write few notes: usually 0–3 per video, at most 5. A person will review every 
    `how`, `use`, `code` or `video` that match everything. Then `read_vault_note` for the
    closest matches. Do this before writing anything.
 5. For each idea, decide:
+   Pass the final `read_token` to every write.
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. `proposed_content` is only the
      new or changed lines, never a copy of the whole note or a summary of the video.

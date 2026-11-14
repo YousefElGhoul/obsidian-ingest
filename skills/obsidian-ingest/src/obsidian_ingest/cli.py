@@ -137,6 +137,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--include-excluded", action="store_true")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
+    parser.add_argument("--read-token", help="read_token from the previous page")
     parser.add_argument("--cache-db", type=Path)
 
     parser = subparsers.add_parser("read-chapter", help="Read a bounded creator-chapter page")
@@ -162,6 +163,9 @@ def _tool_parsers(subparsers) -> None:
         action="append",
         metavar=("PATH", "REASON"),
         help="Verified vault-relative note to link; repeatable; no revision is required",
+    )
+    parser.add_argument(
+        "--read-token", required=True, help="read_token from the last transcript page"
     )
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
@@ -193,6 +197,9 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("reasoning")
     parser.add_argument("proposed_content")
     parser.add_argument("--timestamp", action="append", default=[], help="seconds or MM:SS")
+    parser.add_argument(
+        "--read-token", required=True, help="read_token from the last transcript page"
+    )
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
 
@@ -365,6 +372,7 @@ def _run_tool_command(args) -> Any:
             include_excluded=args.include_excluded,
             offset=args.offset,
             limit=args.limit,
+            read_token=args.read_token,
         )
     if args.command == "read-chapter":
         return responses.chapter_page(
@@ -406,6 +414,7 @@ def _run_write_command(args, source) -> dict[str, str]:
                 timestamps=tuple(args.timestamp),
                 related_notes=related,
                 vault=vault,
+                read_token=args.read_token,
             )
         # The target revision is checked by the shared edit-suggestion operation.
         return responses.write_edit_suggestion(
@@ -418,6 +427,7 @@ def _run_write_command(args, source) -> dict[str, str]:
             reasoning=args.reasoning,
             proposed_content=args.proposed_content,
             timestamps=tuple(args.timestamp),
+            read_token=args.read_token,
         )
 
 

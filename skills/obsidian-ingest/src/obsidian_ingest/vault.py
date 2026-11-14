@@ -323,7 +323,10 @@ class VaultReader:
         return _revision(digest), frozenset(found_terms), snippet
 
     def _register(self, relative: str, revision: str) -> NoteReference:
-        note_id = "note_" + secrets.token_urlsafe(18)
+        # Short lowercase hex: weak models mistype long mixed-case handles.
+        note_id = "note_" + secrets.token_hex(6)
+        while note_id in self._references:
+            note_id = "note_" + secrets.token_hex(6)
         linkable = (
             not any(character in relative for character in "#^|[]\\:")
             and "%%" not in relative

@@ -52,12 +52,18 @@ def _strict_argument_model(function: Callable[..., Any]) -> type[BaseModel]:
     return create_model(f"{function.__name__}_arguments", __config__=_STRICT_ARGUMENTS, **fields)
 
 
+_ARGUMENT_HINTS = {
+    "read_token": "pass the read_token from your final read_transcript page",
+}
+
+
 def _describe_invalid_arguments(error: ValidationError) -> str:
     # Field locations and messages only; rejected values are the caller's data.
-    problems = (
-        f"{'.'.join(str(part) for part in item['loc']) or 'arguments'}: {item['msg']}"
-        for item in error.errors(include_url=False)
-    )
+    problems = []
+    for item in error.errors(include_url=False):
+        field = ".".join(str(part) for part in item["loc"]) or "arguments"
+        hint = _ARGUMENT_HINTS.get(field)
+        problems.append(f"{field}: {item['msg']}" + (f" ({hint})" if hint else ""))
     return "; ".join(problems)
 
 
@@ -177,8 +183,9 @@ def create_server(
         include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
+        read_token: str | None = None,
     ) -> str:
-        """Read compact JSON pages; follow next_offset until null (remaining_segments 0). Whole atoms are preserved."""
+        """Read compact JSON pages in order; follow next_offset until null, passing each page's read_token to the next call. Writing requires the final read_token."""
         page = responses.transcript_page(
             load_source(source_id),
             start=start,
@@ -186,6 +193,7 @@ def create_server(
             include_excluded=include_excluded,
             offset=offset,
             limit=limit,
+            read_token=read_token,
         )
         return compact_json(page)
 
@@ -213,11 +221,12 @@ def create_server(
     def create_draft(
         source_id: str,
         contents: str,
+        read_token: str,
         filename: str | None = None,
         timestamps: list[float | str] | None = None,
         related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
-        """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and timestamps in seconds for the moments cited."""
+        """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. read_token is the token from your final read_transcript page; writing is refused until the whole transcript was read. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and timestamps in seconds for the moments cited."""
         return responses.write_draft(
             settings,
             load_source(source_id),
@@ -226,6 +235,7 @@ def create_server(
             timestamps=tuple(timestamps or ()),
             related_notes=[dict(item) for item in related_notes] if related_notes else None,
             vault=vault,
+            read_token=read_token,
         )
 
     if vault is not None:
@@ -267,9 +277,10 @@ def create_server(
             change_summary: str,
             reasoning: str,
             proposed_content: str,
+            read_token: str,
             timestamps: list[float | str] | None = None,
         ) -> dict[str, str]:
-            """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section."""
+            """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section. read_token is the token from your final read_transcript page."""
             return responses.write_edit_suggestion(
                 settings,
                 load_source(source_id),
@@ -280,6 +291,7 @@ def create_server(
                 reasoning=reasoning,
                 proposed_content=proposed_content,
                 timestamps=tuple(timestamps or ()),
+                read_token=read_token,
             )
 
     return server

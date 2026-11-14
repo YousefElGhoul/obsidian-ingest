@@ -25,6 +25,7 @@ from obsidian_ingest.extractor.metadata import (
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
+from obsidian_ingest.responses import parse_timestamps
 from obsidian_ingest.source import Source
 
 URL = "https://www.youtube.com/watch?v=video-123"
@@ -63,6 +64,20 @@ def _sample_source() -> Source:
     return Source(
         metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
     )
+
+
+async def _read_token(client, source_id: str) -> str:
+    """Read the whole transcript in order, as the skill requires, and return the token."""
+    arguments: dict = {"source_id": source_id}
+    while True:
+        page = json.loads((await client.call_tool("read_transcript", arguments)).content[0].text)
+        if page["next_offset"] is None:
+            return page["read_token"]
+        arguments = {
+            "source_id": source_id,
+            "offset": page["next_offset"],
+            "read_token": page["read_token"],
+        }
 
 
 def _tool_data(result) -> dict:
@@ -104,8 +119,13 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "filename",
                 "timestamps",
                 "related_notes",
+                "read_token",
             }
-            assert set(draft_tool.input_schema["required"]) == {"source_id", "contents"}
+            assert set(draft_tool.input_schema["required"]) == {
+                "source_id",
+                "contents",
+                "read_token",
+            }
             assert "H1" in draft_tool.description
             related_schema = draft_tool.input_schema["properties"]["related_notes"]
             assert related_schema["anyOf"][0]["items"]["$ref"] == "#/$defs/RelatedNoteInput"
@@ -224,6 +244,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": "# A useful note: why?\n\nAgent-authored content.",
                         "timestamps": [1.0],
                     },
@@ -241,7 +262,11 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             duplicate = _tool_data(
                 await client.call_tool(
                     "create_draft",
-                    {"source_id": source_id, "contents": "# A useful note: why?\n\nAgain."},
+                    {
+                        "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
+                        "contents": "# A useful note: why?\n\nAgain.",
+                    },
                 )
             )
             assert Path(duplicate["path"]).name == "a-useful-note-why-2.md"
@@ -251,6 +276,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": "# Title: kept verbatim?\n\nBody.",
                         "filename": "../My_File.md",
                     },
@@ -261,7 +287,12 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             before = sorted((vault / "00 Inbox/AI Drafts").iterdir())
             untitled = await client.call_tool(
-                "create_draft", {"source_id": source_id, "contents": "Body without a title."}
+                "create_draft",
+                {
+                    "source_id": source_id,
+                    "read_token": await _read_token(client, source_id),
+                    "contents": "Body without a title.",
+                },
             )
             assert untitled.is_error
             assert "INVALID_ARGUMENT: contents must start with an H1" in untitled.content[0].text
@@ -271,6 +302,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "create_draft",
                 {
                     "source_id": source_id,
+                    "read_token": await _read_token(client, source_id),
                     "contents": "# Invalid formatting\n\n## Sources\nAgent list\n\n## Notes\nBody",
                 },
             )
@@ -283,6 +315,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": (
                             "# References included\n\n"
                             "Body.\n\n## References\n- [Paper](https://example.com)"
@@ -357,6 +390,7 @@ def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch) -> 
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": "# After restart\n\nUseful content.",
                     },
                 )
@@ -499,6 +533,7 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
                     "create_draft",
                     {
                         "source_id": seeded.source_id,
+                        "read_token": await _read_token(client, seeded.source_id),
                         "contents": "# Restarted source\n\nA useful body.",
                         "timestamps": [1.5],
                     },
@@ -643,6 +678,10 @@ def test_scoped_vault_tools_are_only_exposed_with_trusted_settings(tmp_path):
 
 def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_path, monkeypatch):
     source = _sample_source()
+    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
+    monkeypatch.setattr(
+        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
+    )
     monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
     vault = tmp_path / "vault"
     (vault / "Engineering").mkdir(parents=True)
@@ -685,6 +724,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": "# Retry budgets\n\nA retry budget limits aggregate load.",
                         "related_notes": [
                             note_ref
@@ -716,6 +756,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_draft",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "contents": "# Unicode path\n\nThis is the related insight.",
                         "related_notes": [
                             {
@@ -741,6 +782,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_edit_suggestion",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "target_note_id": selected["note_id"],
                         "target_revision": selected["revision"],
                         "change_summary": "Add an aggregate retry budget.",
@@ -762,6 +804,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                     "create_edit_suggestion",
                     {
                         "source_id": source_id,
+                        "read_token": await _read_token(client, source_id),
                         "target_note_id": selected["note_id"],
                         "target_revision": selected["revision"],
                         "change_summary": "Add an aggregate retry budget.",
@@ -777,6 +820,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
                 "create_draft",
                 {
                     "source_id": source_id,
+                    "read_token": await _read_token(client, source_id),
                     "contents": "# Broken link\n\nBody",
                     "related_notes": [
                         {
@@ -791,12 +835,31 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
             assert "NOTE_UNAVAILABLE" in invalid.content[0].text
             assert "'note_unknown'" in invalid.content[0].text
             assert "search_vault" in invalid.content[0].text
+            unread = await client.call_tool(
+                "create_draft", {"source_id": source_id, "contents": "# Unread\n\nBody"}
+            )
+            assert unread.is_error and "final read_transcript page" in unread.content[0].text
+            first_page = json.loads(
+                (await client.call_tool("read_transcript", {"source_id": source_id, "limit": 1}))
+                .content[0]
+                .text
+            )
+            partial = await client.call_tool(
+                "create_draft",
+                {
+                    "source_id": source_id,
+                    "contents": "# Unread\n\nBody",
+                    "read_token": first_page["read_token"],
+                },
+            )
+            assert partial.is_error and "INCOMPLETE_READ" in partial.content[0].text
             assert not (vault / "00 Inbox/AI Drafts/broken-link.md").exists()
 
             injected = await client.call_tool(
                 "create_draft",
                 {
                     "source_id": source_id,
+                    "read_token": await _read_token(client, source_id),
                     "contents": "# User wikilink\n\nBody with [[Unverified Note]] and [a Markdown link](https://example.com).",
                 },
             )

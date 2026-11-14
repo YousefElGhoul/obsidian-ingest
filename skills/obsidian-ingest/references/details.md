@@ -32,7 +32,12 @@ authorizes permission changes.
 ## Tools
 
 - `read_transcript` and `read_chapter` return pages. Follow `next_offset` until it is
-  `null`; `remaining_segments` says how many segments are still unread. A `limit` above 200 is capped at 200.
+  `null`; `remaining_segments` says how many segments are still unread. Pass each
+  page's `read_token` to the next page: reading in order from offset 0 advances it,
+  while skipping ahead, time ranges and `include_excluded` reads do not.
+  `create_draft` and `create_edit_suggestion` require the final token and fail with
+  `INCOMPLETE_READ` (naming the offset to continue from) until it covers the whole
+  retained transcript. A `limit` above 200 is capped at 200.
   Each page lists its `fields` once; every segment is a row `[source_index, start,
   duration, text]`.
 - `search_vault`: `query`, `scope` (`title`, `content`, `both`), `cursor`, `limit`

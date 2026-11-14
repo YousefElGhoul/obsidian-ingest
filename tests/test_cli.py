@@ -16,6 +16,7 @@ from obsidian_ingest.extractor.metadata import ExcludedRange, ExclusionLookup, E
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
+from obsidian_ingest.responses import parse_timestamps
 from obsidian_ingest.source import Source
 from obsidian_ingest.vault import VaultReader
 
@@ -230,6 +231,12 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
     )
     source = SimpleNamespace(metadata=metadata)
     monkeypatch.setattr(cli, "_cache", lambda _: SimpleNamespace(get=lambda _: source))
+    # This fake source has no transcript; full-read enforcement is tested elsewhere.
+    monkeypatch.setattr("obsidian_ingest.responses.require_full_read", lambda *_: None)
+    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
+    monkeypatch.setattr(
+        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
+    )
 
     monkeypatch.setattr(
         sys,
@@ -244,6 +251,8 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
             "--related-note",
             target_path,
             "Explains retry policy.",
+            "--read-token",
+            "unchecked-for-this-fake-source",
         ],
     )
     cli.main()
@@ -267,6 +276,8 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
             "A retry budget caps aggregate retries.",
             "--config",
             str(config),
+            "--read-token",
+            "unchecked-for-this-fake-source",
         ],
     )
     cli.main()
@@ -332,6 +343,21 @@ def _ok(monkeypatch, capsys, *args: str) -> Any:
     code, output, error = _run(monkeypatch, capsys, *args)
     assert (code, error) == (0, None)
     return output
+
+
+def _read_token(monkeypatch, capsys, source_id: str, *db: str) -> str:
+    """Read the whole transcript in order, as the skill requires, and return the token."""
+    token = None
+    offset = 0
+    while True:
+        extra = ("--read-token", token) if token else ()
+        page = _ok(
+            monkeypatch, capsys, "read-transcript", source_id, "--offset", str(offset), *extra, *db
+        )
+        token = page["read_token"]
+        if page["next_offset"] is None:
+            return token
+        offset = page["next_offset"]
 
 
 def _fail(monkeypatch, capsys, *args: str) -> dict:
@@ -590,14 +616,75 @@ def test_cli_missing_config_is_reported(monkeypatch, capsys, tmp_path):
     assert error["code"] == "CONFIG_ERROR"
 
 
+def test_writes_require_a_read_token_covering_the_whole_transcript(
+    monkeypatch, capsys, tmp_path, fake_extraction
+):
+    vault = _vault_fixture(tmp_path)
+    config = ("--config", str(_config(tmp_path, vault)))
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    draft = ("create-draft", source_id, "# Idea\n\nBody.", *config, *db)
+
+    first = _ok(monkeypatch, capsys, "read-transcript", source_id, "--limit", "1", *db)
+    assert first["read_token"].startswith("rt1-1-")
+    error = _fail(monkeypatch, capsys, *draft, "--read-token", first["read_token"])
+    assert error["code"] == "INCOMPLETE_READ" and "offset 1" in error["message"]
+
+    # Skipping ahead serves the page but does not advance the token.
+    skipped = _ok(
+        monkeypatch,
+        capsys,
+        "read-transcript",
+        source_id,
+        "--offset",
+        "2",
+        "--read-token",
+        first["read_token"],
+        *db,
+    )
+    assert skipped["read_token"] == first["read_token"]
+    # A time-range read passes the token through unchanged.
+    ranged = _ok(
+        monkeypatch,
+        capsys,
+        "read-transcript",
+        source_id,
+        "--start",
+        "0",
+        "--end",
+        "1",
+        "--read-token",
+        first["read_token"],
+        *db,
+    )
+    assert ranged["read_token"] == first["read_token"]
+
+    forged = first["read_token"][:-1] + ("0" if first["read_token"][-1] != "0" else "1")
+    error = _fail(monkeypatch, capsys, *draft, "--read-token", forged)
+    assert error["code"] == "INVALID_ARGUMENT" and "read_token" in error["message"]
+    assert not (vault / "00 Inbox/AI Drafts").exists() or not any(
+        (vault / "00 Inbox/AI Drafts").iterdir()
+    )
+
+    token = _read_token(monkeypatch, capsys, source_id, *db)
+    late = _fail(monkeypatch, capsys, *draft, "--read-token", token, "--timestamp", "11:40")
+    assert late["code"] == "INVALID_ARGUMENT" and "past the end" in late["message"]
+    assert Path(_ok(monkeypatch, capsys, *draft, "--read-token", token)["path"]).exists()
+
+
 def test_cli_publication_is_create_only_with_verified_links(
     monkeypatch, capsys, tmp_path, fake_extraction
 ):
     vault = _vault_fixture(tmp_path)
     target = vault / "Notes/Fixture 1.md"
+    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
+    monkeypatch.setattr(
+        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
+    )
     config = ("--config", str(_config(tmp_path, vault)))
     db = ("--cache-db", str(tmp_path / "cache.db"))
     source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    rt = ("--read-token", _read_token(monkeypatch, capsys, source_id, *db))
     revision = _ok(monkeypatch, capsys, "read-vault-note", "Notes/Fixture 1.md", *config)[
         "revision"
     ]
@@ -621,6 +708,7 @@ def test_cli_publication_is_create_only_with_verified_links(
         "Shared idea.",
         *config,
         *db,
+        *rt,
     )
     text = Path(draft["path"]).read_text(encoding="utf-8")
     assert "- [[Notes/Fixture 1.md]]: Shared idea." in text
@@ -628,7 +716,7 @@ def test_cli_publication_is_create_only_with_verified_links(
     assert "[01:05](https://www.youtube.com/watch?v=video-123&t=65s)" in text
     assert Path(draft["path"]).name == "retry-budget.md"
     duplicate = _ok(
-        monkeypatch, capsys, "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db
+        monkeypatch, capsys, "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db, *rt
     )
     assert Path(duplicate["path"]).name == "retry-budget-2.md"
     named = _ok(
@@ -641,6 +729,7 @@ def test_cli_publication_is_create_only_with_verified_links(
         "../My_File.md",
         *config,
         *db,
+        *rt,
     )
     assert Path(named["path"]) == vault / "00 Inbox/AI Drafts/my-file.md"
     assert Path(named["path"]).read_text(encoding="utf-8").startswith("# Title: kept verbatim?")
@@ -688,7 +777,7 @@ def test_cli_publication_is_create_only_with_verified_links(
         ),
         (("create-draft", "missing", "# Bad\n\nBody"), "SOURCE_NOT_FOUND"),
     ):
-        error = _fail(monkeypatch, capsys, *args, *config, *db)
+        error = _fail(monkeypatch, capsys, *args, *config, *db, *rt)
         assert error["code"] == code
         assert "SECRET_MARKER" not in error["message"]
     assert sorted(drafts.iterdir()) == before
@@ -706,6 +795,7 @@ def test_cli_publication_is_create_only_with_verified_links(
         "New paragraph.",
         *config,
         *db,
+        *rt,
     )
     assert Path(edit["path"]).name == "edit-fixture-1.md"
     assert Path(edit["path"]).read_text(encoding="utf-8").startswith("[[Notes/Fixture 1.md]]")

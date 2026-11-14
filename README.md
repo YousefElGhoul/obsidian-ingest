@@ -118,6 +118,7 @@ as `INVALID_ARGUMENT: <field>: <reason>`, matching the CLI's argument checks.
 | `NOTE_UNAVAILABLE` | Unknown, excluded, missing, or otherwise inaccessible note (deliberately indistinguishable) |
 | `NOTE_CHANGED` | The note's revision no longer matches; search and read it again |
 | `NOTE_NOT_LINKABLE` | The note path cannot be emitted as a safe wikilink |
+| `INCOMPLETE_READ` | A write's `read_token` is missing or does not cover the whole retained transcript; continue reading from the named offset |
 | `WRITE_FAILED` | Operating-system or runtime failure, such as rejected draft publication |
 | `CONFIG_ERROR` | CLI only: trusted config missing or invalid (MCP fails at startup instead) |
 
@@ -142,12 +143,12 @@ obsidian-ingest ingest-source URL [--include-sponsors] [--refresh] [--cache-db P
 obsidian-ingest get-source-overview SOURCE_ID
 obsidian-ingest list-chapters SOURCE_ID
 obsidian-ingest list-exclusions SOURCE_ID
-obsidian-ingest read-transcript SOURCE_ID [--start SEC] [--end SEC] [--include-excluded] [--offset N] [--limit N]
+obsidian-ingest read-transcript SOURCE_ID [--start SEC] [--end SEC] [--include-excluded] [--offset N] [--limit N] [--read-token TOKEN]
 obsidian-ingest read-chapter SOURCE_ID CHAPTER_INDEX [--include-excluded] [--offset N] [--limit N]
 obsidian-ingest search-vault [QUERY] [--scope title|content|both] [--cursor TOKEN] [--limit N]
 obsidian-ingest read-vault-note VAULT_RELATIVE_PATH [--revision SHA256] [--offset N] [--limit N]
-obsidian-ingest create-draft SOURCE_ID CONTENTS [--filename NAME] [--timestamp SEC] [--related-note PATH REASON]
-obsidian-ingest create-edit-suggestion SOURCE_ID PATH REVISION SUMMARY REASONING CONTENT [--timestamp SEC]
+obsidian-ingest create-draft SOURCE_ID CONTENTS [--filename NAME] [--timestamp SEC|MM:SS] [--related-note PATH REASON] --read-token TOKEN
+obsidian-ingest create-edit-suggestion SOURCE_ID PATH REVISION SUMMARY REASONING CONTENT [--timestamp SEC|MM:SS] --read-token TOKEN
 ```
 
 Source commands accept `--cache-db`; vault commands accept `--config`. `--timestamp`
@@ -337,7 +338,10 @@ default to 100 segments and cap a request at 200. The serialized MCP content env
 limited to 20 KiB; a page may therefore contain fewer than the requested number of
 whole segments. The response includes `fields` (`source_index`, `start`, `duration`, `text`), `segments`
 as rows in that order, `offset`, requested `limit`, `total_segments`,
-`remaining_segments`, and `next_offset`. Continue with the returned `next_offset` until it is `null`. Source
+`remaining_segments`, `next_offset`, and (for in-order reads of the retained view)
+`read_token`. The token is stateless, so it works the same across CLI processes and
+MCP. It records how far the transcript has been read in order from offset 0, and draft
+and edit writes require one that covers the whole retained transcript. Continue with the returned `next_offset` until it is `null`. Source
 indices, wording, timestamps, and order are preserved. An individual atom that cannot
 fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
 are returned as one compact JSON text result instead of duplicated text and structured
@@ -421,7 +425,7 @@ The configured server adds three tools:
 - `search_vault(query="", scope="both", cursor=None, limit=10)` searches note titles
   and/or content; an empty query browses accessible notes, including old AI drafts.
   Query length is limited to 256 characters. `scope` is `title`, `content`, or `both`;
-  pages contain at most 20 notes and use an opaque `next_cursor`. Note IDs are
+  pages contain at most 20 notes and use an opaque `next_cursor`. Note IDs (`note_` plus 12 hex digits) are
   server-process scoped. Revisions are `sha256:` plus the first 16 hex digits of the
   file's SHA-256; a malformed revision is `INVALID_ARGUMENT`, a stale one `NOTE_CHANGED`. Cursors are stateless continuation tokens, not credentials:
   they survive restarts and work across CLI and MCP, are bound to the query, search

@@ -15,7 +15,13 @@ from obsidian_ingest.diagnostics import source_diagnostics
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
 from obsidian_ingest.extractor import Provider, detect_provider
 from obsidian_ingest.extractor.providers.youtube import extract_video_id
-from obsidian_ingest.extractor.transcript import TranscriptSegment
+from obsidian_ingest.extractor.transcript import TranscriptSegment, format_timestamp
+from obsidian_ingest.reading import (
+    TOKEN_PLACEHOLDER,
+    advance_token,
+    require_full_read,
+    token_progress,
+)
 from obsidian_ingest.source import (
     Source,
     get_source_overview,
@@ -202,7 +208,10 @@ def _segment_page_data(
 
 
 def segment_page(
-    entries: tuple[tuple[int, TranscriptSegment], ...], offset: int, limit: int
+    entries: tuple[tuple[int, TranscriptSegment], ...],
+    offset: int,
+    limit: int,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Page whole transcript atoms, shrinking the page to fit the response limit.
 
@@ -217,7 +226,7 @@ def segment_page(
     segments: list[list[Any]] = []
     for source_index, segment in entries[offset : offset + limit]:
         segments.append([source_index, segment.start, segment.duration, segment.text])
-        page = _segment_page_data(segments, offset, limit, len(entries))
+        page = _segment_page_data(segments, offset, limit, len(entries)) | (extra or {})
         if not fits_envelope(page, MAX_PAGE_ENVELOPE_BYTES):
             segments.pop()
             if not segments:
@@ -226,7 +235,7 @@ def segment_page(
                     f"{MAX_PAGE_ENVELOPE_BYTES}-byte response limit"
                 )
             break
-    return _segment_page_data(segments, offset, limit, len(entries))
+    return _segment_page_data(segments, offset, limit, len(entries)) | (extra or {})
 
 
 def transcript_page(
@@ -237,11 +246,23 @@ def transcript_page(
     include_excluded: bool = False,
     offset: int = 0,
     limit: int = DEFAULT_PAGE_SIZE,
+    read_token: str | None = None,
 ) -> dict[str, Any]:
+    """Page the transcript. Reading the retained view in order advances `read_token`;
+    time-range and excluded-segment reads only pass a given token through."""
     entries = read_transcript_entries(
         source, start=start, end=end, include_excluded=include_excluded
     )
-    return segment_page(entries, offset, limit)
+    if read_token is not None:
+        token_progress(source, read_token)
+    ordered_read = start is None and end is None and not include_excluded
+    reserve = {"read_token": TOKEN_PLACEHOLDER} if ordered_read or read_token else None
+    page = segment_page(entries, offset, limit, reserve)
+    if ordered_read:
+        page["read_token"] = advance_token(source, read_token, offset, len(page["segments"]))
+    elif read_token is not None:
+        page["read_token"] = read_token
+    return page
 
 
 def chapter_page(
@@ -318,6 +339,22 @@ def parse_timestamps(values: tuple[float | str, ...]) -> tuple[float, ...]:
     return tuple(parsed)
 
 
+def _source_timestamps(source: Source, values: tuple[float | str, ...]) -> tuple[float, ...]:
+    """Parse timestamps and refuse any past the end of the transcript."""
+    timestamps = parse_timestamps(values)
+    entries = read_transcript_entries(source, include_excluded=True)
+    if entries:
+        end = max(segment.start + segment.duration for _, segment in entries)
+        for timestamp in timestamps:
+            if isinstance(timestamp, (int, float)) and timestamp > end + 1:
+                raise ValueError(
+                    f"INVALID_ARGUMENT: timestamp {timestamp:g}s is past the end of the "
+                    f"video ({format_timestamp(int(end))}); use the transcript's start "
+                    "values (seconds), and check the times written in the note"
+                )
+    return timestamps
+
+
 def write_draft(
     settings: DraftWriterSettings,
     source: Source,
@@ -327,11 +364,14 @@ def write_draft(
     timestamps: tuple[float | str, ...] = (),
     related_notes: list[dict[str, str]] | None = None,
     vault: VaultReader | None = None,
+    read_token: str | None = None,
 ) -> dict[str, str]:
     """Create a draft named from `filename` or the leading H1.
 
-    Related notes are `{note_id, reason}` handles from `vault`.
+    Related notes are `{note_id, reason}` handles from `vault`. `read_token` must prove
+    the whole transcript was read.
     """
+    require_full_read(source, read_token)
     verified: tuple[tuple[str, str], ...] = ()
     if related_notes:
         if vault is None:
@@ -344,7 +384,7 @@ def write_draft(
         contents=contents,
         filename=filename,
         source=source.metadata,
-        timestamps=parse_timestamps(timestamps),
+        timestamps=_source_timestamps(source, timestamps),
         related_notes=verified,
     )
     return _path_result(result)
@@ -361,7 +401,9 @@ def write_edit_suggestion(
     reasoning: str,
     proposed_content: str,
     timestamps: tuple[float | str, ...] = (),
+    read_token: str | None = None,
 ) -> dict[str, str]:
+    require_full_read(source, read_token)
     result = create_edit_suggestion(
         settings,
         source=source.metadata,
@@ -371,6 +413,6 @@ def write_edit_suggestion(
         change_summary=change_summary,
         reasoning=reasoning,
         proposed_content=proposed_content,
-        timestamps=parse_timestamps(timestamps),
+        timestamps=_source_timestamps(source, timestamps),
     )
     return _path_result(result)
