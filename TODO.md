@@ -7,7 +7,7 @@ Source URL -> acquisition -> agent-guided curation -> new drafts, edit suggestio
 ```
 
 Ship a dependable, evidence-aware YouTube alpha first. Visual evidence and Instagram
-follow afterward; OpenCode validation is deferred and does not block alpha.
+follow afterward.
 The skill is the entry point. CLI and MCP must have one-to-one application parity:
 same operations, validation, limits, result data, error meanings, and side effects,
 with only transport syntax/envelope differences. Python owns predictable acquisition,
@@ -40,10 +40,6 @@ were fixed.
 
 Remaining kit work:
 
-- [ ] Re-run the Claude Code install with the kit and check that a plan is shown before
-  any change (`install.md` step 3). It was not run on 2026-11-15 because the Claude
-  5-hour window was at 93%, above the 90% stop threshold. The trial root
-  `~/.cache/obsidian-ingest-trials/claude` is prepared; refresh its credentials first.
 - [ ] Run a full run (all phases) per harness with the kit and write reports from
   `docs/trial-report-template.md`, with the audit done by a subagent using
   `docs/trial-audit-prompt.md`. Only single regression phases were re-run so far
@@ -56,100 +52,42 @@ Remaining kit work:
   `teardown hermes` only lists those; the tester removes them. Decide whether Hermes
   should also run in the bwrap sandbox.
 
-### Resume here (state on 2026-11-15)
+### Release polish (in progress)
 
-- **Latest:** the live-trial kit is built (see above) and its first use is in
-  `trial-reports/2026-11-15-kit-regression/`: Codex now shows the install plan and
-  waits; the Hermes restricted install uses its own runtime and cache, and its undo
-  asks first. Still open: the Claude Code plan check (usage was at 93%), only 3 of 15
-  trusted Hermes sessions loaded `SKILL.md`, and draft quality varies by model. Earlier
-  runs: opencode `trial-reports/2026-11-15-opencode-run1/` to `-run3/`, and
-  `trial-reports/2026-11-15-*-regression/`. Next: the remaining kit work above, then pi
-  and Amp. Leftovers from this session, awaiting the user's OK to remove: trial roots
-  under `~/.cache/obsidian-ingest-trials/` (claude, codex, opencode, hermes; remove with
-  `scripts/trials/teardown <harness>`, which also deletes the Hermes profile `oikit`),
-  the Hermes profile `oikitr`, `~/.local/share/obsidian-ingest/oikitr`,
-  `~/.local/state/obsidian-ingest/oikitr`, and old session scratchpads under `/tmp`
-  that still hold copied logins. The opencode project row `<project id>` has no CLI to
-  delete it.
+Done in the working tree: Apache-2.0 `LICENSE` at the root and inside the skill,
+package metadata (license, public contact, URLs, classifiers), a user-first
+`README.md` with the developer material moved to [`docs/reference.md`](docs/reference.md)
+and [`docs/development.md`](docs/development.md), and a read-only audit of the tree and
+history for private artifacts (no credential found).
 
-- **Claude Code is validated** (`trial-reports/2026-11-15-claude-code-run1/` to
-  `-run3/`): trusted install, repeat install, undo, bare-URL and real `/obsidian-ingest`
-  ingestion (Sonnet and Haiku), thumbnail, and the restricted alias with
-  `--disallowedTools` for plugin tools. Small `claude-code.md` text fixes after run 3
-  are not re-run yet.
-- **Codex is validated** (`trial-reports/2026-11-15-codex-run1/` to `-run3/`, codex-cli
-  0.169.0): GPT-6.1 Sol installs, GPT-6 Luna ingests. Open: Luna's draft quality on
-  Codex (about 37% useful) is far below Hermes; investigate before launch. The
-  restricted profile cannot remove `collaboration.*` or `apply_patch`; the read-only
-  sandbox makes patches ask. Never delete `$CODEX_HOME/packages` (Codex's own runtime)
-  and stop trial-home daemons before deleting a trial home. **Next: opencode** (v2.3.0)
-  with opencode console free models (the user's choice): `glm-5.3-flash-free` installs,
-  `minimax-m3.1-flash-free` ingests, and `nemotron-3.5-super-vl-free` probes the
-  thumbnail. opencode v2 shares one background server per user account, so every
-  trial command sources `scratchpad/oc-env.sh` (HOME, every XDG variable including
-  `XDG_RUNTIME_DIR`, and `TMPDIR` in the throwaway home) and passes `--standalone`.
-  `opencode debug paths` was verified to point inside it. The console login was piped
-  in with `opencode auth export opencode | opencode auth import --standalone`, and
-  GLM free answered there. Docker was tried and dropped: the bare official image is
-  refused every metered free model ("Free usage limit reached"). Compare the user's
-  real opencode with `oc-realsnap.sh` against `oc-real-before.txt`. End-of-trial
-  cleanup, after the user approves: delete the probe session
-  `<session id>` and its scratchpad project
-  `<project id>` from the real database with opencode's
-  own commands. Trials now run inside the bwrap sandbox
-  (`scratchpad/trial-notes-oc/sandbox.sh opencode --auto`), and the throwaway service
-  uses port 49391. The model is set in the throwaway `opencode.jsonc`; stop the service
-  between phases. Custom agents are selected in the TUI with shift+tab (there is no
-  `--agent` flag). **The free tier has an account-wide daily message cap covering every
-  free model, including the "unlimited" ones**. Runs 1 and 2 hit it ("reset at
-  2:00 AM"). Run 2 still needs: the restricted-agent probe (agent `obsidian-ingest` is
-  already in the throwaway config), a thumbnail check with `nemotron-3.5-super-vl-free`,
-  undo, and a retry of the AI-game-dev ingest. Skills
-  load via the `skill` tool or `@obsidian-ingest`; MCP goes through `execute` unless a
-  server sets `codemode: false`; the restricted option is a custom agent with deny
-  permissions. Write a draft `references/opencode.md` and its install.md row before
-  run 1.
-- The user drives child permission prompts in herdr; I send chat answers myself. The
-  user types slash commands with URLs (`hc send` wraps text in `<hc>` tags, and
-  `hc keys` cannot type `:`, `_` or capitals). Use Sonnet 5.5 to install and Haiku 5.5
-  to ingest on Claude Code. Check usage only after a full run (a throwaway child,
-  `/usage` typed with `hc keys`); stop at 65% of the 5-hour limit. Let a Sonnet
-  subagent audit transcripts. Keep trial snapshots outside the child's tree.
-- **Uncommitted work from that effort** (review, then propose a commit; never push):
-  - `references/install.md` step 1 now detects the harness (environment markers) and
-    offers restricted mode only where the notes file's `Modes:` line allows it; an
-    untested harness installs trusted and is reported as untested.
-  - `hermes.md` has a `Modes:`/`Validated:` header. New `claude-code.md` and
-    `codex.md` are drafts written from documentation (`Validated: not yet`), each with
-    an advanced restricted launch for experienced users.
-  - `AGENTS.md` and this file record the decisions below.
-- **Decisions already made by the user** (do not re-ask):
-  - Restricted mode is offered only on Hermes, because its profiles are visibly separate
-    (Hermes Desktop). Every other harness installs trusted; its notes file documents an
-    advanced restricted command or alias.
-  - Trials in non-profile harnesses use the same model for install and ingest (Claude
-    Code: Sonnet 5.5; Codex: GPT-6 Luna). Copying the user's login file into a throwaway
-    trial home is approved, never printed, and deleted afterwards.
-  - Before launch: harness support first (Claude Code and Codex, then opencode; pi and
-    Amp if easy), then packaging/license/CI, then a polished public README, then going
-    public and the GitHub-link install test. New providers (articles first, then
-    Instagram Reels, then newsletter emails) come after launch.
-- **Claude Code trial setup notes:** a fresh config starts with onboarding (theme,
-  folder trust: the default "No, exit" closes it) and auto mode; the user picks manual
-  mode or keeps auto. An unattended install is not possible, so the user drives the
-  install pane. Ingest sessions use the `mcp__obsidian-ingest__*` allow rule.
-- **Trial setup for Claude Code and Codex** (scratchpad, recreate if cleared): a
-  throwaway `HOME` per harness with `CLAUDE_CONFIG_DIR=$HOME/.claude` or
-  `CODEX_HOME=$HOME/.codex` inside it, because Codex loads user skills from
-  `~/.agents/skills` (HOME-based). Start sessions from a scratch folder. Snapshot the
-  user's real `~/.claude.json` `mcpServers`, `~/.claude/settings.json`,
-  `~/.codex/config.toml`, and the skills folders' entries before and after; folder
-  timestamps change from normal activity, so compare entries, not `ls -la` hashes.
-- **Git state:** local `master` is ahead of `origin/master` with rewritten history (all
-  Claude-Session trailers removed at the user's request). The next push needs
-  `--force-with-lease` and happens only when the user asks. Never add session links to
-  commit messages.
+Remaining before the repository goes public:
+
+- [ ] Decide the history: the audit recommends a targeted rewrite (a personal email in
+  older commit identities and old package metadata, one personal path and session
+  notes in old `TODO.md` versions) over keeping it or squashing. Keep the
+  `failed_experiment` branch out of the public refs unless publishing it is deliberate.
+  Re-audit the final refs afterwards.
+- [ ] Untrack `.agent-outputs/hermes-trial-review.md` (tracked although the folder is
+  ignored).
+- [ ] Decide how the skill is distributed. The wheel and sdist build but contain only
+  the Python package: no `SKILL.md`, `references/`, `mcp/server.py` or settings
+  example. The supported path stays the GitHub clone; a ZIP for agensi.io must be made
+  from an explicit list of tracked skill files, never the working directory.
+- [ ] Confirm with agensi.io that an install-first listing is accepted (their docs
+  describe scripts run from temporary files, which does not fit a persistent MCP
+  runtime), then write the listing summary, description and permission disclosures.
+- [ ] Test `npx skills add` in the sandbox, including an update: it replaces the copied
+  folder, so settings and `.venv` kept there are lost.
+- [ ] Add a small CI workflow (Ruff, pytest, shellcheck on Linux/Python 3.13) if wanted.
+- [ ] `evaluation.py` ships in the runtime package and assumes the repository layout;
+  move it out or make its paths explicit.
+- [ ] `references/install.md` step 2 clones or updates the skill and links it into the
+  harness before step 3 asks for approval. Decide whether the plan should come first,
+  then verify the change in a live install trial (it changes trialled behaviour).
+- [ ] The package's `readme` is the skill `README.md`, whose relative links and "what
+  is included" text do not hold for the wheel or sdist alone.
+- [ ] Remove the "repository is private" caveat wherever it remains, re-run the live
+  trials, and do the GitHub-link install test once public.
 
 All unchecked work below is planned, not an available capability. Remove completed
 items only after their acceptance scenarios, relevant tests, and diff review pass.
@@ -246,15 +184,15 @@ distribution metadata, and documentation. No new product subsystem.
   existing-vault curation, create-only drafts, and human-reviewed edit suggestions.
 
 **Dependencies/risks:** Live network/harness trials are separate from mocked automated
-tests. Hermes end-to-end validation is required; other harnesses must not be advertised
-as tested. Harness-neutral architecture does not guarantee identical host behavior.
+tests. Advertise a harness only with the scope and date in its
+`references/<harness>.md` `Validated:` line. Harness-neutral architecture does not
+guarantee identical host behavior.
 
 **Acceptance/done:** A new Linux user can install, explicitly configure scope, curate a
 source into attributed drafts or an explained zero-note result, and restore their
 Hermes configuration using the install report's undo steps.
 
-**Deferred:** Visual processing, Instagram, STT, native Windows, and OpenCode validation
-are not alpha gates.
+**Deferred:** Visual processing, Instagram, STT, and native Windows are not alpha gates.
 
 ## After Alpha: Optional Capabilities
 
@@ -354,8 +292,6 @@ from automated tests; do not use private vaults or copy private artifacts into t
 
 ## Later, Non-Priority or Only When Justified
 
-- [ ] Validate OpenCode end to end with a disposable vault and documented skill/MCP
-  setup. Not a current priority or alpha dependency.
 - [ ] Add install notes for further harnesses beside `references/hermes.md`,
   using host-supported mechanisms rather than version-pinned profile-conversion scripts.
 - [ ] Expand providers/languages or native Windows support only for concrete demand.
