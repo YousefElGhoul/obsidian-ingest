@@ -1,0 +1,30 @@
+name: checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+      - run: uv sync --project skills/obsidian-ingest --locked
+      - run: >-
+          uv run --locked --project skills/obsidian-ingest ruff format --check
+          skills/obsidian-ingest/src tests scripts
+      - run: >-
+          uv run --locked --project skills/obsidian-ingest ruff check
+          skills/obsidian-ingest/src tests scripts
+      - run: uv run --locked --project skills/obsidian-ingest pytest
+      - run: >-
+          shellcheck -S warning
+          scripts/trials/prepare scripts/trials/sandbox scripts/trials/selftest
+          scripts/trials/snapshot scripts/trials/teardown scripts/trials/usage
+      - run: shellcheck -S warning -e SC2034 scripts/trials/lib.sh
