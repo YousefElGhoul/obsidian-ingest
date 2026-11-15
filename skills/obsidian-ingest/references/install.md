@@ -49,14 +49,16 @@ host's sandbox blocks a command this install needs, such as `uv sync` needing ne
 ask the user to approve it. Never copy caches or other files from outside the paths
 this install uses as a workaround.
 
-## 2. Obtain the skill
+## 2. Decide where the skill will live
 
-The skill directory must stay writable: it holds `config/settings.toml` and `.venv`.
+Only decide here. Do not clone, update, or link anything until the plan in step 3 is
+approved. The skill directory must stay writable: it holds `config/settings.toml` and
+`.venv`.
 
 - From a GitHub link such as
   `https://github.com/<owner>/<repo>/blob/<branch>/skills/obsidian-ingest/SKILL.md`,
-  clone the repository once into a stable location outside the vault and outside any
-  temporary directory, for example
+  plan to clone the repository once into a stable location outside the vault and
+  outside any temporary directory, for example
   `git clone --depth 1 --branch <branch> https://github.com/<owner>/<repo> ~/.local/share/obsidian-ingest/<repo>`.
   The skill directory is `<clone>/skills/obsidian-ingest`.
 - If a skill directory already exists (a local path, a previous install, or the skills
@@ -66,18 +68,19 @@ The skill directory must stay writable: it holds `config/settings.toml` and `.ve
   `config/settings.toml` and `.venv` kept inside it: back up the settings first and
   run setup again afterwards.
 
-Then make the skill visible to the harness. Prefer a symlink from the harness's skills
-directory to the skill directory over copying, so updates and settings stay in one
-place. If a different skill of the same name already exists there, stop and ask.
+The skill must also be visible to the harness. Prefer a symlink from the harness's
+skills directory to the skill directory over copying, so updates and settings stay in
+one place. If a different skill of the same name already exists there, stop and ask.
 
 ## 3. Show the plan, get approval, back up
 
-Before changing anything, list the changes from steps 4 to 6 with their paths and ask
-for approval in one message, even if the user already gave every choice or said "go
+Before changing anything, list every change with its path (the clone or update and the
+skill link from step 2, and steps 4 to 6) and ask for approval in one message, even if the user already gave every choice or said "go
 ahead". Then end your turn and wait for the answer: never show the plan and start
 changing things in the same turn. After approval, back up every host configuration
-file you will edit (for example `config.yaml.before-obsidian-ingest-<timestamp>`). Preserve provider, model,
-credentials, other profiles, and other skills. Do not print credentials.
+file you will edit (for example `config.yaml.before-obsidian-ingest-<timestamp>`), then
+clone or update the skill and create the link as decided in step 2. Preserve provider,
+model, credentials, other profiles, and other skills. Do not print credentials.
 
 ## 4. Prepare the runtime and settings
 
