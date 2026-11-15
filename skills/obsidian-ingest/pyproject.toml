@@ -3,15 +3,32 @@ name = "obsidian-ingest"
 version = "0.1.0"
 description = "Harness-neutral skill and tools for agent-driven knowledge ingestion into Obsidian drafts"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Yousef El-Ghoul", email = "contact@yousefelghoul.dev" }
 ]
 requires-python = ">=3.13"
+keywords = ["obsidian", "knowledge-management", "agent-skill", "youtube", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing",
+]
 dependencies = [
     "mcp>=2.3.0,<3",
     "pydantic>=2,<3",
     "yt-dlp>=2026.8.19",
 ]
+
+[project.urls]
+Repository = "https://github.com/YousefElGhoul/obsidian-ingest"
+Issues = "https://github.com/YousefElGhoul/obsidian-ingest/issues"
 
 [project.scripts]
 obsidian-ingest = "obsidian_ingest.cli:main"
