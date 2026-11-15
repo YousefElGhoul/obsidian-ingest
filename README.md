@@ -277,7 +277,7 @@ settings, source cache, vault, and published notes alone unless you ask otherwis
 - [Technical reference](docs/reference.md): CLI, MCP, Python API, errors, diagnostics,
   vault configuration, and cache reset.
 - [Development](docs/development.md): checks, response recording, and live trials.
-- [Contributor guidance](AGENTS.md).
+- [Contributing](CONTRIBUTING.md) and [agent guidance](AGENTS.md).
 - [Issues](https://github.com/YousefElGhoul/obsidian-ingest/issues).
 
 ## License

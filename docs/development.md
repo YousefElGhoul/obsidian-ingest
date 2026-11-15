@@ -16,6 +16,7 @@ git diff --check
 ```
 
 Automated tests use fake extraction data and mocked I/O, not live services. See
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) for how to contribute and
 [`AGENTS.md`](../AGENTS.md) for coding-agent guidance.
 
 For documentation-only changes, reread affected documents together, check claims
