@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Stop a trial's processes and delete its trial root.
+#
+#   scripts/trials/teardown <harness> [--keep-notes]
+#
+# It first stops every sandbox that mounts this trial home (daemons such as the Codex
+# app-server or the opencode service live inside those sandboxes and end with them),
+# then deletes a fixed list of names inside the trial root, each only if it resolves
+# inside that root. Copy what you want to keep (reports, session exports) first.
+# For hermes it also deletes the throwaway profile and lists install leftovers outside
+# the profile, which you remove yourself.
+
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+
+case ${1:-} in
+  -h | --help | "")
+    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+trial_init "$1"
+shift
+keep_notes=0
+case ${1:-} in
+  "") ;;
+  --keep-notes) keep_notes=1 ;;
+  *) die "unknown option: $1" ;;
+esac
+root_check
+
+pid_text=$(trial_bwrap_pids)
+pids=()
+[ -z "$pid_text" ] || mapfile -t pids <<<"$pid_text"
+if [ "${#pids[@]}" -gt 0 ]; then
+  echo "stopping ${#pids[@]} sandbox process(es): ${pids[*]}"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  tries=0
+  while [ -n "$(trial_bwrap_pids)" ] && [ "$tries" -lt 10 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  pid_text=$(trial_bwrap_pids)
+  pids=()
+  [ -z "$pid_text" ] || mapfile -t pids <<<"$pid_text"
+  [ "${#pids[@]}" -eq 0 ] || kill -KILL "${pids[@]}" 2>/dev/null || true
+  sleep 0.5
+  [ -z "$(trial_bwrap_pids)" ] || die "sandbox processes are still running; not deleting anything"
+fi
+
+# Nothing may be mounted at or under the trial root: rm would descend into it.
+while read -r _ _ _ _ mnt _; do
+  case $mnt/ in
+    "$ROOT"/*) die "something is mounted at $mnt; unmount it first, not deleting anything" ;;
+  esac
+done </proc/self/mountinfo
+
+if [ "$HARNESS" = hermes ] && [ -f "$ROOT/hermes-profile" ]; then
+  need hermes
+  hermes_recorded_profile
+  if hermes_profile_exists; then
+    hermes profile delete "$HERMES_PROFILE" -y
+  fi
+  for left in "${XDG_DATA_HOME:-$HOME/.local/share}/obsidian-ingest" "${XDG_STATE_HOME:-$HOME/.local/state}/obsidian-ingest"; do
+    [ ! -e "$left" ] || echo "leftover outside the profile (inspect and remove yourself): $left"
+  done
+fi
+
+cd -- "$ROOT" || die "could not enter the trial root"
+[ "$(pwd -P)" = "$ROOT" ] || die "could not enter the trial root"
+[ -f "./$TRIAL_MARKER" ] || die "the marker disappeared; not deleting anything"
+
+# inside <name>: the entry exists and resolves to exactly <trial root>/<name>.
+inside() {
+  [ -e "./$1" ] || [ -L "./$1" ] || return 1
+  [ "$(realpath -e -- "./$1" 2>/dev/null)" = "$ROOT/$1" ] || die "./$1 does not resolve inside the trial root; stopping"
+}
+
+# The delete list is fixed and literal on purpose: no variables or globs in rm.
+if inside home; then
+  rm -rf --one-file-system -- ./home
+fi
+if [ "$keep_notes" -eq 0 ] && inside notes; then
+  rm -rf --one-file-system -- ./notes
+fi
+if [ "$keep_notes" -eq 0 ]; then
+  rm -f -- ./hermes-profile
+  rm -f -- ./.obsidian-ingest-trial-root
+  cd /
+  rmdir -- "$ROOT" || die "the trial root still has unexpected entries: $ROOT"
+  echo "removed $ROOT"
+else
+  echo "removed the trial home; kept $ROOT/notes"
+fi

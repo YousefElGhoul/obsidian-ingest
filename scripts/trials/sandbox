@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Run a harness, or any command, inside the trial sandbox (bubblewrap).
+#
+#   scripts/trials/sandbox <harness> agent [args...]   the harness with its auto-approve flag
+#   scripts/trials/sandbox <harness> exec <command...> any command in the same sandbox
+#
+# The sandbox: the system is read-only; the throwaway home is mounted AT the real $HOME
+# path, so $HOME and literal paths agree; only the harness, uv and node binaries are
+# bound read-only on top; /tmp and /run/user are private; the environment is cleared;
+# the network stays on. Auto-approve is allowed only here (see AGENTS.md).
+# Extra variables to pass through: TRIAL_PASS_ENV="NAME1 NAME2".
+# Extra read-only binds: TRIAL_EXTRA_RO_BINDS=/path/a:/path/b.
+
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+
+case ${1:-} in
+  -h | --help | "")
+    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+trial_init "$1"
+shift
+[ "$HARNESS" != hermes ] || die "Hermes trials use a throwaway profile, not the sandbox (see docs/live-trials.md)"
+mode=${1:-}
+[ "$#" -eq 0 ] || shift
+need bwrap
+root_check
+[ -f "$THOME/$TRIAL_HOME_MARKER" ] || die "$THOME is not a prepared trial home"
+harness_table
+sandbox_plan
+
+case $mode in
+  agent) cmd=("$H_BIN" "${H_AUTO[@]}" "$@") ;;
+  exec)
+    [ "$#" -ge 1 ] || die "exec needs a command"
+    cmd=("$@")
+    ;;
+  *) die "expected 'agent' or 'exec' after the harness" ;;
+esac
+
+args=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run/user)
+for hide in /mnt /media /run/media /srv; do
+  [ ! -d "$hide" ] || args+=(--tmpfs "$hide")
+done
+# A trial root outside HOME (TRIAL_ROOT) would stay readable through the read-only /;
+# cover it so notes and snapshots are invisible to the child.
+case $ROOT/ in
+  "$HOME"/*) ;;
+  *) args+=(--tmpfs "$ROOT") ;;
+esac
+args+=(--bind "$THOME" "$HOME")
+for bind in "${BINDS[@]}"; do
+  args+=(--ro-bind "$bind" "$bind")
+done
+args+=(--unshare-pid --unshare-ipc --die-with-parent --chdir "$HOME/trial/work" --clearenv)
+
+setenv() { args+=(--setenv "$1" "$2"); }
+setenv HOME "$HOME"
+setenv USER "${USER:-$(id -un)}"
+setenv LOGNAME "${USER:-$(id -un)}"
+setenv SHELL /bin/bash
+setenv PATH "$SANDBOX_PATH"
+setenv TERM "${TERM:-xterm-256color}"
+setenv LANG "${LANG:-C.UTF-8}"
+setenv XDG_RUNTIME_DIR "$HOME/.trial-run"
+setenv TMPDIR "$HOME/.trial-tmp"
+for name in COLORTERM TERM_PROGRAM LC_ALL LC_CTYPE ${TRIAL_PASS_ENV:-}; do
+  [ -z "${!name:-}" ] || setenv "$name" "${!name}"
+done
+i=0
+while [ "$i" -lt "${#H_ENV[@]}" ]; do
+  setenv "${H_ENV[$i]}" "${H_ENV[$((i + 1))]}"
+  i=$((i + 2))
+done
+
+exec bwrap "${args[@]}" -- "${cmd[@]}"

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Fingerprint what a trial must not change, before and after a run.
+#
+#   scripts/trials/snapshot <harness>   save <trial root>/notes/snapshot-before.txt
+#   scripts/trials/compare <harness>    save snapshot-after.txt and diff; exit 1 on a change
+#
+# It records hashes and counts only, never contents: the user's real harness config
+# (the mcpServers of .claude.json, settings and config files, the entries and link
+# targets of the skills folders, never timestamps), the real install locations of this
+# skill, opencode database counts, and every file in the trial vault outside the drafts
+# folder (TRIAL_DRAFTS_DIR, default "00 Inbox/AI Drafts"). Login files are left out
+# because normal token refreshes change them. Using the same harness yourself during a
+# run can change its settings or database counts; read the diff before judging.
+
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+
+case ${1:-} in
+  -h | --help | "")
+    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+trial_init "$1"
+root_check
+need sha256sum
+
+short() {
+  local h
+  h=$(sha256sum)
+  printf '%s\n' "${h:0:16}"
+}
+
+file_line() {
+  if [ -f "$1" ]; then
+    printf 'file %s %s\n' "$(short <"$1")" "$1"
+  else
+    printf 'file absent %s\n' "$1"
+  fi
+}
+
+# Entry names and link targets of a folder, one level deep.
+entries_line() {
+  local h
+  if [ -d "$1" ]; then
+    h=$(cd -- "$1" && find . -mindepth 1 -maxdepth 1 -printf '%f>%l\n' | LC_ALL=C sort | short)
+    printf 'entries %s %s\n' "$h" "$1"
+  else
+    printf 'entries absent %s\n' "$1"
+  fi
+}
+
+# File names and sizes of a whole tree (virtual environments and caches left out).
+tree_line() {
+  local h
+  if [ -d "$1" ]; then
+    h=$(cd -- "$1" && find . \( -name .venv -o -name __pycache__ \) -prune -o \( -type f -o -type l \) -printf '%P %s %l\n' | LC_ALL=C sort | short)
+    printf 'tree %s %s\n' "$h" "$1"
+  else
+    printf 'tree absent %s\n' "$1"
+  fi
+}
+
+fingerprint() {
+  local claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+  local codex_dir=${CODEX_HOME:-$HOME/.codex}
+  local oc_dir=${XDG_CONFIG_HOME:-$HOME/.config}/opencode
+  local data=${XDG_DATA_HOME:-$HOME/.local/share}
+  local state=${XDG_STATE_HOME:-$HOME/.local/state}
+  local f h
+
+  for f in "$HOME/.claude.json" "$claude_dir/.claude.json"; do
+    if [ -f "$f" ]; then
+      need python3
+      h=$(python3 -c '
+import json, sys
+print(json.dumps(json.load(open(sys.argv[1])).get("mcpServers", {}), sort_keys=True))' "$f" | short)
+      printf 'mcpServers %s %s\n' "$h" "$f"
+    fi
+  done
+  file_line "$claude_dir/settings.json"
+  file_line "$codex_dir/config.toml"
+  file_line "$oc_dir/opencode.jsonc"
+  file_line "$oc_dir/opencode.json"
+  file_line "$oc_dir/service.json"
+  file_line "$HOME/.hermes/config.yaml"
+  entries_line "$claude_dir/skills"
+  entries_line "$HOME/.agents/skills"
+  entries_line "$codex_dir/skills"
+  entries_line "$oc_dir/skills"
+  entries_line "$HOME/.hermes/skills"
+  tree_line "$data/obsidian-ingest"
+  tree_line "$state/obsidian-ingest"
+  if [ -d "$codex_dir" ]; then
+    h=$(find "$codex_dir" -maxdepth 1 -name '*.config.toml' -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | short)
+    printf 'codex-profiles %s\n' "$h"
+  fi
+  if [ "$HARNESS" != hermes ] && [ -d "$HOME/.hermes/profiles" ]; then
+    h=$(find "$HOME/.hermes/profiles" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | short)
+    printf 'hermes-profiles %s\n' "$h"
+  fi
+
+  local db=$data/opencode/opencode.db t
+  if [ -f "$db" ]; then
+    need sqlite3
+    for t in session message credential project; do
+      h=$(sqlite3 -readonly "$db" "select count(*) from $t") || die "cannot count '$t' in the opencode database"
+      printf 'opencode-db %s %s\n' "$t" "$h"
+    done
+  else
+    echo "opencode-db absent"
+  fi
+
+  local drafts=${TRIAL_DRAFTS_DIR:-00 Inbox/AI Drafts}
+  (
+    cd -- "$THOME/trial/vault" || exit 1
+    find . -type f ! -path "./$drafts/*" -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sed 's/^/vault /'
+  )
+}
+
+before=$ROOT/notes/snapshot-before.txt
+after=$ROOT/notes/snapshot-after.txt
+case $(basename -- "$0") in
+  snapshot)
+    fingerprint >"$before.tmp"
+    mv -- "$before.tmp" "$before"
+    echo "saved $before ($(wc -l <"$before") lines)"
+    ;;
+  compare)
+    [ -f "$before" ] || die "no snapshot to compare with; run scripts/trials/snapshot $HARNESS before the run"
+    fingerprint >"$after.tmp"
+    mv -- "$after.tmp" "$after"
+    if diff -u -- "$before" "$after"; then
+      echo "compare: unchanged ($(wc -l <"$after") lines)"
+    else
+      echo "compare: CHANGED (see the diff above)" >&2
+      exit 1
+    fi
+    ;;
+  *) die "run this script as 'snapshot' or 'compare'" ;;
+esac

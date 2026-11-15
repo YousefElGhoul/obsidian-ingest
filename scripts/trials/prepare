@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Create a fresh trial root for one harness.
+#
+#   scripts/trials/prepare <harness> [--integration NAME] [--model MODEL]
+#   scripts/trials/prepare <harness> --refresh-credentials
+#
+# It makes <trial root>/<harness>/ with a throwaway home that holds a skill copy from
+# git HEAD, a copy of the fixture vault and a scratch working directory; copies the
+# login for that harness only (never printed); and pre-seeds the first-run screens so
+# no session stops at onboarding or folder trust.
+#   --integration NAME     opencode only: the one integration to import (default openai)
+#   --model MODEL          opencode only: written to the throwaway opencode.jsonc
+#   --refresh-credentials  recopy the login into an existing trial root (copied logins
+#                          lapse within hours; do this right before each run)
+# For hermes it creates the throwaway profile TRIAL_HERMES_PROFILE (default oikit)
+# instead; Hermes runs without the sandbox.
+# TRIAL_ROOT overrides the base folder (default ~/.cache/obsidian-ingest-trials).
+
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+
+case ${1:-} in
+  -h | --help | "")
+    sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+trial_init "$1"
+shift
+integration=openai
+model=""
+refresh=0
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --integration)
+      integration=${2:?--integration needs a name}
+      shift 2
+      ;;
+    --model)
+      model=${2:?--model needs a value}
+      shift 2
+      ;;
+    --refresh-credentials)
+      refresh=1
+      shift
+      ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+harness_table
+sandbox_dir=$(dirname -- "${BASH_SOURCE[0]}")
+
+copy_credentials() {
+  case $HARNESS in
+    claude | codex)
+      [ -f "$H_CRED_SRC" ] || die "no login file for $HARNESS (log in to $HARNESS first)"
+      confined_dir "$(dirname -- "$THOME/$H_CRED_DST")"
+      [ ! -L "$THOME/$H_CRED_DST" ] || die "$THOME/$H_CRED_DST is a symlink; refusing to write through it"
+      install -m 600 -- "$H_CRED_SRC" "$THOME/$H_CRED_DST"
+      echo "copied the $HARNESS login (not shown)"
+      ;;
+    opencode)
+      local real
+      real=$(resolve_bin opencode) || die "cannot find the opencode binary"
+      "$real" auth export "$integration" | "$sandbox_dir/sandbox" opencode exec opencode auth import >/dev/null
+      echo "imported the opencode '$integration' integration (not shown)"
+      ;;
+    hermes) ;;
+  esac
+}
+
+if [ "$refresh" -eq 1 ]; then
+  root_check
+  copy_credentials
+  exit 0
+fi
+
+need git
+[ "$HARNESS" = hermes ] || need bwrap
+[ ! -e "$ROOT" ] || die "$ROOT already exists; run scripts/trials/teardown $HARNESS first"
+fixture=$REPO/tests/fixtures/trial-vault
+[ -d "$fixture" ] || die "missing fixture vault: $fixture"
+if [ "$HARNESS" = hermes ]; then
+  need hermes
+  case $HERMES_PROFILE in
+    "" | default | *[!A-Za-z0-9_-]*) die "TRIAL_HERMES_PROFILE must be a plain name other than 'default'" ;;
+  esac
+  ! hermes_profile_exists || die "Hermes profile '$HERMES_PROFILE' already exists; delete it or set TRIAL_HERMES_PROFILE"
+fi
+
+mkdir -p -- "$ROOT"
+chmod 700 -- "$ROOT"
+: >"$ROOT/$TRIAL_MARKER"
+mkdir -p -- "$THOME/trial/skill" "$THOME/trial/vault" "$THOME/trial/work" \
+  "$THOME/.trial-tmp" "$THOME/.trial-run" "$ROOT/notes"
+chmod 700 -- "$THOME/.trial-run"
+: >"$THOME/$TRIAL_HOME_MARKER"
+root_check
+
+git -C "$REPO" archive HEAD skills/obsidian-ingest | tar -x -C "$THOME/trial/skill" --strip-components=1
+[ -f "$THOME/trial/skill/obsidian-ingest/SKILL.md" ] || die "the skill copy has no SKILL.md"
+git -C "$REPO" rev-parse HEAD >"$ROOT/notes/skill-commit.txt"
+if [ -n "$(git -C "$REPO" status --porcelain -- skills/obsidian-ingest)" ]; then
+  echo "note: skills/obsidian-ingest has uncommitted changes; the trial uses git HEAD" >&2
+fi
+cp -R -- "$fixture/." "$THOME/trial/vault/"
+
+work=$HOME/trial/work
+case $HARNESS in
+  claude)
+    mkdir -p -- "$THOME/.claude"
+    printf '{"hasCompletedOnboarding": true, "theme": "dark", "projects": {"%s": {"hasTrustDialogAccepted": true}}}\n' \
+      "$work" >"$THOME/.claude/.claude.json"
+    printf '{\n  "skipDangerousModePermissionPrompt": true\n}\n' >"$THOME/.claude/settings.json"
+    ;;
+  codex)
+    mkdir -p -- "$THOME/.codex"
+    printf '[projects."%s"]\ntrust_level = "trusted"\n' "$work" >"$THOME/.codex/config.toml"
+    ;;
+  opencode)
+    mkdir -p -- "$THOME/.config/opencode"
+    if [ -n "$model" ]; then
+      case $model in
+        *'"'* | *'\'*) die "--model contains a quote or backslash" ;;
+      esac
+      printf '{\n  "model": "%s"\n}\n' "$model" >"$THOME/.config/opencode/opencode.jsonc"
+    fi
+    # The real opencode shares one background service per user on a fixed port; give
+    # the throwaway its own.
+    "$sandbox_dir/sandbox" opencode exec opencode service set port "${TRIAL_OPENCODE_PORT:-49391}" >/dev/null
+    ;;
+  hermes)
+    hermes profile create "$HERMES_PROFILE" --clone-from default --no-alias
+    printf '%s\n' "$HERMES_PROFILE" >"$ROOT/hermes-profile"
+    ;;
+esac
+copy_credentials
+
+echo "trial root: $ROOT"
+if [ "$HARNESS" = hermes ]; then
+  echo "skill: $THOME/trial/skill/obsidian-ingest/SKILL.md"
+  echo "vault: $THOME/trial/vault"
+  echo "next:  scripts/trials/snapshot hermes, then start hermes -p $HERMES_PROFILE"
+else
+  echo "inside the sandbox: skill ~/trial/skill/obsidian-ingest/SKILL.md, vault ~/trial/vault, work ~/trial/work"
+  echo "next:  scripts/trials/selftest $HARNESS && scripts/trials/snapshot $HARNESS"
+fi

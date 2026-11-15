@@ -112,15 +112,18 @@ until they are implemented or deliberately dropped.
   `hc` child agent in a throwaway profile with a disposable test vault; if a throwaway
   profile cannot be created, abort and report the trial. Read earlier reports first.
   Hermes keeps the method above. Other harnesses run inside a bubblewrap (`bwrap`)
-  sandbox: the system is read-only, `/home/<user>` is replaced by an empty tmpfs with
-  only the harness and `uv` binaries bind-mounted read-only, the trial folder (throwaway
-  `HOME`, every XDG variable, `TMPDIR`, the skill copy, the vault and a scratch working
-  directory) is the only writable path, and the network stays on. Inside that sandbox
-  the child may run in its auto-approve mode, so the trial runs hands-off; outside an
-  OS sandbox, the orchestrating agent must never auto-approve a child or launch it in an
-  auto/bypass mode, and the user answers prompts. Before the first agent runs, verify
-  from inside the sandbox that the user's home is empty and that writes outside the
-  trial folder fail. Afterwards, verify that the user's own harness config and data are
+  sandbox, built by `scripts/trials/` (protocol in `docs/live-trials.md`): the system is
+  read-only, a throwaway home is mounted at the real `/home/<user>` path (so `$HOME`
+  and literal paths agree) with only the harness and `uv` binaries bind-mounted
+  read-only on top, that throwaway home (runtime and temporary folders, the skill copy,
+  the vault and a scratch working directory) is the only writable path, the environment
+  is cleared, and the network stays on. Inside that sandbox the child may run in its
+  auto-approve mode, so the trial runs hands-off; outside an OS sandbox, the
+  orchestrating agent must never auto-approve a child or launch it in an auto/bypass
+  mode, and the user answers prompts. Before the first agent runs, verify from inside
+  the sandbox (`scripts/trials/selftest`) that the user's real home is invisible and
+  that writes outside the throwaway home fail. Afterwards, verify
+  (`scripts/trials/compare`) that the user's own harness config and data are
   unchanged. Keep trial notes and snapshots outside the sandbox. Auto-approve means a
   trial no longer shows which prompts a real user would see.
   - Install with a frontier model; ingest with a weaker/open-weight model, because the

@@ -26,21 +26,52 @@ marketplace served through its MCP); check agensi.io's listing requirements befo
 packaging. Trials follow the protocol in [`AGENTS.md`](AGENTS.md). Do not implement all
 milestones at once. No staging, commits, or pushes without explicit approval.
 
+### Live-trial kit (built 2026-11-15)
+
+The zero-touch kit exists: `scripts/trials/` (`prepare`, `sandbox`, `selftest`,
+`snapshot`/`compare`, `teardown`, `usage`, sharing `lib.sh`), the fixture vault in
+`tests/fixtures/trial-vault/`, the protocol in [`docs/live-trials.md`](docs/live-trials.md),
+tester's tables and harness quirks in
+[`docs/live-trials-harnesses.md`](docs/live-trials-harnesses.md), the report template and
+the transcript auditor's prompt in `docs/`. Record new quirks in the harness tables, not
+here. The kit was exercised live for Claude Code, Codex, opencode (prepare, selftest,
+snapshot, compare, teardown, usage) and reviewed once by a second model; its findings
+were fixed.
+
+Remaining kit work:
+
+- [ ] Re-run the Claude Code install with the kit and check that a plan is shown before
+  any change (`install.md` step 3). It was not run on 2026-11-15 because the Claude
+  5-hour window was at 93%, above the 90% stop threshold. The trial root
+  `~/.cache/obsidian-ingest-trials/claude` is prepared; refresh its credentials first.
+- [ ] Run a full run (all phases) per harness with the kit and write reports from
+  `docs/trial-report-template.md`, with the audit done by a subagent using
+  `docs/trial-audit-prompt.md`. Only single regression phases were re-run so far
+  (`trial-reports/2026-11-15-kit-regression/`).
+- [ ] `usage` types `/usage` or `/status` with `hc keys`; an explicit Claude Code
+  `/obsidian-ingest <url>` still needs a person (`hc keys` cannot type `:`, `_` or
+  capitals). Find an unattended way or keep it a documented manual step.
+- [ ] Hermes still runs unsandboxed in a throwaway profile, and its installs write to
+  `~/.local/share/obsidian-ingest/<profile>` and `~/.local/state/obsidian-ingest/<profile>`.
+  `teardown hermes` only lists those; the tester removes them. Decide whether Hermes
+  should also run in the bwrap sandbox.
+
 ### Resume here (state on 2026-11-15)
 
-- **Latest:** opencode is validated (`trial-reports/2026-11-15-opencode-run1/` to
-  `-run3/`; OpenAI subscription models in run 3). Regression runs of Hermes, Codex and
-  Claude Code are in `trial-reports/2026-11-15-*-regression/`. Fixes made afterwards are
-  not yet re-run: one cache and skill copy per install, end the turn after showing the
-  plan, transcript `start` values are seconds, never edit drafts with other tools.
-  Open issues: installs on Codex and Claude Code skip the plan; only 3 of 15 trusted
-  Hermes sessions loaded `SKILL.md`; draft quality varies by model. Next: re-run the
-  regression phases that failed (Hermes restricted install and undo, a plan shown on
-  Codex and Claude Code), then pi and Amp. Use sandbox v2 (the throwaway home mounted at
-  `/home/<user>`) for non-Hermes harnesses. Leftovers awaiting the user's OK to remove:
-  Hermes profiles `oireg` and `oiregr`, `~/.local/share/obsidian-ingest/{oireg,
-  obsidian-ingest,INSTALL-REPORT.txt}`, `~/.local/state/obsidian-ingest/oireg`, and
-  the opencode project row `<project id>`.
+- **Latest:** the live-trial kit is built (see above) and its first use is in
+  `trial-reports/2026-11-15-kit-regression/`: Codex now shows the install plan and
+  waits; the Hermes restricted install uses its own runtime and cache, and its undo
+  asks first. Still open: the Claude Code plan check (usage was at 93%), only 3 of 15
+  trusted Hermes sessions loaded `SKILL.md`, and draft quality varies by model. Earlier
+  runs: opencode `trial-reports/2026-11-15-opencode-run1/` to `-run3/`, and
+  `trial-reports/2026-11-15-*-regression/`. Next: the remaining kit work above, then pi
+  and Amp. Leftovers from this session, awaiting the user's OK to remove: trial roots
+  under `~/.cache/obsidian-ingest-trials/` (claude, codex, opencode, hermes; remove with
+  `scripts/trials/teardown <harness>`, which also deletes the Hermes profile `oikit`),
+  the Hermes profile `oikitr`, `~/.local/share/obsidian-ingest/oikitr`,
+  `~/.local/state/obsidian-ingest/oikitr`, and old session scratchpads under `/tmp`
+  that still hold copied logins. The opencode project row `<project id>` has no CLI to
+  delete it.
 
 - **Claude Code is validated** (`trial-reports/2026-11-15-claude-code-run1/` to
   `-run3/`): trusted install, repeat install, undo, bare-URL and real `/obsidian-ingest`

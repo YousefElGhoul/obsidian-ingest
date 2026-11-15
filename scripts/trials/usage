@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Show a harness's subscription usage without spending a model turn.
+#
+#   scripts/trials/usage <claude|codex>
+#
+# It needs herdr-core's `hc` and a prepared trial root. It starts a throwaway probe
+# session inside the sandbox, types /usage (Claude Code) or /status (Codex) into it,
+# prints the screen and ends the probe. Read the limits from the printed screen. Check
+# usage only between runs, and stop at the threshold you set for the trial. A copied
+# Claude login that has lapsed shows "API Usage Billing": refresh the credentials.
+
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+
+case ${1:-} in
+  -h | --help | "")
+    sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+trial_init "$1"
+case $HARNESS in
+  claude) keys=(/ u s a g e) ;;
+  codex) keys=(/ s t a t u s) ;;
+  *) die "usage probes exist for claude and codex only" ;;
+esac
+need hc
+root_check
+
+name=trial-usage-$$
+stop_probe() {
+  hc kill "$name" >/dev/null 2>&1 || true
+  hc rm "$name" >/dev/null 2>&1 || true
+}
+trap stop_probe EXIT
+
+hc run --bg --no-notify --name "$name" -- "$(dirname -- "${BASH_SOURCE[0]}")/sandbox" "$HARNESS" agent >/dev/null
+hc wait "$name" --timeout 90 >/dev/null || die "the probe session did not become ready"
+hc keys "$name" "${keys[@]}" >/dev/null
+sleep 1
+hc keys "$name" enter >/dev/null
+
+screen=""
+tries=0
+while [ "$tries" -lt 30 ]; do
+  sleep 1
+  screen=$(hc read --lines 0 "$name" 2>/dev/null || true)
+  case $screen in
+    *%*) break ;;
+  esac
+  tries=$((tries + 1))
+done
+sleep 1
+screen=$(hc read --lines 0 "$name")
+grep -v '^[[:space:]]*$' <<<"$screen" || true
+case $screen in
+  *%*) ;;
+  *) die "the probe showed no usage figures (see the screen above)" ;;
+esac
