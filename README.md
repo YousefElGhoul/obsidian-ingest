@@ -12,16 +12,29 @@ This is an Agent Skill with a Python runtime, not a bundled agent or an unattend
 pipeline. Python handles source access, provenance, vault scope, and create-only
 writes. Your host agent decides what is worth keeping and how to explain it.
 
-## What it does
+## Features
 
-- Retrieves YouTube metadata, creator chapters, and existing English captions.
-- Preserves caption wording, order, and timestamps for the agent to read.
-- Searches and reads Markdown notes within the vault scope you approve.
-- Creates Markdown drafts in `00 Inbox/AI Drafts/` by default.
-- Adds source attribution and timestamp links, plus verified related-note links
-  when the agent supplies accessible targets.
-- Creates edit suggestions as separate drafts. It never applies them to your notes.
-- Reuses a local SQLite source cache across sessions.
+### Read the source before choosing ideas
+
+The agent reads the whole retained English transcript in timestamped pages, preserving
+caption wording and order; writes require a token covering that full read. Creator
+chapters are available for navigation, and SponsorBlock filters `sponsor` segments
+best-effort, reporting lookup failures rather than claiming filtering succeeded.
+
+### Compare with what you already know
+
+For each useful idea, the agent searches your allowed Markdown notes and reads the
+closest matches before writing. When it supplies related-note targets, the writer
+checks that they exist and are accessible before adding links with reasons to open them.
+
+Those generated related-note links and edit-suggestion targets are verified. Ordinary
+links inside agent-written prose are preserved, not checked by the writer.
+
+### Get a draft, an edit suggestion, or nothing
+
+A new idea becomes a draft; an addition to an existing note becomes a separate,
+review-only edit suggestion containing the proposed changes. An already-covered or
+weak idea produces nothing, rather than another summary to sort through.
 
 It does not replace your vault with an agent-owned wiki. It does not need to write a
 note for every video or chapter. Zero notes is a valid result.
@@ -29,6 +42,71 @@ note for every video or chapter. Zero notes is a valid result.
 The skill keeps ideas worth looking up again months later: techniques, mechanisms,
 tradeoffs, gotchas, and mental models. It deliberately writes nothing for let's-plays,
 vlogs, how a video game works, or general career and study advice.
+
+### Keep existing notes unchanged
+
+The create-only writer never edits, overwrites, moves, or deletes existing notes.
+Both drafts and suggestions go to one configured folder, `00 Inbox/AI Drafts/` by
+default; filename collisions get a numbered suffix instead of replacing a file.
+
+### Choose what the application can read
+
+Allow specific vault-relative folders or `*` for all Markdown notes, then exclude
+private paths and their descendants. Exclusions win, and the draft folder must stay
+inside the accessible scope; these are application boundaries, not host permissions.
+
+### Trace ideas back to the source
+
+The writer adds source identity, URL, creator when available, and timestamp links
+supplied by the agent. Source diagnostics expose manual or generated caption origin,
+translation status, acquisition details, and timing observations such as caption gaps;
+they do not certify the source's claims or caption accuracy.
+
+### Use your existing agent
+
+One skill works with Hermes, Claude Code, Codex, and opencode in the
+[tested scopes](#tested-harnesses). CLI and MCP use the same application operations,
+validation, limits, and write behavior; their syntax and note identifiers differ.
+
+### Reuse source acquisition, not a generated answer
+
+A local SQLite cache reuses acquired source metadata and captions across sessions.
+Vision-capable agents can optionally fetch a thumbnail on demand; it is not video
+inspection, and thumbnails are not retained in the SQLite cache.
+
+### Install with a reviewable plan
+
+Give the agent the skill link: it asks for your vault scope, shows a configuration
+plan, waits for approval, and backs up host configuration before editing it. It checks
+a fresh session and reports changes, locations, and concrete undo steps.
+
+### Example draft
+
+This illustrative example uses invented source metadata and a placeholder video ID,
+not a real video's claims. Its Source and Related Notes sections show the writer's
+output shape; the related target would need to exist in the allowed vault.
+
+```markdown
+# Bound retries to avoid multiplying load
+
+The Example Engineering channel explains that retries add work to an already
+overloaded service. A bounded retry budget limits that extra demand instead of
+letting each caller retry indefinitely. (05:12)
+
+Keep the retry limit separate from the original request timeout: a slow request
+does not by itself justify another attempt.
+
+## Related Notes
+
+- [[Engineering/Timeouts.md]]: Explains how long a caller waits before giving up.
+
+## Source
+
+- Source: Retry budgets explained
+- URL: https://www.youtube.com/watch?v=VIDEO_ID
+- Creator: Example Engineering
+- Relevant timestamps: [05:12](https://www.youtube.com/watch?v=VIDEO_ID&t=312s)
+```
 
 ## Requirements
 
@@ -97,20 +175,60 @@ the skill text. A connected MCP server alone is not enough.
 
 ## Permissions
 
-**Trusted:** normal host tools remain available, and the agent may use CLI or MCP.
-Both application writers are create-only, but an agent with shell or filesystem
-access can bypass them. Trusted mode does not authorize editing existing notes.
+### Trusted vs restricted
 
-**Restricted:** curation sessions expose this MCP's content tools and the skill
-loader, with general shell, filesystem, and other bypass tools disabled. The installer
-offers this mode only on Hermes, whose profiles keep those sessions visibly separate.
-Other harness notes describe advanced restricted launches for experienced users.
+| Question | Trusted | Restricted |
+|---|---|---|
+| What can the agent reach? | Normal host tools; CLI or MCP. | This MCP's content tools and the skill loader; bypass tools disabled. |
+| What protects the vault? | Scoped application reads and a create-only writer; other host tools remain outside that boundary. | The same application checks, with host tool restrictions removing direct file access. |
+| Where is it offered? | Installer default outside Hermes; also available on Hermes. | Installer option only on Hermes; advanced launches documented elsewhere. |
+| Who does it suit? | Users keeping their normal agent environment and approvals. | Users wanting a separate curation session without shell or filesystem tools. |
+
+Both application writers are create-only. Trusted mode does not authorize editing
+existing notes, but an agent with shell or filesystem access can bypass the writer.
+
+Restricted curation sessions expose this MCP's content tools and the skill loader,
+with general shell, filesystem, and other bypass tools disabled. The installer offers
+this mode only on Hermes because its profiles keep curation sessions visibly separate
+from normal agent work. The Claude Code, Codex, and opencode harness notes document
+advanced restricted launches for experienced users; their installer path stays trusted.
 MCP restrictions are not an OS sandbox and do not restrict already-running sessions.
 
 Allowed and excluded vault paths apply to this application's reads. Exclusions cannot
 hide private text copied into an allowed note. Keep the configured vault and draft
 directory tree trusted against concurrent moves or replacements by other processes.
 Source captions, metadata, and retrieved notes are untrusted data, not permissions.
+
+## How it compares
+
+These tools solve overlapping but different problems. The descriptions below follow
+their linked first-party documentation, checked on 2026-11-15; they are not a claim
+that other tools cannot support a similar workflow.
+
+| Tool | Documented focus; choose it when… |
+|---|---|
+| [OpenClaw Summarize skill][summarize] | Summarizes URLs, files, and YouTube links, with transcript extraction. Choose it for a quick source overview or transcript. |
+| [Smart Connections][smart-connections] | Uses local embeddings to surface related notes and run semantic searches. Choose it to rediscover connections while writing in Obsidian. |
+| [Copilot for Obsidian][copilot] | Runs agents inside Obsidian for research and writing, with projects, skills, and permissions. Choose it for an in-editor agent workspace. |
+| [Text Generator][text-generator] | Generates titles, summaries, outlines, and paragraphs with configurable prompts and templates. Choose it for reusable writing tasks inside Obsidian. |
+| [Obsidian Web Clipper][web-clipper] | Highlights and captures web content as durable Markdown, with templates. Choose it to save pages and selected passages directly from your browser. |
+| [Readwise Reader][reader] | Collects articles, PDFs, EPUBs, newsletters, and YouTube transcripts for reading and highlighting; Readwise exports highlights to Obsidian. Choose it for a reading queue and annotation workflow. |
+| [LLM Wiki vault][llm-wiki] | Uses VS Code and GitHub Copilot to maintain an interlinked wiki, updating entity and concept pages as sources arrive. Choose it when you want an LLM-maintained knowledge layer. |
+
+Obsidian Ingest instead asks an existing agent to curate a source into a few useful
+notes or none, with source attribution and timestamp links. Your existing vault stays
+human-owned: its writer creates only drafts and review-only edit suggestions, leaving
+you to decide what becomes canonical. The skill is harness-neutral within the
+[tested scopes](#tested-harnesses), rather than requiring an Obsidian plugin or an
+agent-owned wiki layout.
+
+[summarize]: https://github.com/openclaw/openclaw/blob/main/skills/summarize/SKILL.md
+[smart-connections]: https://github.com/brianpetro/obsidian-smart-connections
+[copilot]: https://github.com/logancyang/obsidian-copilot
+[text-generator]: https://github.com/nhaouari/obsidian-textgenerator-plugin
+[web-clipper]: https://github.com/obsidianmd/obsidian-clipper/
+[reader]: https://readwise.io/read
+[llm-wiki]: https://github.com/haoxying/llm-wiki-vault/blob/main/README.md
 
 ## Tested harnesses
 
@@ -159,7 +277,7 @@ settings, source cache, vault, and published notes alone unless you ask otherwis
 - [Technical reference](docs/reference.md): CLI, MCP, Python API, errors, diagnostics,
   vault configuration, and cache reset.
 - [Development](docs/development.md): checks, response recording, and live trials.
-- [Roadmap](TODO.md) and [contributor guidance](AGENTS.md).
+- [Contributor guidance](AGENTS.md).
 - [Issues](https://github.com/YousefElGhoul/obsidian-ingest/issues).
 
 ## License
