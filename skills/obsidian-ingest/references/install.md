@@ -60,8 +60,11 @@ The skill directory must stay writable: it holds `config/settings.toml` and `.ve
   `git clone --depth 1 --branch <branch> https://github.com/<owner>/<repo> ~/.local/share/obsidian-ingest/<repo>`.
   The skill directory is `<clone>/skills/obsidian-ingest`.
 - If a skill directory already exists (a local path, a previous install, or the skills
-  CLI `npx skills add <owner>/<repo> --skill obsidian-ingest`), reuse it. Update it with
-  `git -C <clone> pull --ff-only`; trusted settings are gitignored and survive updates.
+  CLI `npx skills add <owner>/<repo> --skill obsidian-ingest`), reuse it. Update a
+  clone with `git -C <clone> pull --ff-only`; trusted settings are gitignored and
+  survive that. A skills-CLI copy is replaced on update, which removes
+  `config/settings.toml` and `.venv` kept inside it: back up the settings first and
+  run setup again afterwards.
 
 Then make the skill visible to the harness. Prefer a symlink from the harness's skills
 directory to the skill directory over copying, so updates and settings stay in one

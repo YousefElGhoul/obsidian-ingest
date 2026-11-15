@@ -76,10 +76,10 @@ The outer trial sandbox keeps network on. `/status` shows five-hour and weekly l
 | Invoke | Bare URL, then `@obsidian-ingest <url>` in a separate explicit-invocation session; the `skill` tool can load it too. |
 | Transcripts | `opencode session export <id>` from the isolated environment. Preserve the session IDs and exports before teardown. |
 | Wait | The shared service made panes look continually busy. Use plain `hc send`, not `--if idle`, after checking readiness; read back and inspect completion in the transcript. |
-| Service isolation | The trial used a dedicated service port, `opencode service set port 49391`, rather than the real service's observed 49374. Run service commands only inside the trial environment. Check `opencode debug paths` before any probe. |
+| Service isolation | The real opencode shares one background service per user on a fixed port, so `prepare` gives the trial its own (`TRIAL_OPENCODE_PORT`, default 49391). Run service commands only inside the trial environment. Check `opencode debug paths` before any probe. |
 | Config changes | Restarting the trial service after a model or `OPENCODE_CONFIG` change was an observed workaround. Current [configuration docs](https://opencode.ai/docs/config) describe hot reload; verify effective state rather than routinely restarting. Restart only an unhealthy trial service. |
 | Traps | `opencode mcp add` needs `--global` for user scope. `mcp list` was unreliable; check `/mcps` in a session. The TUI had no `--agent`: shift+tab selects the advanced restricted agent. MCP goes through `execute` by default. |
-| Limits/cleanup | Free models shared an account-wide daily cap; changing the free model did not bypass it. A bare Docker image was refused metered free models. A real-home `opencode run` probe left a project row with no CLI deletion command: never probe outside isolation. Compare real database counts afterward. |
+| Limits/cleanup | Free models shared an account-wide daily cap; changing the free model did not bypass it. A bare Docker image was refused metered free models. A probe run outside isolation can leave rows in the real database that no CLI command deletes: never probe outside isolation. Compare real database counts afterward. |
 
 The current [CLI guide](https://opencode.ai/docs/cli) also documents `--standalone`
 private servers. Use the kit's isolated launch rather than changing the user's real
