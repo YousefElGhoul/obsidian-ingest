@@ -92,6 +92,9 @@ until they are implemented or deliberately dropped.
   MCP and disable general shell/filesystem tools; trusted setups allow normal host
   tools and CLI or MCP. Our writer remains create-only in both. An agent with shell
   access can bypass it; MCP alone is not an OS sandbox. Do not add an unsafe writer mode.
+  The install offers restricted mode only on harnesses whose profiles keep curation
+  sessions visibly separate (today Hermes). Elsewhere it installs trusted, and the
+  harness notes file documents an advanced restricted launch for experienced users.
 - Install by giving an agent the skill's `SKILL.md` link; it follows
   `references/install.md` (harness notes such as `references/hermes.md` are hints, not
   version pins), specifying desired outcomes and verifying effective permissions with
@@ -108,12 +111,25 @@ until they are implemented or deliberately dropped.
 - Test installation, agent-written Markdown, and UX in live trials: run Hermes as an
   `hc` child agent in a throwaway profile with a disposable test vault; if a throwaway
   profile cannot be created, abort and report the trial. Read earlier reports first.
+  For harnesses without profiles, run every command with a throwaway `HOME` (and the
+  harness's config variable, such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, inside it),
+  start sessions from a scratch directory, and verify afterwards that the user's own
+  harness config is byte-identical. The orchestrating agent must not auto-approve a
+  child harness's permission prompts or launch it in an auto/bypass permission mode;
+  when an install needs prompts answered (Claude Code), the user drives that session and
+  the agent sends only the install sentence and the user's choices.
   - Install with a frontier model; ingest with a weaker/open-weight model, because the
     skill must carry weak models.
   - Run all ingestions in parallel, each in its own fresh session, sending only the
     bare URL; the skill carries the instructions.
     If the provider rate-limits (HTTP 429) or queues requests, lower the parallelism
-    and record it; a rate-limited run measures the provider, not the skill.
+    and record it; a rate-limited run measures the provider, not the skill. The free
+    NVIDIA NIM endpoint (Nemotron) allows "up to 40 rpm": run about 3 sessions at a
+    time.
+  - Hermes pauses an MCP server for 60 s after 3 rejected calls, shared by every
+    session of the profile, so tool validation must rarely reject: prefer required
+    schema parameters, tolerant input formats, and errors that say exactly how to fix
+    the call.
   - Judge drafts by usefulness in a human-first knowledge base / Zettelkasten (atomic,
     own words, linked, worth rereading), not LLM-first wiki criteria.
   - Review the install transcript step by step and each ingest transcript against the
@@ -125,7 +141,10 @@ until they are implemented or deliberately dropped.
   framework.
 - Add dependencies only for concrete needs. Avoid premature async, generic provider
   frameworks, persistence, and compatibility layers without a real consumer.
-- Do not commit or push unless explicitly requested.
+- Do not commit or push unless explicitly requested. Never add Claude-Session or other
+  session links or attribution trailers to commit messages.
+- Release target: free and open source on GitHub, and listed on agensi.io. Keep the
+  skill directory self-contained so it can be distributed as-is.
 
 ## Verification
 

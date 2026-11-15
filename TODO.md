@@ -18,16 +18,60 @@ Trusted setups allow normal host tools and may use CLI or MCP. Either interface'
 writer remains create-only; an agent with shell access can bypass it. Neither MCP
 alone nor the install instructions create an OS sandbox.
 
-**Current gate: live Hermes trials.** Code for the former parity, acquisition, and
-curation-guidance milestones is implemented and verified by automated tests and diff
-review. Restricted-mode install trials succeeded, and weak-model ingestion now follows
-the whole workflow: runs 17–19 used Nemotron 3 Ultra, and run 20 rechecked GPT-6 Luna
-(see `trial-reports/`). The next actionable item is milestone 1 below: the remaining
-setup checks. Trials follow the protocol in
-[`AGENTS.md`](AGENTS.md) (Hermes as an `hc` child agent in a throwaway profile with a
-disposable test vault; abort and report if no throwaway profile can be created). Do
-not implement all milestones at once. No staging, commits, or pushes without explicit
-approval.
+**Current gate: launch preparation.** YouTube ingestion is considered done on Hermes:
+both install modes, repeat install, undo, cache reuse, and weak-model ingestion
+(GPT-6 Luna down to Nemotron 3 Ultra) passed live; see `trial-reports/`. The launch
+target is a free open-source GitHub release plus a listing on agensi.io (a skills
+marketplace served through its MCP); check agensi.io's listing requirements before
+packaging. Trials follow the protocol in [`AGENTS.md`](AGENTS.md). Do not implement all
+milestones at once. No staging, commits, or pushes without explicit approval.
+
+### Resume here (state on 2026-11-15)
+
+- **Claude Code is validated** (`trial-reports/2026-11-15-claude-code-run1/` to
+  `-run3/`): trusted install, repeat install, undo, bare-URL and real `/obsidian-ingest`
+  ingestion (Sonnet and Haiku), thumbnail, and the restricted alias with
+  `--disallowedTools` for plugin tools. Small `claude-code.md` text fixes after run 3
+  are not re-run yet. **Next: Codex.** The user drives child permission prompts in
+  herdr and types slash commands with URLs (`hc send` wraps text in `<hc>` tags, and
+  `hc keys` cannot type `:`, `_` or capitals). Use Sonnet 5.5 to install and Haiku 5.5
+  to ingest on Claude Code. Check usage only after a full run (a throwaway child,
+  `/usage` typed with `hc keys`); stop at 65% of the 5-hour limit. Let a Sonnet
+  subagent audit transcripts. Keep trial snapshots outside the child's tree.
+- **Uncommitted work from that effort** (review, then propose a commit; never push):
+  - `references/install.md` step 1 now detects the harness (environment markers) and
+    offers restricted mode only where the notes file's `Modes:` line allows it; an
+    untested harness installs trusted and is reported as untested.
+  - `hermes.md` has a `Modes:`/`Validated:` header. New `claude-code.md` and
+    `codex.md` are drafts written from documentation (`Validated: not yet`), each with
+    an advanced restricted launch for experienced users.
+  - `AGENTS.md` and this file record the decisions below.
+- **Decisions already made by the user** (do not re-ask):
+  - Restricted mode is offered only on Hermes, because its profiles are visibly separate
+    (Hermes Desktop). Every other harness installs trusted; its notes file documents an
+    advanced restricted command or alias.
+  - Trials in non-profile harnesses use the same model for install and ingest (Claude
+    Code: Sonnet 5.5; Codex: GPT-6 Luna). Copying the user's login file into a throwaway
+    trial home is approved, never printed, and deleted afterwards.
+  - Before launch: harness support first (Claude Code and Codex, then opencode; pi and
+    Amp if easy), then packaging/license/CI, then a polished public README, then going
+    public and the GitHub-link install test. New providers (articles first, then
+    Instagram Reels, then newsletter emails) come after launch.
+- **Claude Code trial setup notes:** a fresh config starts with onboarding (theme,
+  folder trust: the default "No, exit" closes it) and auto mode; the user picks manual
+  mode or keeps auto. An unattended install is not possible, so the user drives the
+  install pane. Ingest sessions use the `mcp__obsidian-ingest__*` allow rule.
+- **Trial setup for Claude Code and Codex** (scratchpad, recreate if cleared): a
+  throwaway `HOME` per harness with `CLAUDE_CONFIG_DIR=$HOME/.claude` or
+  `CODEX_HOME=$HOME/.codex` inside it, because Codex loads user skills from
+  `~/.agents/skills` (HOME-based). Start sessions from a scratch folder. Snapshot the
+  user's real `~/.claude.json` `mcpServers`, `~/.claude/settings.json`,
+  `~/.codex/config.toml`, and the skills folders' entries before and after; folder
+  timestamps change from normal activity, so compare entries, not `ls -la` hashes.
+- **Git state:** local `master` is ahead of `origin/master` with rewritten history (all
+  Claude-Session trailers removed at the user's request). The next push needs
+  `--force-with-lease` and happens only when the user asks. Never add session links to
+  commit messages.
 
 All unchecked work below is planned, not an available capability. Remove completed
 items only after their acceptance scenarios, relevant tests, and diff review pass.
@@ -80,6 +124,10 @@ works from GPT-6 Luna down to Nemotron 3 Ultra. Details are in `trial-reports/`.
 concrete failures in the smallest relevant place. No agent runner, installer framework,
 or scoring/benchmark framework.
 
+- [ ] Harness support: validate a trusted install, bare-URL ingestion, image delivery,
+  the advanced restricted launch, repeat install, and undo on Codex, then opencode, pi,
+  and Amp (Claude Code passed on 2026-11-15). Each gets a `references/<harness>.md` notes file with a
+  `Modes:` and `Validated:` header. Restricted mode stays Hermes-only.
 - [ ] Install from a GitHub `SKILL.md` link (clone into a stable location) once the
   repository is public. Trusted and restricted installs, repeat setup, undo from both
   modes, restart/cache reuse, and spillover bounds passed live on Hermes v0.23.0

@@ -1,6 +1,7 @@
 ---
 name: obsidian-ingest
 description: Turn a YouTube URL into a few atomic, linked notes for the user's Obsidian vault, an edit suggestion for an existing note, or nothing. Use whenever the user shares a video URL, even with no other words.
+argument-hint: "[url]"
 ---
 
 # Obsidian Ingest
@@ -8,6 +9,9 @@ description: Turn a YouTube URL into a few atomic, linked notes for the user's O
 A bare URL is the whole request. Do all the steps below, then report. Do not stop to ask.
 
 Write few notes: usually 0–3 per video, at most 5. A person will review every one.
+
+To install, repeat the install, or undo it, follow
+[references/install.md](references/install.md) instead.
 
 ## Steps
 

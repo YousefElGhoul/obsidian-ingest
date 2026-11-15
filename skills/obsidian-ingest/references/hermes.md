@@ -1,5 +1,9 @@
 # Hermes notes
 
+Modes: restricted and trusted (offer both; Hermes profiles keep curation sessions
+visibly separate).
+Validated: Hermes Agent v0.23.0, 2026-11-15 (both modes: install, repeat install, undo).
+
 Hermes-specific details for [the install steps](install.md). They were observed
 working on Hermes Agent v0.23.0 in a live install trial. They are hints, not a
 version pin: confirm each command with its `--help` before use, and if one is gone,

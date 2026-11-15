@@ -4,16 +4,35 @@ Instructions for an agent asked to "install this skill and its tools", usually g
 only a link to this skill's `SKILL.md`. Follow the steps in order. Ask the user only for
 the choices in step 1; everything else is discovered or fixed below.
 
-Harness notes: [Hermes](hermes.md). For another harness, apply the same steps with that
-harness's own documented commands for registering a stdio MCP server, enabling a skill,
-and limiting tools.
+## 1. Identify the harness, then ask for the user's choices, once
 
-## 1. Ask for the user's choices, once
+First name the harness you are running in. You normally know it; environment variables
+confirm it: `HERMES_HOME` (Hermes), `CLAUDECODE` or `AI_AGENT` (Claude Code),
+`CODEX_THREAD_ID` or `CODEX_HOME` (Codex). Then read its notes file and follow it
+alongside these steps:
 
-Ask in a single message, and reuse any answer the user already gave:
+| Harness | Notes |
+|---|---|
+| Hermes | [hermes.md](hermes.md) |
+| Claude Code | [claude-code.md](claude-code.md) |
+| Codex | [codex.md](codex.md) |
 
-- Profile or session to configure (on Hermes, a named profile).
-- **Restricted** or **trusted** mode:
+Each notes file starts with a `Modes:` line. Offer **restricted** mode only when it says
+restricted is supported; otherwise install **trusted** without asking about mode, and
+mention any advanced restricted setup the notes file documents once in the report. For
+a harness with no notes file, install trusted with that harness's own documented
+commands for registering a stdio MCP server and enabling a skill, and say in the report
+that this harness is untested and restricted mode is not offered.
+
+Before asking anything, check for an existing install: the skill link, the MCP
+registration, and `<skill>/config/settings.toml`. If one exists, read it, show it, and
+ask only about what is missing or wrong; on a repeat install, valid settings are the
+user's earlier answers.
+
+Then ask in a single message, and reuse any answer the user already gave:
+
+- Where to install, if the harness has a choice (on Hermes, a named profile).
+- The mode, only where restricted is offered:
   - Restricted: curation sessions expose only this skill's MCP tools; shell,
     filesystem, delegation, and other vault-capable tools are disabled.
   - Trusted: normal host tools stay on, and the agent may use the CLI or MCP.
@@ -87,7 +106,7 @@ MCP resources and prompts. If the server reports a different tool list, use what
 reports and tell the user. In trusted CLI-only mode, registration is optional: use
 `uv run --no-dev --project <skill> obsidian-ingest --help`.
 
-## 6. Restrict (restricted mode only)
+## 6. Restrict (restricted mode only; skip in trusted mode)
 
 Use the harness's supported settings, not its internal source code.
 
@@ -138,8 +157,11 @@ example another profile), because the restricted profile has no shell or file to
 
 ## Undo
 
-When asked to undo, list what you will change and ask first. Then check for config
-edits made after the install, restore the backed-up host configuration, and remove only
-the skill link (or the copy the install placed in the harness's skills directory). Leave
-the runtime, settings, source cache, vault, and published notes alone unless the user
-asks to remove them. Verify against the backup and report what changed.
+When asked to undo, read the harness notes file's Undo section, list what you will
+change, and ask the user before changing anything, even when the harness would approve
+the commands without asking. Then check for config edits made after the install,
+remove the MCP registration with the harness's own command where it has one, restore
+the backed-up host configuration, and remove only the skill link (or the copy the install
+placed in the harness's skills directory). Leave the runtime, settings, source cache,
+vault, and published notes alone unless the user asks to remove them. Verify against
+the backup and report what changed.
