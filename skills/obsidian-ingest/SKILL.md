@@ -19,7 +19,9 @@ To install, repeat the install, or undo it, follow
 2. Read the whole transcript in order: `read_transcript` with `limit` 200, passing
    each page's `next_offset` and `read_token` to the next call until `next_offset` is
    `null`. Keep the last `read_token`: every write needs it, and writing is refused
-   until the whole transcript has been read.
+   until the whole transcript has been read. One page per call: read its rows before
+   requesting the next. Never fetch several pages in one call or loop, because long
+   output gets cut and you would miss parts of the video.
 3. Write down the ideas worth keeping. An idea is something a person would look up
    again months later: a technique, mechanism, tradeoff, gotcha, or mental model that
    the speaker states. Not ideas: what happens in the video, how a video game works
@@ -71,8 +73,8 @@ example (05:12) or (1:03:56).
   write one note per chapter. A one-line tip is never a note of its own.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, and no source
   section: the tool adds the source and the related links.
-- Also pass the timestamps you cite as `timestamps` (seconds or "05:12"). The tool
-  turns them into video links.
+- Also pass exactly the timestamps cited in the note's text as `timestamps` (seconds or
+  "05:12"), no others. The tool turns them into video links.
 - Only what the source says. Attribute opinions to the speaker by the person or channel
   name the video gives, not "the speaker". Rankings, "best" and "replace X with Y"
   claims are opinions too: "The Coding Sloth ranks verification highest", not

@@ -27,7 +27,8 @@ that this harness is untested and restricted mode is not offered.
 Before asking anything, check for an existing install: the skill link, the MCP
 registration, and `<skill>/config/settings.toml`. If one exists, read it, show it, and
 ask only about what is missing or wrong; on a repeat install, valid settings are the
-user's earlier answers.
+user's earlier answers. Report where each piece lives, and say if the skill link is in
+a location the harness notes call deprecated.
 
 Then ask in a single message, and reuse any answer the user already gave:
 
@@ -41,7 +42,10 @@ Then ask in a single message, and reuse any answer the user already gave:
   folder (default `00 Inbox/AI Drafts`). An excluded path must not also be listed as
   allowed; to hide part of an allowed folder, exclude a subfolder of it.
 
-Never infer a vault, broaden scope, or switch mode without the user's approval.
+Never infer a vault, broaden scope, or switch mode without the user's approval. If the
+host's sandbox blocks a command this install needs, such as `uv sync` needing network,
+ask the user to approve it. Never copy caches or other files from outside the paths
+this install uses as a workaround.
 
 ## 2. Obtain the skill
 

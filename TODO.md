@@ -32,8 +32,15 @@ milestones at once. No staging, commits, or pushes without explicit approval.
   `-run3/`): trusted install, repeat install, undo, bare-URL and real `/obsidian-ingest`
   ingestion (Sonnet and Haiku), thumbnail, and the restricted alias with
   `--disallowedTools` for plugin tools. Small `claude-code.md` text fixes after run 3
-  are not re-run yet. **Next: Codex.** The user drives child permission prompts in
-  herdr and types slash commands with URLs (`hc send` wraps text in `<hc>` tags, and
+  are not re-run yet.
+- **Codex is validated** (`trial-reports/2026-11-15-codex-run1/` to `-run3/`, codex-cli
+  0.169.0): GPT-6.1 Sol installs, GPT-6 Luna ingests. Open: Luna's draft quality on
+  Codex (about 37% useful) is far below Hermes; investigate before launch. The
+  restricted profile cannot remove `collaboration.*` or `apply_patch`; the read-only
+  sandbox makes patches ask. Never delete `$CODEX_HOME/packages` (Codex's own runtime)
+  and stop trial-home daemons before deleting a trial home. **Next: opencode.**
+- The user drives child permission prompts in herdr; I send chat answers myself. The
+  user types slash commands with URLs (`hc send` wraps text in `<hc>` tags, and
   `hc keys` cannot type `:`, `_` or capitals). Use Sonnet 5.5 to install and Haiku 5.5
   to ingest on Claude Code. Check usage only after a full run (a throwaway child,
   `/usage` typed with `hc keys`); stop at 65% of the 5-hour limit. Let a Sonnet
@@ -125,8 +132,8 @@ concrete failures in the smallest relevant place. No agent runner, installer fra
 or scoring/benchmark framework.
 
 - [ ] Harness support: validate a trusted install, bare-URL ingestion, image delivery,
-  the advanced restricted launch, repeat install, and undo on Codex, then opencode, pi,
-  and Amp (Claude Code passed on 2026-11-15). Each gets a `references/<harness>.md` notes file with a
+  the advanced restricted launch, repeat install, and undo on opencode, then pi and Amp
+  (Claude Code and Codex passed on 2026-11-15). Each gets a `references/<harness>.md` notes file with a
   `Modes:` and `Validated:` header. Restricted mode stays Hermes-only.
 - [ ] Install from a GitHub `SKILL.md` link (clone into a stable location) once the
   repository is public. Trusted and restricted installs, repeat setup, undo from both
