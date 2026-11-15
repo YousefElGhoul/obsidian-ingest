@@ -37,10 +37,13 @@ To install, repeat the install, or undo it, follow
    `matched_terms`). So query the specific words a note on that idea would contain, with
    other forms you want too (`index indexes`): names, tools, terms
    (`kubernetes pod eviction`, `react useeffect cleanup`). Leave out common words like
-   `how`, `use`, `code` or `video` that match everything. Then `read_vault_note` for the
-   closest matches. Do this before writing anything.
+   `how`, `use`, `code` or `video` that match everything. `limit` is at most 20. Then
+   `read_vault_note` for the closest matches. Do this before writing anything.
 5. For each idea, decide:
-   Pass the final `read_token` to every write.
+   Pass the final `read_token` to every write. One write per tool call, never several
+   in one call or script. If a write fails, check which paths already exist before
+   retrying. Never suggest edits to a note in the drafts folder; those are new drafts,
+   not vault notes.
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. `proposed_content` is only the
      new or changed lines, never a copy of the whole note or a summary of the video.

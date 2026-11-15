@@ -38,7 +38,33 @@ milestones at once. No staging, commits, or pushes without explicit approval.
   Codex (about 37% useful) is far below Hermes; investigate before launch. The
   restricted profile cannot remove `collaboration.*` or `apply_patch`; the read-only
   sandbox makes patches ask. Never delete `$CODEX_HOME/packages` (Codex's own runtime)
-  and stop trial-home daemons before deleting a trial home. **Next: opencode.**
+  and stop trial-home daemons before deleting a trial home. **Next: opencode** (v2.3.0)
+  with opencode console free models (the user's choice): `glm-5.3-flash-free` installs,
+  `minimax-m3.1-flash-free` ingests, and `nemotron-3.5-super-vl-free` probes the
+  thumbnail. opencode v2 shares one background server per user account, so every
+  trial command sources `scratchpad/oc-env.sh` (HOME, every XDG variable including
+  `XDG_RUNTIME_DIR`, and `TMPDIR` in the throwaway home) and passes `--standalone`.
+  `opencode debug paths` was verified to point inside it. The console login was piped
+  in with `opencode auth export opencode | opencode auth import --standalone`, and
+  GLM free answered there. Docker was tried and dropped: the bare official image is
+  refused every metered free model ("Free usage limit reached"). Compare the user's
+  real opencode with `oc-realsnap.sh` against `oc-real-before.txt`. End-of-trial
+  cleanup, after the user approves: delete the probe session
+  `<session id>` and its scratchpad project
+  `<project id>` from the real database with opencode's
+  own commands. Trials now run inside the bwrap sandbox
+  (`scratchpad/trial-notes-oc/sandbox.sh opencode --auto`), and the throwaway service
+  uses port 49391. The model is set in the throwaway `opencode.jsonc`; stop the service
+  between phases. Custom agents are selected in the TUI with shift+tab (there is no
+  `--agent` flag). **The free tier has an account-wide daily message cap covering every
+  free model, including the "unlimited" ones**. Runs 1 and 2 hit it ("reset at
+  2:00 AM"). Run 2 still needs: the restricted-agent probe (agent `obsidian-ingest` is
+  already in the throwaway config), a thumbnail check with `nemotron-3.5-super-vl-free`,
+  undo, and a retry of the AI-game-dev ingest. Skills
+  load via the `skill` tool or `@obsidian-ingest`; MCP goes through `execute` unless a
+  server sets `codemode: false`; the restricted option is a custom agent with deny
+  permissions. Write a draft `references/opencode.md` and its install.md row before
+  run 1.
 - The user drives child permission prompts in herdr; I send chat answers myself. The
   user types slash commands with URLs (`hc send` wraps text in `<hc>` tags, and
   `hc keys` cannot type `:`, `_` or capitals). Use Sonnet 5.5 to install and Haiku 5.5

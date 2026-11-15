@@ -7,8 +7,9 @@ the choices in step 1; everything else is discovered or fixed below.
 ## 1. Identify the harness, then ask for the user's choices, once
 
 First name the harness you are running in. You normally know it; environment variables
-confirm it: `HERMES_HOME` (Hermes), `CLAUDECODE` or `AI_AGENT` (Claude Code),
-`CODEX_THREAD_ID` or `CODEX_HOME` (Codex). Then read its notes file and follow it
+confirm it: `HERMES_HOME` (Hermes), `CLAUDECODE` (Claude Code; `AI_AGENT` alone is not specific),
+`CODEX_THREAD_ID` or `CODEX_HOME` (Codex), any variable starting with `OPENCODE`
+(opencode). Then read its notes file and follow it
 alongside these steps:
 
 | Harness | Notes |
@@ -16,6 +17,7 @@ alongside these steps:
 | Hermes | [hermes.md](hermes.md) |
 | Claude Code | [claude-code.md](claude-code.md) |
 | Codex | [codex.md](codex.md) |
+| opencode | [opencode.md](opencode.md) |
 
 Each notes file starts with a `Modes:` line. Offer **restricted** mode only when it says
 restricted is supported; otherwise install **trusted** without asking about mode, and
@@ -68,7 +70,7 @@ place. If a different skill of the same name already exists there, stop and ask.
 ## 3. Show the plan, get approval, back up
 
 Before changing anything, list the changes from steps 4 to 6 and ask for approval in
-one message. Then back up every host configuration file you will edit (for example
+one message, even if the user already gave every choice. Then back up every host configuration file you will edit (for example
 `config.yaml.before-obsidian-ingest-<timestamp>`). Preserve provider, model,
 credentials, other profiles, and other skills. Do not print credentials.
 
