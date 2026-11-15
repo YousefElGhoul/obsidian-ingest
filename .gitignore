@@ -13,6 +13,7 @@ wheels/
 /.agent-outputs/
 /skills/obsidian-ingest/config/settings.toml
 /videos.txt
+/TODO.md
 /outputs_archive/
 
 /.env

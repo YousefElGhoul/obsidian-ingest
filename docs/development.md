@@ -16,9 +16,7 @@ git diff --check
 ```
 
 Automated tests use fake extraction data and mocked I/O, not live services. See
-[`AGENTS.md`](../AGENTS.md) for coding-agent guidance and [`TODO.md`](../TODO.md) for the
-current implementation roadmap. The roadmap is maintained separately so it can be
-used to resume work across sessions without turning the README into a task log.
+[`AGENTS.md`](../AGENTS.md) for coding-agent guidance.
 
 For documentation-only changes, reread affected documents together, check claims
 against code and the harness notes, verify relative links, and run `git diff --check`.
