@@ -67,6 +67,12 @@ hermes -p <profile> chat --cli --in <unrelated directory> \
   --toolsets obsidian-ingest,skills --skills obsidian-ingest
 ```
 
+## Trusted mode
+
+Change nothing in "Restrict". The registered MCP tools stay behind Hermes' tool search
+(`tool_search`, `tool_describe`, `tool_call`), and agents found and used them in the
+trials. Start sessions with `hermes -p <profile> chat --cli --skills obsidian-ingest`.
+
 ## Verify
 
 - `hermes -p <profile> mcp test obsidian-ingest` lists the eleven tools.
@@ -100,6 +106,10 @@ profile (`hermes profile create <name> --clone-from <installed profile>`).
 
 ## Undo
 
-Restore the backed-up `config.yaml` after checking for later edits, and remove only the
-skill symlink (`unlink ~/.hermes/profiles/<profile>/skills/obsidian-ingest`). Leave the
-vault, published notes, and the skill directory alone unless the user asks.
+Run undo from a session with terminal access. A restricted profile has no shell or file
+tools, so undo it from another profile (`hermes -p <other> chat`, naming the restricted
+profile in the request). Show the planned changes and ask first. Restore the backed-up
+`config.yaml` after checking for later edits, then remove only the skill entry in
+`~/.hermes/profiles/<profile>/skills/obsidian-ingest`: `unlink` it if it is a symlink,
+or move the copy aside if the install copied it. Leave the vault, published notes, the
+skill's runtime, settings, and source cache alone unless the user asks.

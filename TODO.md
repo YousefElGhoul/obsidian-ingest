@@ -57,7 +57,8 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 - Installation: give an agent the skill's `SKILL.md` link and ask it to install the
   skill and its tools; it follows `references/install.md` (Hermes notes in
   `references/hermes.md`). `obsidian-ingest setup` accepts flags and then never prompts.
-  Restricted-mode install was validated once live (Hermes v0.23.0, 2026-11-14).
+  Restricted and trusted installs, repeat setup, and undo were validated live (Hermes
+  v0.23.0, 2026-11-15).
 - An optional `get_thumbnail` tool (CLI `get-thumbnail`) fetches a YouTube thumbnail on
   demand for vision-capable models: bounded, not cached, not part of ingest. It is the
   first scoped image delivery from milestone 3. Hermes v0.23.0 forwards the MCP image to
@@ -70,8 +71,8 @@ items only after their acceptance scenarios, relevant tests, and diff review pas
 ### 1. Live Hermes Setup and Curation Trials
 
 **Problem:** Automated tests establish deterministic behavior, not that the install
-steps work in a real host or that the guidance produces useful Markdown and UX. The
-restricted-mode install trials installed and verified correctly. Ingestion from a bare URL now
+steps work in a real host or that the guidance produces useful Markdown and UX. Trusted
+and restricted installs, repeat setup, and undo verified correctly. Ingestion from a bare URL now
 works from GPT-6 Luna down to Nemotron 3 Ultra. Details are in `trial-reports/`.
 
 **Reuse/change surface:** `SKILL.md`, `references/install.md`, `references/hermes.md`,
@@ -79,13 +80,10 @@ works from GPT-6 Luna down to Nemotron 3 Ultra. Details are in `trial-reports/`.
 concrete failures in the smallest relevant place. No agent runner, installer framework,
 or scoring/benchmark framework.
 
-- [ ] Validate the remaining install paths in a throwaway profile: trusted CLI/MCP
-  mode, installing from a GitHub `SKILL.md` link (clone into a stable location), repeat
-  setup without duplicated registrations or broadened scope, and following the
-  reported undo steps. Let Hermes discover its current commands; no version pin or
-  fixed config schema.
-- [ ] Verify restart/cache reuse and response spillover behavior for transcript and
-  note pages.
+- [ ] Install from a GitHub `SKILL.md` link (clone into a stable location) once the
+  repository is public. Trusted and restricted installs, repeat setup, undo from both
+  modes, restart/cache reuse, and spillover bounds passed live on Hermes v0.23.0
+  (`trial-reports/2026-11-15-hermes-install2/`).
 
 **Dependencies/risks:** Needs a throwaway Hermes profile, a disposable test vault, and
 live sources; outcomes vary by model. Hermes must stop if requested restrictions

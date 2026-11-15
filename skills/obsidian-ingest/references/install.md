@@ -132,3 +132,14 @@ setting changed, the backups, each check with its result, the exact command to s
 curation session, and concrete undo steps. State what was not verified. Do not claim an
 OS sandbox, support for every harness version, or restriction of already-running
 sessions. On a repeat install, reuse valid configuration rather than duplicating it.
+
+In restricted mode, say that undo must run from a session with terminal access (for
+example another profile), because the restricted profile has no shell or file tools.
+
+## Undo
+
+When asked to undo, list what you will change and ask first. Then check for config
+edits made after the install, restore the backed-up host configuration, and remove only
+the skill link (or the copy the install placed in the harness's skills directory). Leave
+the runtime, settings, source cache, vault, and published notes alone unless the user
+asks to remove them. Verify against the backup and report what changed.

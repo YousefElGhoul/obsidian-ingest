@@ -347,9 +347,10 @@ and edit writes require one that covers the whole retained transcript. Continue 
 indices, wording, timestamps, and order are preserved. An individual atom that cannot
 fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
 are returned as one compact JSON text result instead of duplicated text and structured
-payloads; the evaluator parses this result format. This bound is intended to keep reads
-small, but Hermes spillover thresholds vary by deployment and have not been verified
-against a local Hermes installation.
+payloads; the evaluator parses this result format. This bound keeps reads well under Hermes'
+MCP spillover threshold (`mcp_result_size_chars`, 50,000 by default): the largest result
+in live trials was 13,170 characters (a 200-row transcript page), and nothing spilled.
+Other deployments may set a different threshold.
 
 For `create_draft`, start `contents` with an H1 that is the note's title; the optional
 `filename` argument defaults to the H1's kebab-case slug (see the draft writer above).

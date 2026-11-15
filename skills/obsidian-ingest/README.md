@@ -15,8 +15,9 @@ npx skills add <owner>/obsidian-ingest --skill obsidian-ingest
 Requires network access for YouTube extraction. The intended setup is to give an agent
 this skill's `SKILL.md` link and ask it to install the skill and its tools; it follows
 [references/install.md](references/install.md), with Hermes details in
-[references/hermes.md](references/hermes.md). That flow has been validated once on
-Hermes v0.23.0 in restricted mode; no other harness is validated end to end.
+[references/hermes.md](references/hermes.md). That flow has been validated on Hermes
+v0.23.0 in restricted and trusted mode (install, repeat install, undo); no other harness
+is validated end to end.
 
 Manually, install Python 3.13+ and [uv](https://docs.astral.sh/uv/), then run from this
 directory (omit the flags to be prompted instead):
