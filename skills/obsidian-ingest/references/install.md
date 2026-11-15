@@ -69,9 +69,11 @@ place. If a different skill of the same name already exists there, stop and ask.
 
 ## 3. Show the plan, get approval, back up
 
-Before changing anything, list the changes from steps 4 to 6 and ask for approval in
-one message, even if the user already gave every choice. Then back up every host configuration file you will edit (for example
-`config.yaml.before-obsidian-ingest-<timestamp>`). Preserve provider, model,
+Before changing anything, list the changes from steps 4 to 6 with their paths and ask
+for approval in one message, even if the user already gave every choice or said "go
+ahead". Then end your turn and wait for the answer: never show the plan and start
+changing things in the same turn. After approval, back up every host configuration
+file you will edit (for example `config.yaml.before-obsidian-ingest-<timestamp>`). Preserve provider, model,
 credentials, other profiles, and other skills. Do not print credentials.
 
 ## 4. Prepare the runtime and settings
@@ -91,9 +93,13 @@ writes `<skill>/config/settings.toml` with mode `0600`, and refuses to overwrite
 existing file. If settings already exist, show them and ask before any reconfiguration.
 Do not read note contents during setup.
 
-Choose a source cache file outside the vault and the repository, for example
-`~/.local/state/obsidian-ingest/sources.sqlite3` (the default). If a source tool later
-reports `SOURCE_CACHE_ERROR`, show its reset steps and ask before deleting anything.
+Choose a source cache file outside the vault and the repository that belongs to this
+install alone, for example `~/.local/state/obsidian-ingest/<profile or install
+name>/sources.sqlite3`. Never point a new install at a cache file that already exists:
+it may come from an older version and fail with `SOURCE_CACHE_ERROR`. If a source tool
+later reports `SOURCE_CACHE_ERROR`, show its reset steps and ask before deleting
+anything. Likewise give the skill copy its own folder (for example
+`~/.local/share/obsidian-ingest/<profile or install name>`).
 
 ## 5. Register the MCP server
 

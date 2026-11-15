@@ -28,6 +28,20 @@ milestones at once. No staging, commits, or pushes without explicit approval.
 
 ### Resume here (state on 2026-11-15)
 
+- **Latest:** opencode is validated (`trial-reports/2026-11-15-opencode-run1/` to
+  `-run3/`; OpenAI subscription models in run 3). Regression runs of Hermes, Codex and
+  Claude Code are in `trial-reports/2026-11-15-*-regression/`. Fixes made afterwards are
+  not yet re-run: one cache and skill copy per install, end the turn after showing the
+  plan, transcript `start` values are seconds, never edit drafts with other tools.
+  Open issues: installs on Codex and Claude Code skip the plan; only 3 of 15 trusted
+  Hermes sessions loaded `SKILL.md`; draft quality varies by model. Next: re-run the
+  regression phases that failed (Hermes restricted install and undo, a plan shown on
+  Codex and Claude Code), then pi and Amp. Use sandbox v2 (the throwaway home mounted at
+  `/home/<user>`) for non-Hermes harnesses. Leftovers awaiting the user's OK to remove:
+  Hermes profiles `oireg` and `oiregr`, `~/.local/share/obsidian-ingest/{oireg,
+  obsidian-ingest,INSTALL-REPORT.txt}`, `~/.local/state/obsidian-ingest/oireg`, and
+  the opencode project row `<project id>`.
+
 - **Claude Code is validated** (`trial-reports/2026-11-15-claude-code-run1/` to
   `-run3/`): trusted install, repeat install, undo, bare-URL and real `/obsidian-ingest`
   ingestion (Sonnet and Haiku), thumbnail, and the restricted alias with
@@ -158,9 +172,9 @@ concrete failures in the smallest relevant place. No agent runner, installer fra
 or scoring/benchmark framework.
 
 - [ ] Harness support: validate a trusted install, bare-URL ingestion, image delivery,
-  the advanced restricted launch, repeat install, and undo on opencode, then pi and Amp
-  (Claude Code and Codex passed on 2026-11-15). Each gets a `references/<harness>.md` notes file with a
-  `Modes:` and `Validated:` header. Restricted mode stays Hermes-only.
+  the advanced restricted launch, repeat install, and undo on pi and Amp (Claude Code,
+  Codex and opencode passed on 2026-11-15). Each gets a `references/<harness>.md` notes
+  file with a `Modes:` and `Validated:` header. Restricted mode stays Hermes-only.
 - [ ] Install from a GitHub `SKILL.md` link (clone into a stable location) once the
   repository is public. Trusted and restricted installs, repeat setup, undo from both
   modes, restart/cache reuse, and spillover bounds passed live on Hermes v0.23.0

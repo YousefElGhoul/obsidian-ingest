@@ -2,7 +2,8 @@
 
 Modes: trusted only. Do not offer restricted mode; mention the advanced restricted
 agent below once in the report.
-Validated: not yet.
+Validated: opencode v2.3.0, 2026-11-15 (trusted install, repeat install, undo, bare-URL
+and `@obsidian-ingest` ingestion, thumbnail, advanced restricted agent).
 
 opencode-specific details for [the install steps](install.md). They are hints, not a
 version pin: confirm each command with `opencode --help` or `opencode mcp --help` first.
@@ -90,5 +91,7 @@ this server's tools, added under `agents` in `opencode.jsonc`:
 }
 ```
 
-Select it with `opencode --agent obsidian-ingest`, then type `@obsidian-ingest <url>`.
-To check, ask the session to list its tools by name. It is not an OS sandbox.
+Start `opencode`, press shift+tab until the footer shows the `obsidian-ingest` agent,
+then type `@obsidian-ingest <url>`. The TUI has no `--agent` flag. To check, ask the
+session to list its tools by name: expect only `skill` and the `obsidian-ingest_*`
+tools. It is not an OS sandbox.
