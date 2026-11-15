@@ -82,8 +82,10 @@ See [docs/development.md](docs/development.md) for more, and
 ## Security and privacy
 
 If you find a way around the vault scope or the create-only writer, do not open a
-public issue. Email contact@yousefelghoul.dev with the steps to reproduce it. Never
-attach private notes, tokens, or session exports to an issue or pull request.
+public issue. Report it privately through
+[GitHub's vulnerability reporting](https://github.com/YousefElGhoul/obsidian-ingest/security/advisories/new)
+with the steps to reproduce it. Never attach private notes, tokens, or session exports
+to an issue or pull request.
 
 ## License
 
