@@ -287,30 +287,23 @@ def test_user_markdown_and_wikilinks_are_preserved(settings, source_metadata):
     )
 
 
+@pytest.mark.parametrize(
+    ("contents", "filename"),
+    [
+        ("# Unverified related heading\n\nA body.\n\n## Related Notes\n- [[Secret.md]]", None),
+        ("A body.\n\n> ## Related Notes\n> - [[Unverified]]", "Quoted section"),
+        ("A body.\n\n> Related Notes\n> ----------------\n> [[Unverified]]", "Quoted section"),
+    ],
+    ids=["atx-heading", "blockquoted-atx", "blockquoted-setext"],
+)
 def test_related_notes_heading_must_be_generated_from_verified_references(
-    settings: DraftWriterSettings, source_metadata: SourceMetadata
+    settings: DraftWriterSettings,
+    source_metadata: SourceMetadata,
+    contents: str,
+    filename: str | None,
 ) -> None:
     with pytest.raises(ValueError, match="Related Notes must be generated"):
-        create_draft(
-            settings,
-            contents="# Unverified related heading\n\nA body.\n\n## Related Notes\n- [[Secret.md]]",
-            source=source_metadata,
-        )
-    assert not (settings.vault_path / "00 Inbox").exists()
-
-
-@pytest.mark.parametrize(
-    "contents",
-    [
-        "A body.\n\n> ## Related Notes\n> - [[Unverified]]",
-        "A body.\n\n> Related Notes\n> ----------------\n> [[Unverified]]",
-    ],
-)
-def test_blockquoted_related_notes_heading_cannot_impersonate_generated_section(
-    settings, source_metadata, contents
-):
-    with pytest.raises(ValueError, match="Related Notes must be generated"):
-        create_draft(settings, filename="Quoted section", contents=contents, source=source_metadata)
+        create_draft(settings, filename=filename, contents=contents, source=source_metadata)
     assert not (settings.vault_path / "00 Inbox").exists()
 
 
@@ -491,38 +484,31 @@ def test_missing_vault_is_not_created(tmp_path: Path, source_metadata: SourceMet
     assert not missing.exists()
 
 
-@pytest.mark.parametrize("timestamps", [(-1,), (float("nan"),), (float("inf"),)])
-def test_invalid_timestamps_are_rejected(
+@pytest.mark.parametrize(
+    ("timestamps", "error", "message"),
+    [
+        ((-1,), ValueError, "timestamps must be finite and nonnegative"),
+        ((float("nan"),), ValueError, "timestamps must be finite and nonnegative"),
+        ((float("inf"),), ValueError, "timestamps must be finite and nonnegative"),
+        ([1.0], TypeError, "timestamps must be a tuple"),
+        ((True,), TypeError, "timestamps must be numbers"),
+    ],
+)
+def test_invalid_timestamps_are_rejected_before_writing(
     settings: DraftWriterSettings,
     source_metadata: SourceMetadata,
-    timestamps: tuple[float, ...],
+    timestamps,
+    error: type[Exception],
+    message: str,
 ) -> None:
-    with pytest.raises(ValueError, match="timestamps must be finite and nonnegative"):
+    with pytest.raises(error, match=message):
         create_draft(
             settings,
             contents="# Invalid timestamp\n\nbody",
             source=source_metadata,
             timestamps=timestamps,
         )
-
-
-def test_timestamps_must_be_tuple_of_numbers(
-    settings: DraftWriterSettings, source_metadata: SourceMetadata
-) -> None:
-    with pytest.raises(TypeError, match="timestamps must be a tuple"):
-        create_draft(
-            settings,
-            contents="# List timestamps\n\nbody",
-            source=source_metadata,
-            timestamps=[1.0],  # type: ignore[arg-type]
-        )
-    with pytest.raises(TypeError, match="timestamps must be numbers"):
-        create_draft(
-            settings,
-            contents="# Invalid timestamp type\n\nbody",
-            source=source_metadata,
-            timestamps=(True,),
-        )
+    assert not (settings.vault_path / "00 Inbox").exists()
 
 
 def test_existing_directory_with_draft_filename_is_not_replaced(
@@ -724,16 +710,16 @@ def test_concurrent_same_title_writes_publish_distinct_complete_files(
     assert not tuple(results[0].path.parent.glob(".obsidian-ingest-*"))
 
 
-@pytest.mark.parametrize("flag", ["O_NOFOLLOW", "O_DIRECTORY"])
-def test_missing_safety_flag_fails_before_creating_draft_folder(
+@pytest.mark.parametrize("name", ["O_NOFOLLOW", "O_DIRECTORY", "fsync"])
+def test_missing_safety_primitive_fails_before_creating_draft_folder(
     settings: DraftWriterSettings,
     source_metadata: SourceMetadata,
     monkeypatch: pytest.MonkeyPatch,
-    flag: str,
+    name: str,
 ) -> None:
-    monkeypatch.delattr(drafts.os, flag)
+    monkeypatch.delattr(drafts.os, name)
 
-    with pytest.raises(RuntimeError, match=f"unavailable: {flag}"):
+    with pytest.raises(RuntimeError, match=f"unavailable: {name}"):
         create_draft(settings, contents="# Unsupported\n\nbody", source=source_metadata)
 
     assert not (settings.vault_path / "00 Inbox").exists()
@@ -770,19 +756,6 @@ def test_missing_no_follow_link_support_fails_before_creating_draft_folder(
     monkeypatch.setattr(drafts.os, "supports_follow_symlinks", supported)
 
     with pytest.raises(RuntimeError, match=r"link\(follow_symlinks=False\)"):
-        create_draft(settings, contents="# Unsupported\n\nbody", source=source_metadata)
-
-    assert not (settings.vault_path / "00 Inbox").exists()
-
-
-def test_missing_fsync_fails_before_creating_draft_folder(
-    settings: DraftWriterSettings,
-    source_metadata: SourceMetadata,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delattr(drafts.os, "fsync")
-
-    with pytest.raises(RuntimeError, match="unavailable: fsync"):
         create_draft(settings, contents="# Unsupported\n\nbody", source=source_metadata)
 
     assert not (settings.vault_path / "00 Inbox").exists()

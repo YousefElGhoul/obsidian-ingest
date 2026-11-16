@@ -311,10 +311,56 @@ def test_failed_sponsor_lookup_round_trips_and_requires_explicit_refresh(tmp_pat
     ydl.extract_info.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "corruption",
-    ["checksum", "json", "missing", "version", "type", "category", "timing", "identity"],
-)
+def _set(*path_and_value):
+    """Return a payload mutation that sets the nested field at ``path`` to ``value``."""
+    *path, value = path_and_value
+
+    def mutate(data: dict) -> None:
+        target = data
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    return mutate
+
+
+def _delete_segments(data: dict) -> None:
+    del data["transcript"]["segments"]
+
+
+_CORRUPTIONS = {
+    "checksum": None,
+    "json": None,
+    "missing": _delete_segments,
+    "version": _set("version", 99),
+    "version-type": _set("version", 2.0),
+    "type": _set("transcript", "segments", 0, "text", 123),
+    "category": _set("exclusion_lookup", "ranges", 0, "reason", "intro"),
+    "timing": _set("transcript", "segments", 0, "start", -1),
+    "identity": _set("transcript", "video_id", "another-video"),
+    "empty-identity": _set("metadata", "source_id", ""),
+    "metadata-text": _set("metadata", "title", 5),
+    "tags": _set("metadata", "tags", [1]),
+    "chapter-title": _set("metadata", "chapters", 0, "title", None),
+    "generated-flag": _set("transcript", "is_generated", "yes"),
+    "duration": _set("metadata", "duration_seconds", -1),
+    "duration-type": _set("metadata", "duration_seconds", True),
+    "youtube-text": _set("metadata", "provider_details", "channel_handle", 5),
+    "youtube-flags": _set("metadata", "provider_details", "is_short", "no"),
+    "playlist-index": _set("metadata", "provider_details", "playlist_index", "2"),
+    "acquired-at-naive": _set("acquisition", "acquired_at", "2026-01-02T03:04:05"),
+    "acquired-at-missing": _set("acquisition", "acquired_at", None),
+    "extractor": _set("acquisition", "extractor", ""),
+    "extractor-version": _set("acquisition", "extractor_version", 7),
+    "translated": _set("acquisition", "caption", "is_translated", "no"),
+    "payload-size": _set("acquisition", "caption", "payload_bytes", 0),
+    "payload-sha": _set("acquisition", "caption", "payload_sha256", "short"),
+    "caption-format": _set("acquisition", "caption", "format", "srv3"),
+    "unknown-field": _set("metadata", "unexpected", 1),
+}
+
+
+@pytest.mark.parametrize("corruption", list(_CORRUPTIONS))
 def test_corrupt_entries_fail_explicitly_and_refresh_recovers(tmp_path, extraction, corruption):
     _, ydl, _ = extraction
     cache = SourceCache(tmp_path / "sources.db")
@@ -322,18 +368,8 @@ def test_corrupt_entries_fail_explicitly_and_refresh_recovers(tmp_path, extracti
     with closing(sqlite3.connect(cache.path)) as connection, connection:
         payload = connection.execute("SELECT payload FROM sources").fetchone()[0]
         data = json.loads(payload)
-        if corruption == "missing":
-            del data["transcript"]["segments"]
-        elif corruption == "version":
-            data["version"] = 99
-        elif corruption == "type":
-            data["transcript"]["segments"][0]["text"] = 123
-        elif corruption == "category":
-            data["exclusion_lookup"]["ranges"][0]["reason"] = "intro"
-        elif corruption == "timing":
-            data["transcript"]["segments"][0]["start"] = -1
-        elif corruption == "identity":
-            data["transcript"]["video_id"] = "another-video"
+        if (mutate := _CORRUPTIONS[corruption]) is not None:
+            mutate(data)
         payload = "not JSON" if corruption == "json" else json.dumps(data)
         checksum = (
             "broken" if corruption == "checksum" else hashlib.sha256(payload.encode()).hexdigest()
@@ -354,6 +390,63 @@ def test_corrupt_entries_fail_explicitly_and_refresh_recovers(tmp_path, extracti
 def test_missing_source_id_is_explicit(tmp_path):
     with pytest.raises(KeyError):
         SourceCache(tmp_path / "sources.db").get("missing")
+
+
+def test_ingest_rejects_non_boolean_options_and_other_providers_without_extraction(
+    tmp_path, extraction
+):
+    factory, _, _ = extraction
+    cache = SourceCache(tmp_path / "sources.db")
+    for options in ({"exclude_sponsors": 1}, {"refresh": "false"}):
+        with pytest.raises(TypeError, match="must be booleans"):
+            cache.ingest(URL, **options)
+    with pytest.raises(ValueError, match="not supported for provider"):
+        cache.ingest("https://www.tiktok.com/@user/video/123")
+    factory.assert_not_called()
+    assert _rows(cache.path, "SELECT count(*) FROM sources") == [(0,)]
+
+
+def test_unreadable_cache_tables_are_cache_errors(tmp_path, extraction):
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute("DROP TABLE caption_payloads")
+    with pytest.raises(SourceCacheError, match="Cannot read source cache"):
+        cache.original_caption(first.source_id)
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute("DROP TABLE sources")
+    with pytest.raises(SourceCacheError, match="Cannot read source cache"):
+        cache.get(first.source_id)
+
+
+def test_failed_cache_write_rolls_back_the_whole_capture(tmp_path, extraction):
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    before = _rows(cache.path, "SELECT * FROM sources")
+    # The replacement fails on its second statement; the delete and insert must not stick.
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute(
+            "CREATE TRIGGER reject_payload BEFORE INSERT ON caption_payloads "
+            "BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END"
+        )
+    with pytest.raises(SourceCacheError, match="Cannot write source cache.*simulated"):
+        cache.ingest(URL, refresh=True)
+    assert _rows(cache.path, "SELECT * FROM sources") == before
+    assert cache.original_caption(first.source_id).data == CAPTIONS
+    with pytest.raises(SourceCacheError, match="Cannot write source cache"):
+        cache.ingest(URL, exclude_sponsors=False)
+    assert _rows(cache.path, "SELECT count(*) FROM sources") == [(1,)]
+
+
+def test_entry_without_a_persistent_id_is_invalid(tmp_path, extraction):
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        connection.execute("UPDATE sources SET source_id = ''")
+    with pytest.raises(SourceCacheError, match="Missing persistent source ID"):
+        cache.ingest(URL)
+    with pytest.raises(KeyError):
+        cache.get(first.source_id)
 
 
 def test_optional_fields_empty_collections_and_generated_flag_round_trip(

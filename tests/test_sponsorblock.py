@@ -25,6 +25,24 @@ def video_info():
     return {"id": "video-id", "extractor_key": "Youtube", "duration": 100}
 
 
+def api_response(body: bytes) -> Mock:
+    """A SponsorBlock HTTP response as yt-dlp's urlopen returns it."""
+    response = Mock()
+    response.headers.get_param.return_value = None
+    response.read.return_value = body
+    return response
+
+
+def api_segments(interval, duration=100) -> bytes:
+    segment = {
+        "segment": interval,
+        "category": "sponsor",
+        "actionType": "skip",
+        "videoDuration": duration,
+    }
+    return json.dumps([{"videoID": "video-id", "segments": [segment]}]).encode()
+
+
 @pytest.fixture
 def ydl():
     # No test may accidentally contact a live service.
@@ -150,23 +168,7 @@ def test_missing_or_invalid_duration_fails_before_pp(ydl, duration):
 
 
 def test_successful_api_response_passes_through_real_pp(ydl):
-    response = Mock()
-    response.headers.get_param.return_value = None
-    response.read.return_value = json.dumps(
-        [
-            {
-                "videoID": "video-id",
-                "segments": [
-                    {
-                        "segment": [10, 20],
-                        "category": "sponsor",
-                        "actionType": "skip",
-                        "videoDuration": 100,
-                    }
-                ],
-            }
-        ]
-    ).encode()
+    response = api_response(api_segments([10, 20]))
     with patch.object(ydl, "urlopen", return_value=response) as request:
         result = fetch_exclusions(ydl, video_info())
     assert result.ranges == (ExcludedRange(10, 20, "sponsor", "SponsorBlock"),)
@@ -188,35 +190,15 @@ def test_successful_api_response_passes_through_real_pp(ydl):
     ],
 )
 def test_raw_invalid_intervals_fail_before_yt_dlp_can_clamp_them(ydl, interval):
-    response = Mock()
-    response.headers.get_param.return_value = None
-    response.read.return_value = json.dumps(
-        [
-            {
-                "videoID": "video-id",
-                "segments": [
-                    {
-                        "segment": interval,
-                        "category": "sponsor",
-                        "actionType": "skip",
-                        "videoDuration": 100,
-                    }
-                ],
-            }
-        ]
-    ).encode()
     with (
-        patch.object(ydl, "urlopen", return_value=response),
+        patch.object(ydl, "urlopen", return_value=api_response(api_segments(interval))),
         pytest.raises(RuntimeError, match="SponsorBlock lookup failed"),
     ):
         fetch_exclusions(ydl, video_info())
 
 
 def test_successful_empty_api_response_is_complete(ydl):
-    response = Mock()
-    response.headers.get_param.return_value = None
-    response.read.return_value = b"[]"
-    with patch.object(ydl, "urlopen", return_value=response):
+    with patch.object(ydl, "urlopen", return_value=api_response(b"[]")):
         result = fetch_exclusions(ydl, video_info())
     assert result.status == ExclusionStatus.COMPLETE
     assert result.ranges == ()
@@ -224,11 +206,8 @@ def test_successful_empty_api_response_is_complete(ydl):
 
 @pytest.mark.parametrize("body", [b"null", b"{}", b"not json"])
 def test_malformed_response_is_not_complete(ydl, body):
-    response = Mock()
-    response.headers.get_param.return_value = None
-    response.read.return_value = body
     with (
-        patch.object(ydl, "urlopen", return_value=response),
+        patch.object(ydl, "urlopen", return_value=api_response(body)),
         pytest.raises(RuntimeError, match="SponsorBlock lookup failed"),
     ):
         fetch_exclusions(ydl, video_info())

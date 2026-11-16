@@ -72,6 +72,23 @@ def test_explicit_allowances_and_exclusions_use_path_components(tmp_path):
         assert "00 Inbox/AI Drafts/Previous.md" in paths
 
 
+def test_a_single_allowed_note_exposes_only_that_note(tmp_path):
+    root = _vault(tmp_path)
+    allowed = ("Engineering/Retry Policies.md", "00 Inbox/AI Drafts")
+    with VaultReader(_settings(root, allowed, ())) as reader:
+        paths = {item["path"] for item in reader.search("")["notes"]}
+        assert paths == {"Engineering/Retry Policies.md", "00 Inbox/AI Drafts/Previous.md"}
+        with pytest.raises(NoteUnavailable):
+            reader.get_path_reference("Computer Science/Retry Policies.md")
+
+
+def test_an_allowed_file_that_is_not_a_note_is_rejected_at_startup(tmp_path):
+    root = _vault(tmp_path)
+    (root / "Engineering/diagram.png").write_bytes(b"not a note")
+    with pytest.raises(ValueError, match="Allowed path is not a note or directory"):
+        VaultReader(_settings(root, ("Engineering/diagram.png", "00 Inbox/AI Drafts"), ()))
+
+
 def test_search_pagination_cursor_and_note_revision_reads(tmp_path):
     root = _vault(tmp_path)
     with VaultReader(_settings(root)) as reader:
@@ -121,6 +138,43 @@ def test_search_cursor_is_stateless_but_bound_to_access_policy(tmp_path):
         assert secret not in decoded
 
 
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"query": "x" * 257}, "query must be at most 256"),
+        ({"query": 5}, "query must be at most 256"),
+        ({"scope": "everything"}, "scope must be title, content, or both"),
+        ({"limit": 0}, "limit must be between 1 and 20"),
+        ({"limit": 21}, "limit must be between 1 and 20"),
+        ({"limit": True}, "limit must be between 1 and 20"),
+        ({"limit": 2.0}, "limit must be between 1 and 20"),
+    ],
+)
+def test_search_arguments_are_validated(tmp_path, arguments, message):
+    with (
+        VaultReader(_settings(_vault(tmp_path))) as reader,
+        pytest.raises(ValueError, match=f"INVALID_ARGUMENT: {message}"),
+    ):
+        reader.search(**arguments)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"offset": -1}, "offset must be nonnegative"),
+        ({"offset": True}, "offset must be nonnegative"),
+        ({"limit": 0}, "limit must be between 1 and 8000"),
+        ({"limit": 8001}, "limit must be between 1 and 8000"),
+        ({"limit": False}, "limit must be between 1 and 8000"),
+    ],
+)
+def test_note_read_arguments_are_validated(tmp_path, arguments, message):
+    with VaultReader(_settings(_vault(tmp_path))) as reader:
+        note = reader.search("retry")["notes"][0]
+        with pytest.raises(ValueError, match=f"INVALID_ARGUMENT: {message}"):
+            reader.read(note["note_id"], **arguments)
+
+
 def test_relative_path_references_require_access_and_match_revision(tmp_path):
     root = _vault(tmp_path)
     with VaultReader(_settings(root)) as reader:
@@ -145,6 +199,26 @@ def test_relative_path_references_require_access_and_match_revision(tmp_path):
             reader.read(note["note_id"], revision=other["revision"])
         with pytest.raises(NoteUnavailable):
             reader.get_path_reference("Private/Secret.md")
+        with pytest.raises(NoteUnavailable):
+            reader.get_path_reference("Engineering")
+
+
+def test_references_detect_changed_and_deleted_notes(tmp_path):
+    root = _vault(tmp_path)
+    with VaultReader(_settings(root)) as reader:
+        first, second = reader.search("retry", scope="title")["notes"]
+        # Without a revision, a reference still refuses a note that changed since search.
+        (root / first["path"]).write_text("edited after search", encoding="utf-8")
+        with pytest.raises(NoteChanged):
+            reader.get_reference(first["note_id"])
+        (root / second["path"]).unlink()
+        for revision in (None, second["revision"], first["revision"]):
+            with pytest.raises(NoteUnavailable):
+                reader.get_reference(second["note_id"], revision)
+        with pytest.raises(NoteUnavailable):
+            reader.get_linkable_reference(second["note_id"])
+        with pytest.raises(NoteUnavailable):
+            reader.read(second["note_id"])
 
 
 def test_verified_related_references_deduplicate_paths_not_only_handles(tmp_path):
@@ -167,12 +241,19 @@ def test_verified_related_references_deduplicate_paths_not_only_handles(tmp_path
         assert verified[0][0] == f"[[{first_a['path']}]]"
 
 
-def test_unknown_excluded_and_traversal_references_share_generic_error(tmp_path):
-    root = _vault(tmp_path)
-    with VaultReader(_settings(root)) as reader:
-        for note_id in ("unknown", "../Private/Secret.md", "note_fake"):
+@pytest.mark.parametrize(
+    "note_id",
+    ["unknown", "../Private/Secret.md", "note_fake", 5, None, "note_" + "0" * 80],
+)
+def test_unknown_excluded_and_traversal_references_share_generic_error(tmp_path, note_id):
+    with VaultReader(_settings(_vault(tmp_path))) as reader:
+        with pytest.raises(NoteUnavailable):
+            reader.get_reference(note_id)
+        with pytest.raises(NoteUnavailable):
+            reader.get_linkable_reference(note_id)
+        if isinstance(note_id, str):
             with pytest.raises(NoteUnavailable):
-                reader.get_reference(note_id)
+                reader.read(note_id)
 
 
 @pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="symlinks unavailable")
@@ -188,6 +269,9 @@ def test_symlinks_are_not_listed_or_followed(tmp_path):
         assert "Escape" not in output
         assert "Linked.md" not in output
         assert "Secret.md" not in output
+        for path in ("Linked.md", "Escape/Secret.md"):
+            with pytest.raises(NoteUnavailable):
+                reader.get_path_reference(path)
 
 
 def test_hard_link_aliases_are_not_exposed(tmp_path):
@@ -197,6 +281,17 @@ def test_hard_link_aliases_are_not_exposed(tmp_path):
         paths = {item["path"] for item in reader.search("retry")["notes"]}
         assert "Alias.md" not in paths
         assert "Engineering/Retry Policies.md" not in paths
+
+
+def test_notes_that_are_not_utf8_are_skipped_not_fatal(tmp_path):
+    root = _vault(tmp_path)
+    (root / "Engineering/Binary.md").write_bytes(b"retry \xff\xfe broken")
+    with VaultReader(_settings(root)) as reader:
+        paths = {item["path"] for item in reader.search("retry")["notes"]}
+        assert "Engineering/Binary.md" not in paths
+        assert "Engineering/Retry Policies.md" in paths
+        with pytest.raises(NoteUnavailable):
+            reader.get_path_reference("Engineering/Binary.md")
 
 
 def test_large_notes_are_read_in_bounded_revision_checked_pages(tmp_path):
@@ -328,24 +423,6 @@ def test_configuration_validates_paths_scope_and_draft_destination(tmp_path):
         VaultReader(load_vault_settings(config))
 
 
-@pytest.mark.parametrize(
-    "allowed,extra",
-    [
-        ('["*", "Engineering"]', ""),
-        ('["/tmp/private"]', ""),
-        ('["../outside"]', ""),
-        ('["*"]', "typo = true"),
-        ("[]", ""),
-    ],
-)
-def test_configuration_rejects_malformed_or_unsafe_settings(tmp_path, allowed, extra):
-    root = _vault(tmp_path)
-    config = tmp_path / "config.toml"
-    config.write_text(f'[vault]\nroot = "{root}"\nallowed = {allowed}\n{extra}\n', encoding="utf-8")
-    with pytest.raises(ValueError):
-        load_vault_settings(config)
-
-
 def test_note_read_requires_revision_for_continuation_and_bounds_result(tmp_path):
     root = _vault(tmp_path)
     (root / "Long.md").write_text("界" * 100_000, encoding="utf-8")
@@ -369,6 +446,30 @@ def test_note_read_requires_revision_for_continuation_and_bounds_result(tmp_path
             separators=(",", ":"),
         ).encode()
         assert len(encoded) <= 16 * 1024
+
+
+def test_search_pages_shrink_to_fit_the_response_bound_and_continue(tmp_path):
+    root = _vault(tmp_path)
+    folder = root / "Wide"
+    folder.mkdir()
+    names = [f"{'界' * 80}{index:02}.md" for index in range(20)]
+    for name in names:
+        (folder / name).write_text("marker " + "界" * 300, encoding="utf-8")
+    with VaultReader(_settings(root)) as reader:
+        paths = []
+        cursor = None
+        while True:
+            page = reader.search("marker", scope="content", limit=20, cursor=cursor)
+            envelope = json.dumps(
+                {"content": [{"type": "text", "text": json.dumps(page, ensure_ascii=False)}]},
+                ensure_ascii=False,
+            ).encode()
+            assert len(envelope) <= 16 * 1024
+            assert 0 < len(page["notes"]) < 20
+            paths.extend(note["path"] for note in page["notes"])
+            if (cursor := page["next_cursor"]) is None:
+                break
+        assert paths == [f"Wide/{name}" for name in names]
 
 
 def test_wildcard_may_use_not_yet_created_draft_folder(tmp_path):
@@ -474,12 +575,45 @@ def test_inaccessible_draft_destination_is_rejected(monkeypatch, tmp_path):
         VaultReader(_settings(root))
 
 
-def test_direct_settings_reject_path_traversal_and_wildcard_conflicts(tmp_path):
+def test_draft_destination_through_a_note_file_is_rejected(tmp_path):
     root = _vault(tmp_path)
-    for settings in (
-        VaultSettings(root, ("../outside",), ()),
-        VaultSettings(root, ("*", "Engineering"), ()),
-        VaultSettings(root, ("*",), (), "../outside"),
-    ):
-        with pytest.raises(ValueError):
-            VaultReader(settings)
+    settings = VaultSettings(root, ("*",), ("Private",), "Engineering/Retry Policies.md/Drafts")
+    with pytest.raises(ValueError, match="unsafe or non-directory component"):
+        VaultReader(settings)
+
+
+@pytest.mark.parametrize(
+    ("allowed", "excluded", "draft_folder", "error", "message"),
+    [
+        (("../outside",), (), "00 Inbox/AI Drafts", ValueError, "Unsafe allowed vault path"),
+        (("/abs",), (), "00 Inbox/AI Drafts", ValueError, "Unsafe allowed vault path"),
+        (("a\\b",), (), "00 Inbox/AI Drafts", ValueError, "Unsafe allowed vault path"),
+        (("a\x01",), (), "00 Inbox/AI Drafts", ValueError, "Unsafe allowed vault path"),
+        (("",), (), "00 Inbox/AI Drafts", ValueError, "Unsafe allowed vault path"),
+        (("*",), ("x/../y",), "00 Inbox/AI Drafts", ValueError, "Unsafe excluded vault path"),
+        (("*", "Engineering"), (), "00 Inbox/AI Drafts", ValueError, "'\\*' must be the only"),
+        ((), (), "00 Inbox/AI Drafts", ValueError, "At least one allowed"),
+        (["*"], (), "00 Inbox/AI Drafts", ValueError, "At least one allowed"),
+        (("*",), ["Private"], "00 Inbox/AI Drafts", TypeError, "must be a tuple"),
+        (("Engineering", "Engineering"), (), "00 Inbox/AI Drafts", ValueError, "duplicates"),
+        (("*",), ("Private", "Private"), "00 Inbox/AI Drafts", ValueError, "duplicates"),
+        (("*",), (), "../outside", ValueError, "Unsafe draft destination"),
+        (("*",), (), "/abs", ValueError, "Unsafe draft destination"),
+        (("*",), (), "", ValueError, "Unsafe draft destination"),
+        (("*",), (), "In\\box", ValueError, "Unsafe draft destination"),
+        (("*",), (), "In\nbox", ValueError, "Unsafe draft destination"),
+    ],
+)
+def test_direct_settings_reject_unsafe_paths_and_shapes(
+    tmp_path, allowed, excluded, draft_folder, error, message
+):
+    root = _vault(tmp_path)
+    with pytest.raises(error, match=message):
+        VaultReader(VaultSettings(root, allowed, excluded, draft_folder))
+
+
+@pytest.mark.parametrize("root", ["relative/vault", "missing"], ids=["relative", "missing"])
+def test_reader_root_must_be_an_existing_absolute_directory(tmp_path, root):
+    path = Path(root) if root == "relative/vault" else tmp_path / root
+    with pytest.raises(ValueError, match="existing absolute directory"):
+        VaultReader(VaultSettings(path, ("*",), ()))

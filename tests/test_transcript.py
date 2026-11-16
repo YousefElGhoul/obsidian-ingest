@@ -16,15 +16,9 @@ from obsidian_ingest.extractor.providers.youtube import (
     choose_caption_track,
     extract_video_id,
     get_youtube_content,
-    parse_captions,
-    parse_json3,
-    parse_vtt,
     sponsorblock,
 )
-from obsidian_ingest.extractor.transcript import (
-    TranscriptSegment,
-    print_transcript,
-)
+from obsidian_ingest.extractor.transcript import print_transcript
 
 
 @pytest.mark.parametrize(
@@ -45,118 +39,65 @@ def test_extract_video_id_rejects_non_youtube_url() -> None:
         extract_video_id("https://example.com/video")
 
 
-def test_parse_json3_keeps_useful_events_atomic() -> None:
-    captions = {
-        "events": [
-            {
-                "tStartMs": 1250,
-                "dDurationMs": 900,
-                "segs": [{"utf8": " Hello "}, {"utf8": "world"}],
-            },
-            {"tStartMs": 2150, "dDurationMs": 100, "segs": [{"utf8": "\n"}]},
-            {"tStartMs": 2250, "dDurationMs": 100, "segs": [{"utf8": "next", "tOffsetMs": 50}]},
-            {"segs": [{"utf8": "missing time"}]},
-            {"tStartMs": 3000, "dDurationMs": 100},
-        ]
-    }
-
-    assert parse_json3(captions) == (
-        TranscriptSegment(text="Hello world", start=1.25, duration=0.9),
-        TranscriptSegment(text="next", start=2.25, duration=0.1),
-    )
+def _track(name: str) -> list[dict[str, str]]:
+    return [{"ext": "json3", "url": f"https://example.com/{name}"}]
 
 
-def test_choose_caption_track_prefers_manual_english() -> None:
-    info = {
-        "subtitles": {"en-US": [{"ext": "vtt"}]},
-        "automatic_captions": {"en": [{"ext": "json3"}]},
-    }
-
-    assert choose_caption_track(info) == ("en-US", False, [{"ext": "vtt"}])
-
-
-def test_choose_caption_track_falls_back_to_automatic_english() -> None:
-    info = {"automatic_captions": {"en": [{"ext": "json3"}]}}
-
-    assert choose_caption_track(info) == ("en", True, [{"ext": "json3"}])
-
-
-@pytest.mark.parametrize("manual_language", ["en", "en-US"])
-def test_manual_english_still_precedes_original_automatic_captions(manual_language: str) -> None:
-    manual = [{"ext": "json3", "url": "https://example.com/manual"}]
-    info = {
-        "subtitles": {manual_language: manual},
-        "automatic_captions": {
-            "en-orig": [{"ext": "json3", "url": "https://example.com/original"}]
-        },
-    }
-    assert choose_caption_track(info) == (manual_language, False, manual)
-
-
-@pytest.mark.parametrize("original_language", ["en-orig", "en-US-orig", "en-GB-orig"])
-def test_original_english_asr_precedes_bare_english_and_normalizes_language(
-    original_language: str,
+@pytest.mark.parametrize(
+    ("subtitles", "automatic", "expected"),
+    [
+        ({"en-US": _track("manual")}, {"en": _track("auto")}, ("en-US", False, "manual")),
+        ({"en-US": _track("variant"), "en": _track("exact")}, {}, ("en", False, "exact")),
+        ({}, {"en": _track("auto")}, ("en", True, "auto")),
+        ({"en": _track("manual")}, {"en-orig": _track("original")}, ("en", False, "manual")),
+        ({"en-US": _track("manual")}, {"en-orig": _track("original")}, ("en-US", False, "manual")),
+        ({}, {"en": _track("translated"), "en-orig": _track("original")}, ("en", True, "original")),
+        (
+            {},
+            {"en": _track("translated"), "en-US-orig": _track("original")},
+            ("en-US", True, "original"),
+        ),
+        (
+            {},
+            {"en": _track("translated"), "en-GB-orig": _track("original")},
+            ("en-GB", True, "original"),
+        ),
+        (
+            {},
+            {"en-US-orig": _track("variant"), "en-orig": _track("original")},
+            ("en", True, "original"),
+        ),
+        (
+            {},
+            {"en-US-orig": _track("american"), "en-GB-orig": _track("british")},
+            ("en-GB", True, "british"),
+        ),
+        ({}, {"en-orig": _track("original")}, ("en", True, "original")),
+        ({}, {"ar-orig": _track("arabic"), "en": _track("english")}, ("en", True, "english")),
+        ({}, {"en-US": _track("english")}, ("en-US", True, "english")),
+    ],
+    ids=[
+        "manual-english-before-automatic",
+        "exact-manual-english-before-variant",
+        "automatic-english-fallback",
+        "manual-en-before-original-asr",
+        "manual-en-US-before-original-asr",
+        "original-asr-before-translated-en",
+        "original-en-US-asr-normalizes-language",
+        "original-en-GB-asr-normalizes-language",
+        "exact-original-before-original-variants",
+        "original-variants-in-stable-order",
+        "original-only",
+        "non-english-original-does-not-override-english",
+        "automatic-english-variant-without-original",
+    ],
+)
+def test_caption_track_preference_order(
+    subtitles: dict, automatic: dict, expected: tuple[str, bool, str]
 ) -> None:
-    original = [{"ext": "json3", "url": "https://example.com/original"}]
-    info = {
-        "automatic_captions": {
-            "en": [{"ext": "json3", "url": "https://example.com/translated"}],
-            original_language: original,
-        }
-    }
-    assert choose_caption_track(info) == (original_language.removesuffix("-orig"), True, original)
-
-
-def test_exact_original_english_precedes_original_variants() -> None:
-    original = [{"ext": "json3", "url": "https://example.com/original"}]
-    info = {
-        "automatic_captions": {
-            "en-US-orig": [{"ext": "json3", "url": "https://example.com/variant"}],
-            "en-orig": original,
-        }
-    }
-    assert choose_caption_track(info) == ("en", True, original)
-
-
-def test_original_english_variants_are_selected_in_stable_order() -> None:
-    british = [{"ext": "json3", "url": "https://example.com/british"}]
-    info = {
-        "automatic_captions": {
-            "en-US-orig": [{"ext": "json3", "url": "https://example.com/american"}],
-            "en-GB-orig": british,
-        }
-    }
-    assert choose_caption_track(info) == ("en-GB", True, british)
-
-
-def test_original_english_only_is_selected_without_bare_english() -> None:
-    original = [{"ext": "json3", "url": "https://example.com/original"}]
-    assert choose_caption_track({"automatic_captions": {"en-orig": original}}) == (
-        "en",
-        True,
-        original,
-    )
-
-
-def test_non_english_original_does_not_override_english_fallback() -> None:
-    english = [{"ext": "json3", "url": "https://example.com/english"}]
-    assert choose_caption_track(
-        {
-            "automatic_captions": {
-                "ar-orig": [{"ext": "json3", "url": "https://example.com/arabic"}],
-                "en": english,
-            }
-        }
-    ) == ("en", True, english)
-
-
-def test_automatic_english_variant_fallback_without_original() -> None:
-    english = [{"ext": "json3", "url": "https://example.com/english"}]
-    assert choose_caption_track({"automatic_captions": {"en-US": english}}) == (
-        "en-US",
-        True,
-        english,
-    )
+    language, generated, name = expected
+    info = {"subtitles": subtitles, "automatic_captions": automatic}
+    assert choose_caption_track(info) == (language, generated, _track(name))
 
 
 def test_no_english_original_or_fallback_raises() -> None:
@@ -175,106 +116,6 @@ def test_unsupported_caption_formats_fail_explicitly() -> None:
         choose_caption_format([{"ext": "ttml"}, {"ext": "srv1"}])
     with pytest.raises(CaptionError, match="offered: none"):
         choose_caption_format([])
-
-
-def test_parse_vtt_keeps_cues_multiline_overlapping_and_unicode() -> None:
-    text = (
-        "﻿WEBVTT Kind: captions\nLanguage: en\n\n"
-        "STYLE\n::cue { color: lime }\n\n"
-        "NOTE a comment\nthat spans lines\n\n"
-        "intro\n00:00:01.250 --> 00:00:04.000 align:start position:0%\n"
-        "<v Speaker>Café &amp; naïve</v>\n<c.loud>second</c> line  \n\n"
-        "00:02.000 --> 00:03.500\nOverlapping 日本語 🙂\n\n"
-        "00:00:05.000 --> 00:00:06.000\n\n"
-        "1:00:00.000 --> 1:00:00.010\n<00:00:01.000><c> rolling</c>\n\n"
-    )
-    assert parse_vtt(text) == (
-        TranscriptSegment("Café & naïve\nsecond line", 1.25, 2.75),
-        TranscriptSegment("Overlapping 日本語 🙂", 2.0, 1.5),
-        TranscriptSegment("rolling", 3600.0, 0.01),
-    )
-
-
-def test_parse_vtt_accepts_crlf() -> None:
-    assert parse_vtt("WEBVTT\r\n\r\n00:01.000 --> 00:02.000\r\nHi\r\n") == (
-        TranscriptSegment("Hi", 1.0, 1.0),
-    )
-
-
-@pytest.mark.parametrize(
-    ("text", "message"),
-    [
-        ("00:01.000 --> 00:02.000\nNo header", "missing WEBVTT header"),
-        ("WEBVTTX\n\n00:01.000 --> 00:02.000\nHi", "missing WEBVTT header"),
-        ("WEBVTT\n\n00:01 --> 00:02\nBad timing", "Malformed WebVTT cue timing"),
-        ("WEBVTT\n\nidentifier only", "Malformed WebVTT cue timing"),
-        ("WEBVTT\n\n00:01:61.000 --> 00:02.000\nHi", "Malformed WebVTT cue timing"),
-        ("WEBVTT\n\n00:03.000 --> 00:02.000\nBackwards", "ends before it starts"),
-        (
-            "WEBVTT\n\n00:03.000 --> 00:04.000\nB\n\n00:01.000 --> 00:02.000\nA",
-            "not in start-time order",
-        ),
-        # A cue without a blank line after the header must not be dropped silently.
-        (
-            "WEBVTT\n00:00.000 --> 00:01.000\nFIRST\n\n00:40.000 --> 00:41.000\nSECOND\n",
-            "cue timing inside the header block",
-        ),
-        (
-            "WEBVTT Kind: captions\nLanguage: en\n00:00.000 --> 00:01.000\nFIRST",
-            "cue timing inside the header block",
-        ),
-    ],
-)
-def test_malformed_vtt_fails_explicitly(text: str, message: str) -> None:
-    with pytest.raises(CaptionError, match=message):
-        parse_vtt(text)
-
-
-@pytest.mark.parametrize(
-    ("data", "caption_format", "message"),
-    [
-        (b"", CaptionFormat.JSON3, "Empty json3"),
-        (b"  \n", CaptionFormat.VTT, "Empty vtt"),
-        (b"\xff\xfe", CaptionFormat.JSON3, "not UTF-8"),
-        (b"{not json", CaptionFormat.JSON3, "Malformed JSON3"),
-        (b"[]", CaptionFormat.JSON3, "must be an object"),
-        (b'{"events": {}}', CaptionFormat.JSON3, "events must be a list"),
-        (b'{"events": [1]}', CaptionFormat.JSON3, "event 0 must be an object"),
-        (
-            b'{"events": [{"tStartMs": "1", "dDurationMs": 1, "segs": [{"utf8": "x"}]}]}',
-            CaptionFormat.JSON3,
-            "non-numeric tStartMs",
-        ),
-        (
-            b'{"events": [{"tStartMs": -1, "dDurationMs": 1, "segs": [{"utf8": "x"}]}]}',
-            CaptionFormat.JSON3,
-            "invalid tStartMs",
-        ),
-        (
-            b'{"events": [{"tStartMs": 1, "dDurationMs": 1, "segs": [{"utf8": 5}]}]}',
-            CaptionFormat.JSON3,
-            "non-text",
-        ),
-        (b'{"events": []}', CaptionFormat.JSON3, "no timed caption text"),
-        (b'{"wireMagic": "pb3"}', CaptionFormat.JSON3, "no timed caption text"),
-        (b"WEBVTT\n\nNOTE only\n", CaptionFormat.VTT, "no timed caption text"),
-    ],
-)
-def test_unusable_caption_responses_fail_explicitly(
-    data: bytes, caption_format: CaptionFormat, message: str
-) -> None:
-    with pytest.raises(CaptionError, match=message):
-        parse_captions(data, caption_format)
-
-
-def test_parse_captions_dispatches_by_format() -> None:
-    json3 = json.dumps(
-        {"events": [{"tStartMs": 0, "dDurationMs": 5, "segs": [{"utf8": "Ünïcode"}]}]},
-        ensure_ascii=False,
-    ).encode()
-    assert parse_captions(json3, CaptionFormat.JSON3) == (TranscriptSegment("Ünïcode", 0, 0.005),)
-    vtt = b"WEBVTT\n\n00:00.000 --> 00:00.005\n\xc3\x9cn\xc3\xafcode\n"
-    assert parse_captions(vtt, CaptionFormat.VTT) == (TranscriptSegment("Ünïcode", 0, 0.005),)
 
 
 def _content(monkeypatch: pytest.MonkeyPatch, info: dict, payload: object) -> MagicMock:
@@ -364,45 +205,33 @@ def test_selected_format_without_url_fails(monkeypatch: pytest.MonkeyPatch) -> N
         get_youtube_content("https://youtu.be/abc123")
 
 
-def test_detect_youtube() -> None:
-    assert detect_provider("https://www.youtube.com/watch?v=abc") == Provider.YOUTUBE
-    assert detect_provider("https://youtu.be/abc") == Provider.YOUTUBE
-
-
-def test_detect_instagram() -> None:
-    assert detect_provider("https://www.instagram.com/reel/abc/") == Provider.INSTAGRAM
-
-
-def test_detect_tiktok() -> None:
-    assert detect_provider("https://www.tiktok.com/@user/video/123") == Provider.TIKTOK
-
-
-def test_rejects_unknown_provider() -> None:
-    with pytest.raises(ValueError):
-        detect_provider("https://example.com/video")
+@pytest.mark.parametrize(
+    ("url", "provider"),
+    [
+        ("https://www.youtube.com/watch?v=abc", Provider.YOUTUBE),
+        ("https://youtu.be/abc", Provider.YOUTUBE),
+        ("https://www.instagram.com/reel/abc/", Provider.INSTAGRAM),
+        ("https://www.tiktok.com/@user/video/123", Provider.TIKTOK),
+    ],
+)
+def test_detect_provider_by_host(url: str, provider: Provider) -> None:
+    assert detect_provider(url) == provider
 
 
 @pytest.mark.parametrize(
     "url",
     [
+        "https://example.com/video",
         "https://youtube.com.evil.example/watch?v=abc",
         "https://notyoutube.com/watch?v=abc",
         "https://example.com/youtube.com/watch?v=abc",
         "https://youtube.com@evil.example/watch?v=abc",
     ],
+    ids=["unknown", "suffix-spoof", "prefix-spoof", "path-spoof", "userinfo-spoof"],
 )
-def test_rejects_spoofed_provider(url: str) -> None:
+def test_unknown_or_spoofed_provider_is_rejected(url: str) -> None:
     with pytest.raises(ValueError):
         detect_provider(url)
-
-
-def test_choose_caption_track_prefers_exact_english() -> None:
-    formats = [{"ext": "json3"}]
-    assert choose_caption_track({"subtitles": {"en-US": [{"ext": "vtt"}], "en": formats}}) == (
-        "en",
-        False,
-        formats,
-    )
 
 
 def test_print_transcript_with_mocked_extraction(

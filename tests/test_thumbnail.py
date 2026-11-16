@@ -2,8 +2,6 @@ import asyncio
 import base64
 import io
 import json
-import struct
-import zlib
 from pathlib import Path
 
 import pytest
@@ -11,10 +9,8 @@ from mcp.client import Client
 from yt_dlp.networking import Response
 from yt_dlp.networking.exceptions import HTTPError, TransportError
 
-from obsidian_ingest import cli, mcp_server, source_cache
+from obsidian_ingest import mcp_server, source_cache
 from obsidian_ingest.drafts import DraftWriterSettings
-from obsidian_ingest.extractor.metadata import ExclusionLookup, ExclusionStatus
-from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 from obsidian_ingest.extractor.providers.youtube import thumbnail as youtube_thumbnail
 from obsidian_ingest.extractor.providers.youtube.thumbnail import (
     MAX_THUMBNAIL_BYTES,
@@ -22,58 +18,9 @@ from obsidian_ingest.extractor.providers.youtube.thumbnail import (
     fetch_youtube_thumbnail,
     thumbnail_urls,
 )
-from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
-from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.images import identify_image
-from obsidian_ingest.source import Source
 
 URL = "https://www.youtube.com/watch?v=video-123"
-
-
-def _png(width: int, height: int) -> bytes:
-    def chunk(kind: bytes, body: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
-        )
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
-
-
-def _jpeg(width: int, height: int) -> bytes:
-    app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
-    sof0 = b"\xff\xc0" + struct.pack(">HBHHB", 11, 8, height, width, 1) + b"\x01\x11\x00"
-    return b"\xff\xd8" + app0 + sof0 + b"\xff\xd9"
-
-
-def _webp(width: int, height: int) -> bytes:
-    body = b"VP8X" + struct.pack("<I", 10) + b"\x00\x00\x00\x00"
-    body += (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little")
-    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
-
-
-@pytest.mark.parametrize(
-    ("data", "mime_type", "extension"),
-    [
-        (_png(480, 360), "image/png", "png"),
-        (_jpeg(480, 360), "image/jpeg", "jpg"),
-        (_webp(480, 360), "image/webp", "webp"),
-    ],
-)
-def test_images_are_identified_by_their_bytes(data, mime_type, extension):
-    info = identify_image(data)
-    assert (info.mime_type, info.extension, info.width, info.height) == (
-        mime_type,
-        extension,
-        480,
-        360,
-    )
-
-
-@pytest.mark.parametrize("data", [b"", b"<html>not found</html>", b"\xff\xd8\xff\xd9", _png(0, 10)])
-def test_non_images_and_sizeless_images_are_rejected(data):
-    with pytest.raises(ValueError):
-        identify_image(data)
 
 
 def test_thumbnail_urls_are_built_from_the_video_id_on_the_fixed_host():
@@ -119,9 +66,9 @@ def _install(monkeypatch, replies):
     return downloader
 
 
-def test_fetch_falls_back_when_the_first_size_is_missing(monkeypatch):
+def test_fetch_falls_back_when_the_first_size_is_missing(monkeypatch, make_image):
     hq, mq = thumbnail_urls("vid")
-    downloader = _install(monkeypatch, {hq: 404, mq: _jpeg(320, 180)})
+    downloader = _install(monkeypatch, {hq: 404, mq: make_image("jpeg", 320, 180)})
     data, url = fetch_youtube_thumbnail("vid")
     assert (url, identify_image(data).width) == (mq, 320)
     assert downloader.requested == [hq, mq]
@@ -143,57 +90,19 @@ def test_fetch_failures_are_explicit(monkeypatch, reply, message):
         fetch_youtube_thumbnail("vid")
 
 
-def _sample_source() -> Source:
-    metadata = normalize_youtube_metadata({"id": "video-123", "title": "T", "duration": 60}, URL)
-    transcript = Transcript("video-123", "en", "en", False, (TranscriptSegment("Hi", 0, 1),))
-    lookup = ExclusionLookup((), ExclusionStatus.COMPLETE, "SponsorBlock", ("sponsor",))
-    return Source(
-        metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
-    )
-
-
-@pytest.fixture
-def fake_extraction(monkeypatch):
-    source = _sample_source()
-    monkeypatch.setattr(source_cache, "ingest_source", lambda url, exclude_sponsors=True: source)
-
-
-def _run(monkeypatch, capsys, *args):
-    monkeypatch.setattr("sys.argv", ["obsidian-ingest", *args])
-    code = 0
-    try:
-        cli.main()
-    except SystemExit as error:
-        code = error.code
-    captured = capsys.readouterr()
-    output = json.loads(captured.out) if captured.out.strip() else None
-    error = json.loads(captured.err)["error"] if captured.err.strip() else None
-    return code, output, error
-
-
-def _ok(monkeypatch, capsys, *args):
-    code, output, error = _run(monkeypatch, capsys, *args)
-    assert (code, error) == (0, None)
-    return output
-
-
-def _fail(monkeypatch, capsys, *args):
-    code, output, error = _run(monkeypatch, capsys, *args)
-    assert code != 0 and output is None and error is not None
-    return error
-
-
-def test_cli_and_mcp_return_the_same_thumbnail(monkeypatch, capsys, tmp_path, fake_extraction):
-    image = _png(480, 360)
+def test_cli_and_mcp_return_the_same_thumbnail(
+    monkeypatch, tmp_path, fake_extraction, cli_runner, make_image
+):
+    image = make_image("png", 480, 360)
     monkeypatch.setattr(
         "obsidian_ingest.responses.fetch_youtube_thumbnail",
         lambda video_id: (image, f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
     )
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
 
-    saved = _ok(monkeypatch, capsys, "get-thumbnail", source_id, *db)
+    saved = cli_runner.ok("get-thumbnail", source_id, *db)
     path = Path(saved.pop("path"))
     assert path == tmp_path / "xdg-cache/obsidian-ingest/thumbnails/video-123.png"
     assert path.read_bytes() == image
@@ -204,12 +113,10 @@ def test_cli_and_mcp_return_the_same_thumbnail(monkeypatch, capsys, tmp_path, fa
         "url": "https://i.ytimg.com/vi/video-123/hqdefault.jpg",
     }
     # A second call replaces the file rather than accumulating copies.
-    _ok(monkeypatch, capsys, "get-thumbnail", source_id, *db)
+    cli_runner.ok("get-thumbnail", source_id, *db)
     assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
 
-    assert _fail(monkeypatch, capsys, "get-thumbnail", "missing", *db)["code"] == (
-        "SOURCE_NOT_FOUND"
-    )
+    assert cli_runner.fail("get-thumbnail", "missing", *db)["code"] == "SOURCE_NOT_FOUND"
 
     server = mcp_server.create_server(
         DraftWriterSettings(tmp_path / "vault"), cache_db=tmp_path / "cache.db"
@@ -227,21 +134,21 @@ def test_cli_and_mcp_return_the_same_thumbnail(monkeypatch, capsys, tmp_path, fa
     asyncio.run(exercise())
 
 
-def test_unavailable_thumbnail_is_a_coded_error(monkeypatch, capsys, tmp_path, fake_extraction):
+def test_unavailable_thumbnail_is_a_coded_error(monkeypatch, tmp_path, fake_extraction, cli_runner):
     def unavailable(video_id):
         raise ThumbnailError("this video has no thumbnail")
 
     monkeypatch.setattr("obsidian_ingest.responses.fetch_youtube_thumbnail", unavailable)
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
-    error = _fail(monkeypatch, capsys, "get-thumbnail", source_id, *db)
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
+    error = cli_runner.fail("get-thumbnail", source_id, *db)
     assert error == {"code": "THUMBNAIL_UNAVAILABLE", "message": "this video has no thumbnail"}
 
     monkeypatch.setattr(
         "obsidian_ingest.responses.fetch_youtube_thumbnail",
         lambda video_id: (b"<html>gone</html>", "https://i.ytimg.com/vi/x/hqdefault.jpg"),
     )
-    error = _fail(monkeypatch, capsys, "get-thumbnail", source_id, *db)
+    error = cli_runner.fail("get-thumbnail", source_id, *db)
     assert error["code"] == "THUMBNAIL_UNAVAILABLE"
 
 

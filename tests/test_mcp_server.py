@@ -13,57 +13,16 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client import Client
 from mcp.client.stdio import stdio_client
 
-from obsidian_ingest import cli, mcp_server, responses, source_cache
+from obsidian_ingest import mcp_server, responses, source_cache
 from obsidian_ingest.config import VaultSettings
 from obsidian_ingest.drafts import DraftWriterSettings
 from obsidian_ingest.extractor import Provider
-from obsidian_ingest.extractor.metadata import (
-    ExcludedRange,
-    ExclusionLookup,
-    ExclusionStatus,
-)
-from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
-from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+from obsidian_ingest.extractor.metadata import ExclusionLookup, ExclusionStatus
+from obsidian_ingest.extractor.transcript import TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.responses import parse_timestamps
-from obsidian_ingest.source import Source
 
 URL = "https://www.youtube.com/watch?v=video-123"
-
-
-def _sample_source() -> Source:
-    metadata = normalize_youtube_metadata(
-        {
-            "id": "video-123",
-            "title": "A useful explanation",
-            "description": "Context for the topic",
-            "channel": "A creator",
-            "duration": 600,
-            "chapters": [{"title": "Main idea", "start_time": 0, "end_time": 20}],
-        },
-        URL,
-    )
-    transcript = Transcript(
-        "video-123",
-        "en",
-        "en",
-        False,
-        (
-            TranscriptSegment("First atom", 0, 1),
-            TranscriptSegment("Second atom at same time", 1, 0.5),
-            TranscriptSegment("Third atom", 1, 1),
-            TranscriptSegment("Sponsor atom", 2, 1),
-        ),
-    )
-    lookup = ExclusionLookup(
-        (ExcludedRange(2, 3, "sponsor", "SponsorBlock"),),
-        ExclusionStatus.COMPLETE,
-        "SponsorBlock",
-        ("sponsor",),
-    )
-    return Source(
-        metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
-    )
 
 
 async def _read_token(client, source_id: str) -> str:
@@ -90,10 +49,9 @@ def _tool_data(result) -> dict:
 
 
 def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, sample_source
 ) -> None:
-    source = _sample_source()
-    ingest = MagicMock(return_value=source)
+    ingest = MagicMock(return_value=sample_source)
     monkeypatch.setattr(source_cache, "ingest_source", ingest)
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -348,8 +306,8 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
     ingest.assert_called_once_with(URL, exclude_sponsors=True)
 
 
-def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch) -> None:
-    source = _sample_source()
+def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch, sample_source) -> None:
+    source = sample_source
     monkeypatch.setattr(
         source_cache,
         "ingest_source",
@@ -407,10 +365,12 @@ def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch) -> 
     extraction.assert_not_called()
 
 
-def test_long_transcript_pages_are_bounded_and_preserve_every_atom(tmp_path, monkeypatch):
+def test_long_transcript_pages_are_bounded_and_preserve_every_atom(
+    tmp_path, monkeypatch, sample_source
+):
     from dataclasses import replace
 
-    source = _sample_source()
+    source = sample_source
     segments = tuple(
         TranscriptSegment(f"Atom {index} – multilingual 文本", float(index), 0.25)
         for index in range(180)
@@ -486,8 +446,8 @@ def test_single_oversized_atom_fails_without_truncation():
         responses.segment_page(((7, segment),), 0, 40)
 
 
-def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypatch):
-    source = _sample_source()
+def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypatch, sample_source):
+    source = sample_source
     database = tmp_path / "persistent-cache.db"
     cache = source_cache.SourceCache(database)
     monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
@@ -553,10 +513,12 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
     asyncio.run(run_server())
 
 
-def test_mcp_cache_refresh_filter_variants_and_corruption_errors(tmp_path, monkeypatch):
+def test_mcp_cache_refresh_filter_variants_and_corruption_errors(
+    tmp_path, monkeypatch, sample_source
+):
     from dataclasses import replace
 
-    source = _sample_source()
+    source = sample_source
 
     def extract(url, exclude_sponsors=True):
         if exclude_sponsors:
@@ -677,8 +639,10 @@ def test_scoped_vault_tools_are_only_exposed_with_trusted_settings(tmp_path):
     asyncio.run(exercise())
 
 
-def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_path, monkeypatch):
-    source = _sample_source()
+def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
+    tmp_path, monkeypatch, sample_source
+):
+    source = sample_source
     # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
     monkeypatch.setattr(
         "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
@@ -873,22 +837,6 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(tmp_
     asyncio.run(exercise())
 
 
-def _cli_json(monkeypatch, capsys, *args: str):
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
-    cli.main()
-    return json.loads(capsys.readouterr().out)
-
-
-def _cli_error(monkeypatch, capsys, *args: str) -> dict:
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
-    with pytest.raises(SystemExit) as exit_info:
-        cli.main()
-    assert exit_info.value.code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    return json.loads(captured.err)["error"]
-
-
 def _mcp_error_text(result) -> str:
     """Strip the MCP framework's envelope prefix to get the shared `CODE: message` text."""
     assert result.is_error
@@ -927,13 +875,11 @@ def vtt_only_youtube(monkeypatch):
     return ydl
 
 
-def test_cli_and_mcp_expose_identical_vtt_diagnostics(
-    tmp_path, monkeypatch, capsys, vtt_only_youtube
-):
+def test_cli_and_mcp_expose_identical_vtt_diagnostics(tmp_path, vtt_only_youtube, cli_runner):
     database = tmp_path / "cache.db"
     vault = tmp_path / "vault"
     vault.mkdir()
-    cli_ingest = _cli_json(monkeypatch, capsys, "ingest-source", URL, "--cache-db", str(database))
+    cli_ingest = cli_runner.ok("ingest-source", URL, "--cache-db", str(database))
     diagnostics = cli_ingest["overview"]["diagnostics"]
     payload = vtt_only_youtube.urlopen.return_value.read.return_value
     assert diagnostics["caption"] == {
@@ -956,9 +902,7 @@ def test_cli_and_mcp_expose_identical_vtt_diagnostics(
     assert diagnostics["timing"]["provider_duration_seconds"] == 300.0
     assert diagnostics["timing"]["gaps"] == [{"start": 10.0, "end": 300.0, "position": "trailing"}]
     source_id = cli_ingest["source_id"]
-    cli_overview = _cli_json(
-        monkeypatch, capsys, "get-source-overview", source_id, "--cache-db", str(database)
-    )
+    cli_overview = cli_runner.ok("get-source-overview", source_id, "--cache-db", str(database))
     assert cli_overview["diagnostics"]["acquisition"]["reused_from_cache"] is None
     vtt_only_youtube.extract_info.side_effect = AssertionError("reuse must not re-acquire")
     server = mcp_server.create_server(DraftWriterSettings(vault), cache_db=database)
@@ -977,7 +921,7 @@ def test_cli_and_mcp_expose_identical_vtt_diagnostics(
 
 
 def test_ingest_and_cache_errors_have_the_same_meaning_in_cli_and_mcp(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, cli_runner
 ):
     from obsidian_ingest.extractor.acquisition import CaptionError
 
@@ -1017,7 +961,7 @@ def test_ingest_and_cache_errors_have_the_same_meaning_in_cli_and_mcp(
             {"source_id": "abc"},
         ),
     ]
-    cli_errors = [_cli_error(monkeypatch, capsys, *args) for args, *_ in cases]
+    cli_errors = [cli_runner.fail(*args, exit_code=1) for args, *_ in cases]
     assert [error["code"] for error in cli_errors] == [
         "INGEST_FAILED",
         "INVALID_ARGUMENT",
@@ -1042,9 +986,9 @@ def test_ingest_and_cache_errors_have_the_same_meaning_in_cli_and_mcp(
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
-def test_cli_and_mcp_return_identical_results_except_identifiers(tmp_path, monkeypatch, capsys):
-    source = _sample_source()
-    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
+def test_cli_and_mcp_return_identical_results_except_identifiers(
+    tmp_path, fake_extraction, cli_runner
+):
     vault = tmp_path / "vault"
     (vault / "Engineering").mkdir(parents=True)
     (vault / "Private").mkdir()
@@ -1062,22 +1006,16 @@ def test_cli_and_mcp_return_identical_results_except_identifiers(tmp_path, monke
         DraftWriterSettings(vault.resolve()), cache_db=database, vault_settings=vault_settings
     )
     cache_args = ("--cache-db", str(database))
-    cli_ingest = _cli_json(monkeypatch, capsys, "ingest-source", URL, *cache_args)
+    cli_ingest = cli_runner.ok("ingest-source", URL, *cache_args)
     source_id = cli_ingest["source_id"]
     cli_results = {
-        "overview": _cli_json(monkeypatch, capsys, "get-source-overview", source_id, *cache_args),
-        "chapters": _cli_json(monkeypatch, capsys, "list-chapters", source_id, *cache_args),
-        "exclusions": _cli_json(monkeypatch, capsys, "list-exclusions", source_id, *cache_args),
-        "transcript": _cli_json(
-            monkeypatch, capsys, "read-transcript", source_id, "--limit", "2", *cache_args
-        ),
-        "chapter": _cli_json(
-            monkeypatch, capsys, "read-chapter", source_id, "0", "--offset", "1", *cache_args
-        ),
+        "overview": cli_runner.ok("get-source-overview", source_id, *cache_args),
+        "chapters": cli_runner.ok("list-chapters", source_id, *cache_args),
+        "exclusions": cli_runner.ok("list-exclusions", source_id, *cache_args),
+        "transcript": cli_runner.ok("read-transcript", source_id, "--limit", "2", *cache_args),
+        "chapter": cli_runner.ok("read-chapter", source_id, "0", "--offset", "1", *cache_args),
     }
-    cli_search = _cli_json(
-        monkeypatch, capsys, "search-vault", "retry", "--limit", "2", "--config", str(config)
-    )
+    cli_search = cli_runner.ok("search-vault", "retry", "--limit", "2", "--config", str(config))
 
     async def exercise() -> None:
         async with Client(server) as client:
@@ -1179,10 +1117,8 @@ def test_mcp_search_cursor_survives_restart_but_not_scope_change(tmp_path):
     assert "INVALID_CURSOR: " in rejected.content[0].text
 
 
-def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, monkeypatch):
+def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, fake_extraction):
     """Lenient SDK coercion must not accept what the shared layer and the CLI reject."""
-    source = _sample_source()
-    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
     vault = tmp_path / "vault"
     (vault / "Notes").mkdir(parents=True)
     (vault / "00 Inbox/AI Drafts").mkdir(parents=True)

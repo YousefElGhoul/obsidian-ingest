@@ -5,20 +5,17 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from obsidian_ingest import cli, source_cache
-from obsidian_ingest.config import default_config_path, load_vault_settings
-from obsidian_ingest.extractor.metadata import ExcludedRange, ExclusionLookup, ExclusionStatus
+from obsidian_ingest import cli
+from obsidian_ingest.config import load_vault_settings
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
-from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
-from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.responses import parse_timestamps
-from obsidian_ingest.source import Source
 from obsidian_ingest.vault import VaultReader
+
+URL = "https://www.youtube.com/watch?v=video-123"
 
 
 def test_transcript_subcommand_calls_existing_printer(monkeypatch, capsys) -> None:
@@ -33,17 +30,15 @@ def test_transcript_subcommand_calls_existing_printer(monkeypatch, capsys) -> No
     assert capsys.readouterr().out == ""
 
 
-def test_metadata_subcommand_prints_normalized_json(monkeypatch, capsys) -> None:
+def test_metadata_subcommand_prints_normalized_json(monkeypatch, cli_runner) -> None:
     url = "https://youtu.be/abc123"
     metadata = normalize_youtube_metadata({"id": "abc123", "title": "A video", "timestamp": 0}, url)
     fetch_metadata = MagicMock(return_value=metadata)
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "metadata", url])
     monkeypatch.setattr(cli, "fetch_metadata", fetch_metadata)
 
-    cli.main()
+    output = cli_runner.ok("metadata", url)
 
     fetch_metadata.assert_called_once_with(url)
-    output = json.loads(capsys.readouterr().out)
     assert output["source_id"] == "abc123"
     assert output["title"] == "A video"
     assert output["published_at"] == "1970-01-01T00:00:00+00:00"
@@ -68,56 +63,107 @@ def test_inspect_subcommand_formats_ingested_source(monkeypatch, capsys) -> None
     assert capsys.readouterr().out == "Sponsor filtering: failed\n"
 
 
-def test_mcp_subcommand_uses_trusted_vault_and_draft_folder(monkeypatch) -> None:
+def test_non_tool_argument_errors_use_plain_argparse_usage(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "metadata"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("usage: ") and '"error"' not in err
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            ["--vault", "/tmp/test-vault", "--draft-folder", "Inbox/Drafts"],
+            ((Path("/tmp/test-vault"), "Inbox/Drafts", None), None),
+        ),
+        (["--vault", "/tmp/vault"], ((Path("/tmp/vault"), None, None), None)),
+        (
+            ["--vault", "/tmp/vault", "--cache-db", "/tmp/cache.sqlite3"],
+            ((Path("/tmp/vault"), None, Path("/tmp/cache.sqlite3")), None),
+        ),
+        (["--config", "/tmp/vault.toml"], ((None, None, None), Path("/tmp/vault.toml"))),
+    ],
+    ids=["vault-and-draft-folder", "default-draft-folder", "cache-override", "trusted-config"],
+)
+def test_mcp_subcommand_forwards_its_options(monkeypatch, arguments, expected) -> None:
     run_mcp = MagicMock()
-    vault = Path("/tmp/test-vault")
+    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", *arguments])
+    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
+
+    cli.main()
+
+    positional, config_path = expected
+    run_mcp.assert_called_once_with(*positional, config_path=config_path)
+
+
+@pytest.fixture
+def fake_server(monkeypatch) -> MagicMock:
+    """Capture create_server arguments and stand in for running the stdio server."""
+    ran = []
+
+    class Server:
+        async def run_stdio_async(self) -> None:
+            ran.append(True)
+
+    create = MagicMock(return_value=Server())
+    create.ran = ran
+    monkeypatch.setattr("obsidian_ingest.mcp_server.create_server", create)
+    return create
+
+
+def test_mcp_with_a_vault_runs_a_server_without_vault_reads(
+    monkeypatch, tmp_path, fake_server
+) -> None:
+    database = tmp_path / "cache.db"
     monkeypatch.setattr(
         sys,
         "argv",
-        ["obsidian-ingest", "mcp", "--vault", str(vault), "--draft-folder", "Inbox/Drafts"],
+        ["obsidian-ingest", "mcp", "--vault", str(tmp_path), "--cache-db", str(database)],
     )
-    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
-
     cli.main()
-
-    run_mcp.assert_called_once_with(vault, "Inbox/Drafts", None, config_path=None)
-
-
-def test_mcp_subcommand_defaults_draft_folder(monkeypatch) -> None:
-    run_mcp = MagicMock()
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", "--vault", "/tmp/vault"])
-    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
-
-    cli.main()
-
-    run_mcp.assert_called_once_with(Path("/tmp/vault"), None, None, config_path=None)
+    (settings,), options = fake_server.call_args
+    assert (settings.vault_path, settings.draft_folder) == (tmp_path, "00 Inbox/AI Drafts")
+    assert options == {"cache_db": database}
+    assert fake_server.ran == [True]
 
 
-def test_mcp_subcommand_passes_cache_override(monkeypatch, tmp_path) -> None:
-    run_mcp = MagicMock()
-    database = tmp_path / "cache.sqlite3"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["obsidian-ingest", "mcp", "--vault", "/tmp/vault", "--cache-db", str(database)],
+def test_mcp_with_a_config_exposes_its_vault_settings(tmp_path, fake_server) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = tmp_path / "settings.toml"
+    config.write_text(
+        f'[vault]\nroot = "{vault}"\nallowed = ["*"]\ndraft_folder = "Inbox/AI"\n',
+        encoding="utf-8",
     )
-    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
-    cli.main()
-    run_mcp.assert_called_once_with(Path("/tmp/vault"), None, database, config_path=None)
+    cli._run_mcp(None, None, config_path=config)
+    (settings,), options = fake_server.call_args
+    assert (settings.vault_path, settings.draft_folder) == (vault.resolve(), "Inbox/AI")
+    assert options["vault_settings"] == load_vault_settings(config)
+    assert fake_server.ran == [True]
 
 
-def test_mcp_config_argument_forwards_trusted_config(monkeypatch, tmp_path) -> None:
-    run_mcp = MagicMock()
-    config = tmp_path / "vault.toml"
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", "mcp", "--config", str(config)])
-    monkeypatch.setattr(cli, "_run_mcp", run_mcp)
-    cli.main()
-    run_mcp.assert_called_once_with(None, None, None, config_path=config)
-
-
-def test_default_config_is_resolved_from_the_installed_skill() -> None:
-    skill = Path(__file__).resolve().parents[1] / "skills/obsidian-ingest"
-    assert default_config_path() == skill / "config/settings.toml"
+@pytest.mark.parametrize(
+    ("vault", "draft_folder", "config", "message"),
+    [
+        (None, "Drafts", "present", "--config cannot be combined"),
+        (None, None, "missing", "Trusted config not found"),
+        ("missing", None, None, "Vault path must be an existing directory"),
+    ],
+    ids=["config-with-draft-folder", "missing-config", "missing-vault"],
+)
+def test_mcp_refuses_unusable_vault_options_before_starting(
+    tmp_path, fake_server, vault, draft_folder, config, message
+) -> None:
+    present = tmp_path / "settings.toml"
+    present.write_text("[vault]\n", encoding="utf-8")
+    config_path = {"present": present, "missing": tmp_path / "missing.toml", None: None}[config]
+    vault_path = tmp_path / vault if vault else None
+    with pytest.raises(ValueError, match=message):
+        cli._run_mcp(vault_path, draft_folder, config_path=config_path)
+    fake_server.assert_not_called()
 
 
 def test_setup_requires_explicit_scope_and_never_overwrites_settings(tmp_path) -> None:
@@ -163,9 +209,27 @@ def test_setup_flags_create_settings_without_prompting(tmp_path, monkeypatch, ca
     assert "Saved trusted settings" in capsys.readouterr().out
 
 
-def test_cli_vault_search_and_path_read_use_scoped_configuration(
-    monkeypatch, tmp_path, capsys
+@pytest.mark.parametrize("root", ["relative/vault", "missing"], ids=["relative", "missing"])
+def test_setup_refuses_a_vault_root_that_is_not_an_existing_absolute_directory(
+    tmp_path, root
 ) -> None:
+    config = tmp_path / "settings.toml"
+    vault_root = root if root == "relative/vault" else str(tmp_path / root)
+    with pytest.raises(ValueError, match="existing absolute directory"):
+        cli._setup(config, vault_root=vault_root, allowed=("*",))
+    assert not config.exists()
+
+
+def test_setup_refuses_settings_the_reader_would_reject(tmp_path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = tmp_path / "settings.toml"
+    with pytest.raises(ValueError, match="Unsafe allowed vault path"):
+        cli._setup(config, vault_root=str(vault), allowed=("../outside",))
+    assert not config.exists()
+
+
+def test_cli_vault_search_and_path_read_use_scoped_configuration(tmp_path, cli_runner) -> None:
     vault = tmp_path / "vault"
     (vault / "Notes").mkdir(parents=True)
     (vault / "Private").mkdir()
@@ -179,38 +243,25 @@ def test_cli_vault_search_and_path_read_use_scoped_configuration(
     with VaultReader(load_vault_settings(config)) as reader:
         reference = reader.search("retry")["notes"][0]
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["obsidian-ingest", "search-vault", "retry", "--config", str(config)],
-    )
-    cli.main()
-    search = json.loads(capsys.readouterr().out)
+    search = cli_runner.ok("search-vault", "retry", "--config", str(config))
     assert [item["path"] for item in search["notes"]] == ["Notes/Retry.md"]
     assert "must not leak" not in json.dumps(search)
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "obsidian-ingest",
-            "read-vault-note",
-            reference["path"],
-            "--revision",
-            reference["revision"],
-            "--config",
-            str(config),
-        ],
+    note = cli_runner.ok(
+        "read-vault-note",
+        reference["path"],
+        "--revision",
+        reference["revision"],
+        "--config",
+        str(config),
     )
-    cli.main()
-    note = json.loads(capsys.readouterr().out)
     assert note["path"] == "Notes/Retry.md"
     assert note["text"] == "A retry budget limits load."
     assert "note_id" not in note
 
 
 def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, cli_runner
 ) -> None:
     vault = tmp_path / "vault"
     target_path = "Notes/Retry.md"
@@ -238,132 +289,54 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
         "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
     )
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "obsidian-ingest",
-            "create-draft",
-            metadata.source_id,
-            "# Retry budget: why?\n\nA retry budget limits aggregate load.",
-            "--config",
-            str(config),
-            "--related-note",
-            target_path,
-            "Explains retry policy.",
-            "--read-token",
-            "unchecked-for-this-fake-source",
-        ],
+    created = cli_runner.ok(
+        "create-draft",
+        metadata.source_id,
+        "# Retry budget: why?\n\nA retry budget limits aggregate load.",
+        "--config",
+        str(config),
+        "--related-note",
+        target_path,
+        "Explains retry policy.",
+        "--read-token",
+        "unchecked-for-this-fake-source",
     )
-    cli.main()
-    created = json.loads(capsys.readouterr().out)
     assert Path(created["path"]).name == "retry-budget-why.md"
     contents = Path(created["path"]).read_text(encoding="utf-8")
     assert contents.startswith("# Retry budget: why?\n\nA retry budget limits aggregate load.")
     assert "## Related Notes\n\n- [[Notes/Retry.md]]: Explains retry policy." in contents
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "obsidian-ingest",
-            "create-edit-suggestion",
-            metadata.source_id,
-            target_path,
-            note["revision"],
-            "Add aggregate retry budget",
-            "The source adds a system-wide constraint.",
-            "A retry budget caps aggregate retries.",
-            "--config",
-            str(config),
-            "--read-token",
-            "unchecked-for-this-fake-source",
-        ],
+    edit = cli_runner.ok(
+        "create-edit-suggestion",
+        metadata.source_id,
+        target_path,
+        note["revision"],
+        "Add aggregate retry budget",
+        "The source adds a system-wide constraint.",
+        "A retry budget caps aggregate retries.",
+        "--config",
+        str(config),
+        "--read-token",
+        "unchecked-for-this-fake-source",
     )
-    cli.main()
-    edit = json.loads(capsys.readouterr().out)
     assert Path(edit["path"]).name == "edit-retry.md"
     assert target.read_text(encoding="utf-8") == "Canonical note stays unchanged."
 
 
 # --- Application behavior exercised through the CLI -----------------------------------
 
-URL = "https://www.youtube.com/watch?v=video-123"
 
-
-def _sample_source() -> Source:
-    metadata = normalize_youtube_metadata(
-        {
-            "id": "video-123",
-            "title": "A useful explanation",
-            "channel": "A creator",
-            "duration": 600,
-            "chapters": [{"title": "Main idea", "start_time": 0, "end_time": 20}],
-        },
-        URL,
-    )
-    transcript = Transcript(
-        "video-123",
-        "en",
-        "en",
-        False,
-        (
-            TranscriptSegment("First atom", 0, 1),
-            TranscriptSegment("Second atom", 1, 0.5),
-            TranscriptSegment("Third atom", 1, 1),
-            TranscriptSegment("Sponsor atom", 2, 1),
-        ),
-    )
-    lookup = ExclusionLookup(
-        (ExcludedRange(2, 3, "sponsor", "SponsorBlock"),),
-        ExclusionStatus.COMPLETE,
-        "SponsorBlock",
-        ("sponsor",),
-    )
-    return Source(
-        metadata, transcript, lookup, filter_source_transcript(metadata, transcript, lookup)
-    )
-
-
-def _run(monkeypatch, capsys, *args: str) -> tuple[int, Any, dict | None]:
-    """Run one CLI invocation; each call opens fresh cache and vault state like a new process."""
-    monkeypatch.setattr(sys, "argv", ["obsidian-ingest", *args])
-    code = 0
-    try:
-        cli.main()
-    except SystemExit as error:
-        code = error.code
-    captured = capsys.readouterr()
-    output = json.loads(captured.out) if captured.out.strip() else None
-    error = json.loads(captured.err)["error"] if captured.err.strip() else None
-    return code, output, error
-
-
-def _ok(monkeypatch, capsys, *args: str) -> Any:
-    code, output, error = _run(monkeypatch, capsys, *args)
-    assert (code, error) == (0, None)
-    return output
-
-
-def _read_token(monkeypatch, capsys, source_id: str, *db: str) -> str:
+def _read_token(cli_runner, source_id: str, *db: str) -> str:
     """Read the whole transcript in order, as the skill requires, and return the token."""
     token = None
     offset = 0
     while True:
         extra = ("--read-token", token) if token else ()
-        page = _ok(
-            monkeypatch, capsys, "read-transcript", source_id, "--offset", str(offset), *extra, *db
-        )
+        page = cli_runner.ok("read-transcript", source_id, "--offset", str(offset), *extra, *db)
         token = page["read_token"]
         if page["next_offset"] is None:
             return token
         offset = page["next_offset"]
-
-
-def _fail(monkeypatch, capsys, *args: str) -> dict:
-    code, output, error = _run(monkeypatch, capsys, *args)
-    assert code != 0 and output is None and error is not None
-    return error
 
 
 def _config(tmp_path: Path, vault: Path, excluded: tuple[str, ...] = ("Private",)) -> Path:
@@ -386,22 +359,12 @@ def _vault_fixture(tmp_path: Path) -> Path:
     return vault
 
 
-@pytest.fixture
-def fake_extraction(monkeypatch):
-    source = _sample_source()
-    extraction = MagicMock(side_effect=lambda url, exclude_sponsors=True: source)
-    monkeypatch.setattr(source_cache, "ingest_source", extraction)
-    return extraction
-
-
-def test_cli_source_operations_reuse_persistent_cache(
-    monkeypatch, capsys, tmp_path, fake_extraction
-) -> None:
+def test_cli_source_operations_reuse_persistent_cache(tmp_path, fake_extraction, cli_runner):
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    first = _ok(monkeypatch, capsys, "ingest-source", URL, *db)
+    first = cli_runner.ok("ingest-source", URL, *db)
     assert first["cached"] is False
     assert first["overview"]["sponsor_filtering"]["excluded_segments"] == 1
-    again = _ok(monkeypatch, capsys, "ingest-source", "https://youtu.be/video-123", *db)
+    again = cli_runner.ok("ingest-source", "https://youtu.be/video-123", *db)
     assert (again["source_id"], again["cached"]) == (first["source_id"], True)
     assert fake_extraction.call_count == 1
     source_id = first["source_id"]
@@ -409,46 +372,41 @@ def test_cli_source_operations_reuse_persistent_cache(
     # Cache reuse is known only at ingest; a later read by handle reports it as unknown.
     assert first["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is False
     assert again["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] is True
-    overview = _ok(monkeypatch, capsys, "get-source-overview", source_id, *db)
+    overview = cli_runner.ok("get-source-overview", source_id, *db)
     assert overview["diagnostics"]["acquisition"]["reused_from_cache"] is None
     first["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] = None
     assert overview == first["overview"]
-    assert _ok(monkeypatch, capsys, "list-chapters", source_id, *db) == [
+    assert cli_runner.ok("list-chapters", source_id, *db) == [
         {"index": 0, "title": "Main idea", "start": 0.0, "end": 20.0}
     ]
-    assert _ok(monkeypatch, capsys, "list-exclusions", source_id, *db)[0]["source_indices"] == [3]
+    assert cli_runner.ok("list-exclusions", source_id, *db)[0]["source_indices"] == [3]
 
     texts = []
     offset = 0
     while offset is not None:
-        page = _ok(
-            monkeypatch,
-            capsys,
-            "read-transcript",
-            source_id,
-            "--offset",
-            str(offset),
-            "--limit",
-            "2",
-            *db,
+        page = cli_runner.ok(
+            "read-transcript", source_id, "--offset", str(offset), "--limit", "2", *db
         )
         texts.extend(segment[3] for segment in page["segments"])
         offset = page["next_offset"]
-    assert texts == ["First atom", "Second atom", "Third atom"]
-    raw = _ok(monkeypatch, capsys, "read-transcript", source_id, "--include-excluded", *db)
+    assert texts == ["First atom", "Second atom at same time", "Third atom"]
+    raw = cli_runner.ok("read-transcript", source_id, "--include-excluded", *db)
     assert raw["fields"] == ["source_index", "start", "duration", "text"]
     assert raw["segments"][-1] == [3, 2, 1, "Sponsor atom"]
-    chapter = _ok(monkeypatch, capsys, "read-chapter", source_id, "0", "--offset", "1", *db)
-    assert [segment[3] for segment in chapter["segments"]] == ["Second atom", "Third atom"]
+    chapter = cli_runner.ok("read-chapter", source_id, "0", "--offset", "1", *db)
+    assert [segment[3] for segment in chapter["segments"]] == [
+        "Second atom at same time",
+        "Third atom",
+    ]
 
-    refreshed = _ok(monkeypatch, capsys, "ingest-source", URL, "--refresh", *db)
+    refreshed = cli_runner.ok("ingest-source", URL, "--refresh", *db)
     assert (refreshed["source_id"], refreshed["cached"]) == (source_id, False)
     assert fake_extraction.call_count == 2
 
 
-def test_cli_source_errors_use_shared_codes(monkeypatch, capsys, tmp_path, fake_extraction):
+def test_cli_source_errors_use_shared_codes(tmp_path, fake_extraction, cli_runner):
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
     cases = [
         (("get-source-overview", "missing"), "SOURCE_NOT_FOUND", "Unknown source_id"),
         (("read-transcript", source_id, "--limit", "0"), "INVALID_ARGUMENT", "limit must be"),
@@ -461,20 +419,20 @@ def test_cli_source_errors_use_shared_codes(monkeypatch, capsys, tmp_path, fake_
         (("read-chapter", source_id, "4"), "INVALID_ARGUMENT", "chapter_index 4 out of range"),
     ]
     for args, code, message in cases:
-        error = _fail(monkeypatch, capsys, *args, *db)
+        error = cli_runner.fail(*args, *db)
         assert error["code"] == code
         assert message in error["message"]
 
-    code, _, error = _run(monkeypatch, capsys, "read-transcript", source_id, "--offset", "x", *db)
-    assert code == 2 and error["code"] == "INVALID_ARGUMENT"
-    code, _, error = _run(monkeypatch, capsys, "list-chapters", source_id, "extra", *db)
-    assert code == 2 and error["code"] == "INVALID_ARGUMENT"
+    error = cli_runner.fail("read-transcript", source_id, "--offset", "x", *db, exit_code=2)
+    assert error["code"] == "INVALID_ARGUMENT"
+    error = cli_runner.fail("list-chapters", source_id, "extra", *db, exit_code=2)
+    assert error["code"] == "INVALID_ARGUMENT"
     fake_extraction.side_effect = RuntimeError("network down")
-    error = _fail(monkeypatch, capsys, "ingest-source", URL, "--include-sponsors", *db)
+    error = cli_runner.fail("ingest-source", URL, "--include-sponsors", *db)
     assert error["code"] == "INGEST_FAILED"
 
 
-def test_cli_search_cursor_continues_across_invocations(monkeypatch, capsys, tmp_path):
+def test_cli_search_cursor_continues_across_invocations(tmp_path, cli_runner):
     vault = _vault_fixture(tmp_path)
     config = ("--config", str(_config(tmp_path, vault)))
     paths = []
@@ -483,7 +441,7 @@ def test_cli_search_cursor_continues_across_invocations(monkeypatch, capsys, tmp
         args = ["search-vault", "fixture", "--limit", "2", *config]
         if cursor:
             args += ["--cursor", cursor]
-        page = _ok(monkeypatch, capsys, *args)
+        page = cli_runner.ok(*args)
         assert all(
             set(note) == {"path", "title", "revision", "matched_terms", "snippet", "linkable"}
             for note in page["notes"]
@@ -495,31 +453,29 @@ def test_cli_search_cursor_continues_across_invocations(monkeypatch, capsys, tmp
     assert paths == [f"Notes/Fixture {index}.md" for index in range(5)]
 
 
-def test_cli_search_cursor_is_untrusted_and_bound_to_query_and_scope(monkeypatch, capsys, tmp_path):
+def test_cli_search_cursor_is_untrusted_and_bound_to_query_and_scope(tmp_path, cli_runner):
     vault = _vault_fixture(tmp_path)
     config_path = _config(tmp_path, vault)
     config = ("--config", str(config_path))
-    cursor = _ok(monkeypatch, capsys, "search-vault", "fixture", "--limit", "2", *config)[
-        "next_cursor"
-    ]
+    cursor = cli_runner.ok("search-vault", "fixture", "--limit", "2", *config)["next_cursor"]
     for args in (
         ("search-vault", "fixture", "--cursor", "not a cursor"),
         ("search-vault", "fixture", "--cursor", base64.urlsafe_b64encode(b"[1]").decode()),
         ("search-vault", "other", "--cursor", cursor),
         ("search-vault", "fixture", "--scope", "title", "--cursor", cursor),
     ):
-        assert _fail(monkeypatch, capsys, *args, *config)["code"] == "INVALID_CURSOR"
+        assert cli_runner.fail(*args, *config)["code"] == "INVALID_CURSOR"
 
     # Narrowing the trusted scope invalidates outstanding cursors.
     _config(tmp_path, vault, ("Private", "Notes/Fixture 4.md"))
-    error = _fail(monkeypatch, capsys, "search-vault", "fixture", "--cursor", cursor, *config)
+    error = cli_runner.fail("search-vault", "fixture", "--cursor", cursor, *config)
     assert error["code"] == "INVALID_CURSOR"
 
     # A forged cursor that matches the current policy is only an offset: it never
     # surfaces excluded notes.
     with VaultReader(load_vault_settings(config_path)) as reader:
         forged = reader._cursor("fixture", "both", 0)
-    page = _ok(monkeypatch, capsys, "search-vault", "fixture", "--cursor", forged, *config)
+    page = cli_runner.ok("search-vault", "fixture", "--cursor", forged, *config)
     serialized = json.dumps(page)
     assert "Private" not in serialized and "SECRET_MARKER" not in serialized
     assert "Notes/Fixture 4.md" not in serialized
@@ -566,23 +522,17 @@ def test_cli_search_cursor_survives_separate_processes(tmp_path):
     assert second["next_cursor"] is None
 
 
-def test_cli_note_reads_check_revisions_and_exclusions(monkeypatch, capsys, tmp_path):
+def test_cli_note_reads_check_revisions_and_exclusions(tmp_path, cli_runner):
     vault = _vault_fixture(tmp_path)
     note = vault / "Notes/Fixture 0.md"
     note.write_text("0123456789abcdef", encoding="utf-8")
     config = ("--config", str(_config(tmp_path, vault)))
-    first = _ok(
-        monkeypatch, capsys, "read-vault-note", "Notes/Fixture 0.md", "--limit", "10", *config
-    )
+    first = cli_runner.ok("read-vault-note", "Notes/Fixture 0.md", "--limit", "10", *config)
     assert (first["text"], first["next_offset"]) == ("0123456789", 10)
     assert "note_id" not in first
-    error = _fail(
-        monkeypatch, capsys, "read-vault-note", "Notes/Fixture 0.md", "--offset", "10", *config
-    )
+    error = cli_runner.fail("read-vault-note", "Notes/Fixture 0.md", "--offset", "10", *config)
     assert error["code"] == "INVALID_ARGUMENT" and "revision is required" in error["message"]
-    rest = _ok(
-        monkeypatch,
-        capsys,
+    rest = cli_runner.ok(
         "read-vault-note",
         "Notes/Fixture 0.md",
         "--offset",
@@ -594,9 +544,7 @@ def test_cli_note_reads_check_revisions_and_exclusions(monkeypatch, capsys, tmp_
     assert rest["text"] == "abcdef" and rest["next_offset"] is None
 
     note.write_text("changed by a human", encoding="utf-8")
-    error = _fail(
-        monkeypatch,
-        capsys,
+    error = cli_runner.fail(
         "read-vault-note",
         "Notes/Fixture 0.md",
         "--offset",
@@ -607,46 +555,40 @@ def test_cli_note_reads_check_revisions_and_exclusions(monkeypatch, capsys, tmp_
     )
     assert error["code"] == "NOTE_CHANGED"
     for path in ("Private/Fixture secret.md", "../outside.md", "Notes/Missing.md", "Notes"):
-        error = _fail(monkeypatch, capsys, "read-vault-note", path, *config)
+        error = cli_runner.fail("read-vault-note", path, *config)
         assert error == {"code": "NOTE_UNAVAILABLE", "message": "note is unavailable"}
 
 
-def test_cli_missing_config_is_reported(monkeypatch, capsys, tmp_path):
-    error = _fail(monkeypatch, capsys, "search-vault", "--config", str(tmp_path / "missing.toml"))
+def test_cli_missing_or_invalid_config_is_reported(tmp_path, cli_runner):
+    error = cli_runner.fail("search-vault", "--config", str(tmp_path / "missing.toml"))
     assert error["code"] == "CONFIG_ERROR"
+    invalid = tmp_path / "invalid.toml"
+    invalid.write_text(f'[vault]\nroot = "{tmp_path}"\nallowed = ["../outside"]\n', "utf-8")
+    error = cli_runner.fail("search-vault", "--config", str(invalid))
+    assert error["code"] == "CONFIG_ERROR" and "vault.allowed entry" in error["message"]
 
 
 def test_writes_require_a_read_token_covering_the_whole_transcript(
-    monkeypatch, capsys, tmp_path, fake_extraction
+    tmp_path, fake_extraction, cli_runner
 ):
     vault = _vault_fixture(tmp_path)
     config = ("--config", str(_config(tmp_path, vault)))
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
     draft = ("create-draft", source_id, "# Idea\n\nBody.", *config, *db)
 
-    first = _ok(monkeypatch, capsys, "read-transcript", source_id, "--limit", "1", *db)
+    first = cli_runner.ok("read-transcript", source_id, "--limit", "1", *db)
     assert first["read_token"].startswith("rt1-1-")
-    error = _fail(monkeypatch, capsys, *draft, "--read-token", first["read_token"])
+    error = cli_runner.fail(*draft, "--read-token", first["read_token"])
     assert error["code"] == "INCOMPLETE_READ" and "offset 1" in error["message"]
 
     # Skipping ahead serves the page but does not advance the token.
-    skipped = _ok(
-        monkeypatch,
-        capsys,
-        "read-transcript",
-        source_id,
-        "--offset",
-        "2",
-        "--read-token",
-        first["read_token"],
-        *db,
+    skipped = cli_runner.ok(
+        "read-transcript", source_id, "--offset", "2", "--read-token", first["read_token"], *db
     )
     assert skipped["read_token"] == first["read_token"]
     # A time-range read passes the token through unchanged.
-    ranged = _ok(
-        monkeypatch,
-        capsys,
+    ranged = cli_runner.ok(
         "read-transcript",
         source_id,
         "--start",
@@ -660,20 +602,20 @@ def test_writes_require_a_read_token_covering_the_whole_transcript(
     assert ranged["read_token"] == first["read_token"]
 
     forged = first["read_token"][:-1] + ("0" if first["read_token"][-1] != "0" else "1")
-    error = _fail(monkeypatch, capsys, *draft, "--read-token", forged)
+    error = cli_runner.fail(*draft, "--read-token", forged)
     assert error["code"] == "INVALID_ARGUMENT" and "read_token" in error["message"]
     assert not (vault / "00 Inbox/AI Drafts").exists() or not any(
         (vault / "00 Inbox/AI Drafts").iterdir()
     )
 
-    token = _read_token(monkeypatch, capsys, source_id, *db)
-    late = _fail(monkeypatch, capsys, *draft, "--read-token", token, "--timestamp", "11:40")
+    token = _read_token(cli_runner, source_id, *db)
+    late = cli_runner.fail(*draft, "--read-token", token, "--timestamp", "11:40")
     assert late["code"] == "INVALID_ARGUMENT" and "past the end" in late["message"]
-    assert Path(_ok(monkeypatch, capsys, *draft, "--read-token", token)["path"]).exists()
+    assert Path(cli_runner.ok(*draft, "--read-token", token)["path"]).exists()
 
 
 def test_cli_publication_is_create_only_with_verified_links(
-    monkeypatch, capsys, tmp_path, fake_extraction
+    monkeypatch, tmp_path, fake_extraction, cli_runner
 ):
     vault = _vault_fixture(tmp_path)
     target = vault / "Notes/Fixture 1.md"
@@ -683,19 +625,15 @@ def test_cli_publication_is_create_only_with_verified_links(
     )
     config = ("--config", str(_config(tmp_path, vault)))
     db = ("--cache-db", str(tmp_path / "cache.db"))
-    source_id = _ok(monkeypatch, capsys, "ingest-source", URL, *db)["source_id"]
-    rt = ("--read-token", _read_token(monkeypatch, capsys, source_id, *db))
-    revision = _ok(monkeypatch, capsys, "read-vault-note", "Notes/Fixture 1.md", *config)[
-        "revision"
-    ]
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
+    rt = ("--read-token", _read_token(cli_runner, source_id, *db))
+    revision = cli_runner.ok("read-vault-note", "Notes/Fixture 1.md", *config)["revision"]
     canonical = {path: path.read_bytes() for path in vault.rglob("*.md")}
 
     # Ordinary related links need no revision and survive harmless human edits.
     target.write_text("edited by a human", encoding="utf-8")
     canonical[target] = target.read_bytes()
-    draft = _ok(
-        monkeypatch,
-        capsys,
+    draft = cli_runner.ok(
         "create-draft",
         source_id,
         "# Retry budget\n\nBody.",
@@ -715,13 +653,11 @@ def test_cli_publication_is_create_only_with_verified_links(
     assert "[00:01](https://www.youtube.com/watch?v=video-123&t=1s)" in text
     assert "[01:05](https://www.youtube.com/watch?v=video-123&t=65s)" in text
     assert Path(draft["path"]).name == "retry-budget.md"
-    duplicate = _ok(
-        monkeypatch, capsys, "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db, *rt
+    duplicate = cli_runner.ok(
+        "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db, *rt
     )
     assert Path(duplicate["path"]).name == "retry-budget-2.md"
-    named = _ok(
-        monkeypatch,
-        capsys,
+    named = cli_runner.ok(
         "create-draft",
         source_id,
         "# Title: kept verbatim?\n\nBody.",
@@ -777,15 +713,13 @@ def test_cli_publication_is_create_only_with_verified_links(
         ),
         (("create-draft", "missing", "# Bad\n\nBody"), "SOURCE_NOT_FOUND"),
     ):
-        error = _fail(monkeypatch, capsys, *args, *config, *db, *rt)
+        error = cli_runner.fail(*args, *config, *db, *rt)
         assert error["code"] == code
         assert "SECRET_MARKER" not in error["message"]
     assert sorted(drafts.iterdir()) == before
 
-    current = _ok(monkeypatch, capsys, "read-vault-note", "Notes/Fixture 1.md", *config)["revision"]
-    edit = _ok(
-        monkeypatch,
-        capsys,
+    current = cli_runner.ok("read-vault-note", "Notes/Fixture 1.md", *config)["revision"]
+    edit = cli_runner.ok(
         "create-edit-suggestion",
         source_id,
         "Notes/Fixture 1.md",

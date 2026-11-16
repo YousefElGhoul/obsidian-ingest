@@ -83,18 +83,6 @@ def source_io(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock, Ma
             "en-orig": [{"ext": "json3", "url": "https://example.com/original"}],
         },
     }
-    ydl.urlopen.return_value.read.return_value = json.dumps(
-        {
-            "events": [
-                {
-                    "tStartMs": 125,
-                    "dDurationMs": 2000,
-                    "segs": [{"utf8": "Original "}, {"utf8": "words\nunchanged"}],
-                },
-                {"tStartMs": 2125, "dDurationMs": 750, "segs": [{"utf8": "Next"}]},
-            ]
-        }
-    ).encode()
     exclusions = ExclusionLookup(
         (ExcludedRange(1, 2, "sponsor", "SponsorBlock"),),
         ExclusionStatus.COMPLETE,
@@ -292,23 +280,28 @@ def test_bounded_reads_keep_original_atoms_in_half_open_start_time_order(
     assert source.transcript.segments is original
 
 
-@pytest.mark.parametrize("bound", [-1, float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("bound", "error", "message"),
+    [
+        (-1, ValueError, "must be finite and nonnegative"),
+        (float("nan"), ValueError, "must be finite and nonnegative"),
+        (float("inf"), ValueError, "must be finite and nonnegative"),
+        (float("-inf"), ValueError, "must be finite and nonnegative"),
+        (True, TypeError, "must be a number"),
+        ("120", TypeError, "must be a number"),
+    ],
+)
 @pytest.mark.parametrize("name", ["start", "end"])
-def test_nonfinite_or_negative_bounds_fail(source: Source, name: str, bound: float) -> None:
-    with pytest.raises(ValueError, match=f"{name} must be finite and nonnegative"):
+def test_invalid_bounds_fail(source: Source, name: str, bound: object, error, message) -> None:
+    with pytest.raises(error, match=f"{name} {message}"):
         read_transcript(source, **{name: bound})
 
 
-@pytest.mark.parametrize("bound", [True, "120"])
-@pytest.mark.parametrize("name", ["start", "end"])
-def test_nonnumeric_bounds_fail(source: Source, name: str, bound: object) -> None:
-    with pytest.raises(TypeError, match=f"{name} must be a number"):
-        read_transcript(source, **{name: bound})
-
-
-def test_reversed_bounds_fail(source: Source) -> None:
+def test_reversed_bounds_and_non_boolean_view_fail(source: Source) -> None:
     with pytest.raises(ValueError, match="end must not precede start"):
         read_transcript(source, start=300, end=120)
+    with pytest.raises(TypeError, match="include_excluded must be a boolean"):
+        read_transcript(source, include_excluded=1)  # type: ignore[arg-type]
 
 
 def test_chapters_remain_unchanged_and_use_the_same_ownership_rule(source: Source) -> None:
@@ -329,15 +322,19 @@ def test_chapters_remain_unchanged_and_use_the_same_ownership_rule(source: Sourc
     )
 
 
-@pytest.mark.parametrize("index", [-1, 3, 100])
-def test_invalid_chapter_indices_fail(source: Source, index: int) -> None:
-    with pytest.raises(IndexError, match=f"chapter_index {index} out of range for 3 chapters"):
-        read_chapter(source, index)
-
-
-@pytest.mark.parametrize("index", [True, 1.5, "1"])
-def test_chapter_indices_must_be_integers(source: Source, index: object) -> None:
-    with pytest.raises(TypeError, match="chapter_index must be an integer"):
+@pytest.mark.parametrize(
+    ("index", "error", "message"),
+    [
+        (-1, IndexError, "chapter_index -1 out of range for 3 chapters"),
+        (3, IndexError, "chapter_index 3 out of range for 3 chapters"),
+        (100, IndexError, "chapter_index 100 out of range for 3 chapters"),
+        (True, TypeError, "chapter_index must be an integer"),
+        (1.5, TypeError, "chapter_index must be an integer"),
+        ("1", TypeError, "chapter_index must be an integer"),
+    ],
+)
+def test_invalid_chapter_indices_fail(source: Source, index: object, error, message) -> None:
+    with pytest.raises(error, match=message):
         read_chapter(source, index)
 
 

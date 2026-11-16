@@ -138,6 +138,181 @@ def test_evaluate_video_records_and_stops_on_tool_errors() -> None:
     assert [call["name"] for call in report["calls"]] == ["ingest_source"]
 
 
+class ScriptedSession(FakeSession):
+    """A FakeSession whose replies can be replaced per tool name."""
+
+    def __init__(self, **replies) -> None:
+        super().__init__()
+        self.replies = replies
+
+    async def call_tool(self, name: str, arguments: dict):
+        if name in self.replies:
+            self.calls.append((name, arguments))
+            return self.replies[name](arguments)
+        return await super().call_tool(name, arguments)
+
+
+def test_evaluation_without_chapters_skips_the_chapter_probe() -> None:
+    session = ScriptedSession(list_chapters=lambda _: _result([]))
+    report = asyncio.run(evaluate_source(session, _URL, []))
+    assert report["status"] == "success"
+    assert report["chapter_probe"] == {"skipped": "No creator chapters were provided"}
+    assert "read_chapter" not in [name for name, _ in session.calls]
+
+
+@pytest.mark.parametrize("next_offset", [0, True, "1"], ids=["not-advancing", "bool", "string"])
+def test_invalid_transcript_paging_is_a_recorded_failure(next_offset) -> None:
+    page = {"segments": [], "next_offset": next_offset}
+    session = ScriptedSession(read_transcript=lambda _: _text_result(page))
+    report = asyncio.run(evaluate_source(session, _URL, []))
+    assert report["status"] == "failed"
+    assert (
+        report["error"] == "EvaluationFailure: Tool read_transcript returned an invalid next_offset"
+    )
+    assert [name for name, _ in session.calls].count("read_transcript") == 1
+
+
+def test_unparseable_tool_text_is_recorded_not_raised() -> None:
+    garbage = SimpleNamespace(
+        is_error=False,
+        structured_content=None,
+        content=[SimpleNamespace(text="not json", model_dump=lambda mode="json": {"text": "x"})],
+    )
+    session = ScriptedSession(ingest_source=lambda _: garbage)
+    report = asyncio.run(evaluate_source(session, _URL, []))
+    assert report["status"] == "failed"
+    assert report["error"].startswith("KeyError")
+    assert report["calls"][0]["result"]["content"] == [{"text": "x"}]
+
+
+def test_failed_report_write_leaves_no_temporary_file(tmp_path: Path, monkeypatch) -> None:
+    def broken_dump(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(evaluation.json, "dump", broken_dump)
+    with pytest.raises(OSError, match="disk full"):
+        write_report(tmp_path, {"url": _URL, "status": "success"})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_batch_reports_each_source_and_returns_failure_when_any_failed(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    failing_url = "https://youtu.be/failing"
+    unsaved_url = "https://youtu.be/unsaved"
+
+    class BatchSession(FakeSession):
+        async def initialize(self) -> None:
+            pass
+
+        async def list_tools(self):
+            tool = SimpleNamespace(model_dump=lambda mode="json": {"name": "ingest_source"})
+            return SimpleNamespace(tools=[tool])
+
+        async def call_tool(self, name: str, arguments: dict):
+            if arguments.get("url") == failing_url:
+                return _result(error="simulated failure")
+            return await super().call_tool(name, arguments)
+
+    class FakeContext:
+        def __init__(self, value) -> None:
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+    servers = []
+
+    def fake_stdio_client(server):
+        servers.append(server)
+        return FakeContext(("read", "write"))
+
+    real_write = evaluation.write_report
+
+    def write_or_fail(output_dir, report):
+        if report["url"] == unsaved_url:
+            raise OSError("read-only")
+        return real_write(output_dir, report)
+
+    monkeypatch.setattr(evaluation, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(evaluation, "ClientSession", lambda r, w: FakeContext(BatchSession()))
+    monkeypatch.setattr(evaluation, "write_report", write_or_fail)
+
+    urls = (_URL, failing_url, unsaved_url)
+    assert asyncio.run(evaluation.run_batch(urls, tmp_path, 0.001)) == 1
+
+    (server,) = servers
+    assert server.args[:2] == ["run", "--directory"] and "--vault" in server.args
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        f"{report_stem(url)}.json" for url in (_URL, failing_url)
+    )
+    saved = json.loads((tmp_path / f"{report_stem(_URL)}.json").read_text(encoding="utf-8"))
+    assert saved["tool_schemas"] == [{"name": "ingest_source"}]
+    err = capsys.readouterr().err
+    assert f"SUCCESS {_URL}: 2 retained segments" in err
+    assert f"FAILED {failing_url}: EvaluationFailure: Tool ingest_source failed" in err
+    assert f"FAILED {unsaved_url}: could not save report: read-only" in err
+    assert "Summary: 1 succeeded, 2 failed." in err
+
+
+def test_main_runs_the_batch_for_a_nonempty_manifest(tmp_path: Path, monkeypatch) -> None:
+    manifest = tmp_path / "videos.txt"
+    manifest.write_text(f"{_URL}\n", encoding="utf-8")
+    output = tmp_path / "reports"
+    received = []
+
+    async def fake_batch(urls, output_dir, delay_seconds):
+        received.append((urls, output_dir, delay_seconds))
+        return 0
+
+    monkeypatch.setattr(evaluation, "run_batch", fake_batch)
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", str(manifest), str(output), "2.5"])
+    assert main() == 0
+    assert received == [((_URL,), output, 2.5)]
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing-manifest", "Manifest is not a readable file"),
+        ("output-is-file", "Could not create output directory"),
+        ("output-not-writable", "Output directory must exist and be writable"),
+        ("negative-delay", "Delay must be finite and nonnegative"),
+        ("infinite-delay", "Delay must be finite and nonnegative"),
+    ],
+)
+def test_main_rejects_unusable_arguments(tmp_path: Path, monkeypatch, capsys, case, message):
+    manifest = tmp_path / "videos.txt"
+    manifest.write_text(f"{_URL}\n", encoding="utf-8")
+    output = tmp_path / "reports"
+    delay = "0"
+    if case == "missing-manifest":
+        manifest = tmp_path / "missing.txt"
+    elif case == "output-is-file":
+        (tmp_path / "blocker").write_text("file", encoding="utf-8")
+        output = tmp_path / "blocker/reports"
+    elif case == "output-not-writable":
+        real_access = os.access
+        monkeypatch.setattr(
+            evaluation.os,
+            "access",
+            lambda path, mode: False if Path(path) == output else real_access(path, mode),
+        )
+    else:
+        delay = "-1" if case == "negative-delay" else "inf"
+    monkeypatch.setattr(evaluation, "run_batch", lambda *args: pytest.fail("must not run"))
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", str(manifest), str(output), delay])
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
 def test_manifest_parsing_keeps_url_order_and_skips_comments(tmp_path: Path) -> None:
     manifest = tmp_path / "videos.txt"
     manifest.write_text(
