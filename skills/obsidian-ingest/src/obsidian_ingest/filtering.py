@@ -15,12 +15,16 @@ from obsidian_ingest.extractor.transcript import Transcript
 
 @dataclass(frozen=True, slots=True)
 class ExcludedSegment:
+    """Link an unchanged source atom to every exclusion range owning its start time."""
+
     source_index: int
     range_indices: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class FilteredTranscript:
+    """Represent filtering as indices into the original transcript, never rewritten text."""
+
     original: Transcript
     ranges: tuple[ExcludedRange, ...]
     retained_indices: tuple[int, ...]
@@ -65,6 +69,7 @@ def filter_transcript(
         ):
             raise ValueError(f"Invalid or unordered transcript timing at segment {index}")
         previous_start = segment.start
+        # Ownership uses the atom's start, not overlap; boundary-crossing atoms stay whole.
         matches = tuple(
             range_index
             for range_index, exclusion in enumerate(ranges)

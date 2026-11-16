@@ -29,6 +29,8 @@ TIMING_NOTE = (
 
 
 class GapPosition(StrEnum):
+    """Locate an uncaptioned interval relative to the original caption sequence."""
+
     LEADING = "leading"
     INTERNAL = "internal"
     TRAILING = "trailing"
@@ -36,6 +38,8 @@ class GapPosition(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CaptionGap:
+    """Describe one sufficiently long interval without caption coverage, in seconds."""
+
     start: float
     end: float
     position: GapPosition
@@ -43,6 +47,8 @@ class CaptionGap:
 
 @dataclass(frozen=True, slots=True)
 class TimingObservations:
+    """Keep original-caption timing observations separate from filtering and usefulness."""
+
     caption_segment_count: int
     first_caption_start: float | None
     last_caption_end: float | None
@@ -61,6 +67,7 @@ def observe_timing(metadata: SourceMetadata, transcript: Transcript) -> TimingOb
         if segment.start - covered_until >= GAP_THRESHOLD_SECONDS:
             position = GapPosition.LEADING if index == 0 else GapPosition.INTERNAL
             gaps.append(CaptionGap(covered_until, segment.start, position))
+        # Rolling captions may overlap; only the furthest covered end advances coverage.
         covered_until = max(covered_until, segment.start + segment.duration)
     if duration is not None and duration - covered_until >= GAP_THRESHOLD_SECONDS:
         gaps.append(CaptionGap(covered_until, duration, GapPosition.TRAILING))
@@ -87,6 +94,7 @@ def _seconds(value: float | None) -> float | None:
 
 
 def timing_data(timing: TimingObservations) -> dict[str, Any]:
+    """Serialize millisecond-rounded observations with bounded gap detail and an exact count."""
     return {
         "caption_segment_count": timing.caption_segment_count,
         "first_caption_start": _seconds(timing.first_caption_start),

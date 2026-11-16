@@ -38,6 +38,8 @@ _STRICT_ARGUMENTS = ConfigDict(strict=True, extra="forbid")
 
 @with_config(_STRICT_ARGUMENTS)
 class RelatedNoteInput(TypedDict):
+    # Keep documentation out of the docstring: Pydantic exposes it in the tool schema.
+    # Revision is accepted for compatibility; ordinary links only require current access.
     note_id: str
     reason: str
     revision: NotRequired[str]
@@ -59,6 +61,7 @@ _ARGUMENT_HINTS = {
 
 
 def _describe_invalid_arguments(error: ValidationError) -> str:
+    """Summarize field failures without echoing untrusted rejected argument values."""
     # Field locations and messages only; rejected values are the caller's data.
     problems = []
     for item in error.errors(include_url=False):
@@ -78,13 +81,16 @@ class _StrictArgumentServer(MCPServer):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Keep strict validators alongside the SDK's registered tools."""
         super().__init__(*args, **kwargs)
         self._strict_models: dict[str, type[BaseModel]] = {}
 
     def tool(self, *args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
+        """Register each tool with both the SDK and a strict raw-argument model."""
         register = super().tool(*args, **kwargs)
 
         def decorator(function: Callable[..., Any]) -> Any:
+            """Preserve the SDK registration while indexing validation by effective name."""
             name = kwargs.get("name") or function.__name__
             self._strict_models[name] = _strict_argument_model(function)
             return register(function)
@@ -92,6 +98,7 @@ class _StrictArgumentServer(MCPServer):
         return decorator
 
     async def call_tool(self, name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        """Validate raw input first, then let the SDK execute and envelope the tool."""
         model = self._strict_models.get(name)
         if model is not None:
             try:
@@ -109,6 +116,7 @@ def _tool_errors[**P, R](function: Callable[P, R]) -> Callable[P, R]:
 
     @wraps(function)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        """Translate only known failures; unexpected exceptions retain their traceback."""
         try:
             return function(*args, **kwargs)
         except ToolError:
@@ -139,6 +147,7 @@ def create_server(
     opened: list[SourceCache] = []
 
     def cache() -> SourceCache:
+        """Lazily retain the first successfully opened acquisition cache."""
         # Open per use until it succeeds, like each CLI invocation: an unusable cache is
         # reported as SOURCE_CACHE_ERROR by source tools instead of preventing startup,
         # and vault tools keep working.
@@ -147,6 +156,7 @@ def create_server(
         return opened[0]
 
     def load_source(source_id: str) -> Source:
+        """Resolve persistent source handles through the transport-neutral error mapping."""
         return responses.load_source(cache(), source_id)
 
     @server.tool()
@@ -175,6 +185,7 @@ def create_server(
         """List sponsor ranges and original transcript indices they exclude."""
         return responses.exclusions(load_source(source_id))
 
+    # Compact text avoids duplicating bounded transcript rows in structured output.
     @server.tool(structured_output=False)
     @_tool_errors
     def read_transcript(
@@ -247,6 +258,7 @@ def create_server(
             read_token=read_token,
         )
 
+    # Without trusted read scopes, expose publication but no vault navigation/edit tools.
     if vault is not None:
 
         @server.tool(structured_output=False)

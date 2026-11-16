@@ -1,4 +1,7 @@
-"""Safe creation of provenance-preserving Markdown drafts."""
+"""Publish curated Markdown as create-only vault drafts with generated provenance.
+
+This is the filesystem safety boundary after acquisition and agent-led curation.
+"""
 
 import os
 import re
@@ -22,10 +25,12 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+# Reject separators, control characters, and characters reserved by common filesystems.
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Markdown headings allow at most three leading spaces; indented code is not a heading.
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$")
 _SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-_MAX_STEM_BYTES = 120
+_MAX_STEM_BYTES = 120  # Leave filename space for collision suffixes and the extension.
 _RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "related notes"}
 
 
@@ -39,10 +44,13 @@ class DraftWriterSettings:
 
 @dataclass(frozen=True, slots=True)
 class DraftResult:
+    """Absolute path of the newly published draft."""
+
     path: Path
 
 
 def _draft_folder_parts(folder: str) -> tuple[str, ...]:
+    """Validate the trusted relative destination, raising ValueError for unsafe parts."""
     if not isinstance(folder, str) or not folder or "\\" in folder:
         raise ValueError("draft_folder must be a nonempty relative vault path")
     parts = tuple(folder.split("/"))
@@ -79,6 +87,7 @@ def _leading_h1(contents: str) -> str | None:
 
 
 def _draft_stem(filename: str | None, contents: str) -> str:
+    """Derive a portable stem from an explicit name or leading H1; reject empty names."""
     if filename is not None:
         if not isinstance(filename, str):
             raise TypeError("filename must be a string")
@@ -129,6 +138,7 @@ def _render_draft(
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
 ) -> bytes:
+    """Validate curated text and return UTF-8 Markdown with writer-owned attribution."""
     if not isinstance(contents, str):
         raise TypeError("contents must be a string")
     if leading_link is None:
@@ -164,6 +174,7 @@ def _render_draft(
         if "[[" in reason or "]]" in reason:
             raise ValueError("related note reason must not contain wikilinks")
         seen_links.add(link)
+        # Reasons are untrusted prose, not permission to inject Markdown structure.
         safe_reason = re.sub(r"([\\`*_{}\[\]()<>|])", r"\\\1", reason.strip())
         related_lines.append(f"- {link}: {safe_reason}")
     if not isinstance(timestamps, tuple):
@@ -223,6 +234,7 @@ def _distinct_moments(timestamps: tuple[float, ...]) -> tuple[float, ...]:
 
 
 def _validate_note_link_path(path: str) -> None:
+    """Reject paths that could escape the vault or change a generated wikilink's meaning."""
     parts = path.split("/")
     if (
         not path.endswith(".md")
@@ -237,12 +249,14 @@ def _validate_note_link_path(path: str) -> None:
 
 
 def _unquote_heading(line: str) -> str:
+    """Strip blockquote markers so the Related Notes check also sees quoted headings."""
     while marker := re.match(r"^ {0,3}>[ \t]?", line):
         line = line[marker.end() :]
     return line
 
 
 def _validate_body(contents: str) -> None:
+    """Allow at most one ATX H1 and reject writer-generated Source/Provenance/Related Notes headings."""
     lines = contents.splitlines()
     in_fence = False
     fence_marker = ""
@@ -257,6 +271,7 @@ def _validate_body(contents: str) -> None:
             elif marker == fence_marker:
                 in_fence = False
             continue
+        # Heading-like text inside code is content, not document structure.
         if in_fence or line.startswith(("    ", "\t")):
             continue
         unquoted = _unquote_heading(line)
@@ -297,7 +312,11 @@ def _validate_body(contents: str) -> None:
                 raise ValueError("contents must not include a Source or provenance section")
 
 
+# Descriptor-relative publication keeps destination traversal separate from agent text.
+
+
 def _open_directory_chain(root_fd: int, parts: tuple[str, ...]) -> int:
+    """Create/open destination components without following symlinks; return an owned fd."""
     current_fd = os.dup(root_fd)
     try:
         for part in parts:
@@ -316,6 +335,7 @@ def _open_directory_chain(root_fd: int, parts: tuple[str, ...]) -> int:
 
 
 def _create_staging_directory(directory_fd: int) -> tuple[str, int]:
+    """Return a private staging directory's name and owned descriptor beside the draft."""
     while True:
         name = f".obsidian-ingest-{secrets.token_hex(8)}"
         try:
@@ -327,6 +347,7 @@ def _create_staging_directory(directory_fd: int) -> tuple[str, int]:
 
 
 def _write_staged_file(staging_fd: int, contents: bytes) -> None:
+    """Exclusively write and fsync the payload before it becomes a visible note."""
     file_fd = os.open(
         ".draft.tmp",
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -352,11 +373,13 @@ def _write_staged_file(staging_fd: int, contents: bytes) -> None:
 
 
 def _publish_staged_file(directory_fd: int, staging_fd: int, stem: str) -> str:
+    """Atomically link the complete payload under a free name, never replacing a note."""
     index = 1
     while True:
         suffix = "" if index == 1 else f"-{index}"
         filename = f"{stem}{suffix}.md"
         try:
+            # Hard-link creation fails on an existing name, unlike replacing rename.
             os.link(
                 ".draft.tmp",
                 filename,
@@ -375,6 +398,7 @@ def _publish_staged_file(directory_fd: int, staging_fd: int, stem: str) -> str:
 
 
 def _cleanup_staging(directory_fd: int, staging_name: str, staging_fd: int) -> None:
+    """Best-effort cleanup must not mask publication failures or remove the linked note."""
     try:
         try:
             os.unlink(".draft.tmp", dir_fd=staging_fd)
@@ -394,6 +418,7 @@ def _cleanup_staging(directory_fd: int, staging_name: str, staging_fd: int) -> N
 
 
 def _require_writer_capabilities() -> None:
+    """Fail closed with RuntimeError when POSIX create-only safety primitives are absent."""
     required_flags = ("O_NOFOLLOW", "O_DIRECTORY")
     missing_flags = tuple(name for name in required_flags if not hasattr(os, name))
     required_dir_fd = (os.open, os.mkdir, os.unlink, os.rmdir, os.link)

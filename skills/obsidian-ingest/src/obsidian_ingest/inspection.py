@@ -13,11 +13,13 @@ def inspect_source(url: str) -> Source:
 
 
 def _timestamp(seconds: float) -> str:
+    """Render millisecond precision for human comparison with exclusion boundaries."""
     milliseconds = round(seconds * 1000)
     return f"{format_timestamp(milliseconds // 1000)}.{milliseconds % 1000:03}"
 
 
 def _index_runs(indices: tuple[int, ...]) -> str:
+    """Compress ordered source indices into readable inclusive runs."""
     if not indices:
         return "none"
     runs = []
@@ -32,6 +34,7 @@ def _index_runs(indices: tuple[int, ...]) -> str:
 
 
 def _excluded_indices(excluded: tuple[ExcludedSegment, ...], range_index: int) -> tuple[int, ...]:
+    """Find atoms attributed to one range, including atoms owned by overlapping ranges."""
     return tuple(item.source_index for item in excluded if range_index in item.range_indices)
 
 
@@ -40,6 +43,7 @@ def _known(value: object) -> str:
 
 
 def _caption_lines(source: Source) -> list[str]:
+    """Render shared provenance and timing observations without interpreting coverage."""
     diagnostics = source_diagnostics(source)
     caption = diagnostics["caption"]
     acquisition = diagnostics["acquisition"]

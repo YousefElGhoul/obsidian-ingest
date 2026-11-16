@@ -1,4 +1,4 @@
-"""Batch-inspect the content and schemas exposed by the local MCP source tools."""
+"""Record acquisition/navigation over local MCP without agent curation or draft publication."""
 
 import argparse
 import asyncio
@@ -17,13 +17,14 @@ from mcp.client.stdio import stdio_client
 
 from mcp import ClientSession, StdioServerParameters
 
+# Default manifest/report locations assume this module is inside the repository skill tree.
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 ROOT = SKILL_ROOT.parents[1]
 _PAGE_SIZE = 200
 
 
 class EvaluationFailure(RuntimeError):
-    pass
+    """A tool error or malformed pagination result prevents completing a source probe."""
 
 
 def parse_manifest(path: Path) -> tuple[str, ...]:
@@ -61,7 +62,11 @@ def report_stem(url: str) -> str:
     return f"mcp_eval_{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
 
 
+# MCP response recording and source probes
+
+
 def _result_data(result) -> dict[str, Any]:
+    """Accept structured MCP data or its text fallback, unwrapping the result envelope."""
     data = result.structured_content or {}
     if not data:
         text = next(
@@ -78,6 +83,7 @@ def _result_data(result) -> dict[str, Any]:
 
 
 def _serialize_result(result) -> dict[str, Any]:
+    """Retain both MCP representations so reports show what clients actually received."""
     return {
         "is_error": result.is_error,
         "structured_content": result.structured_content,
@@ -86,6 +92,7 @@ def _serialize_result(result) -> dict[str, Any]:
 
 
 async def _call_tool(session, calls: list[dict[str, Any]], name: str, arguments: dict) -> dict:
+    """Record a call before raising EvaluationFailure for an MCP tool error."""
     result = await session.call_tool(name, arguments=arguments)
     serialized = _serialize_result(result)
     calls.append({"name": name, "arguments": arguments, "result": serialized})
@@ -103,6 +110,7 @@ async def _read_all_pages(
     tool_name: str,
     base_arguments: dict[str, Any],
 ) -> tuple[list[int], int]:
+    """Read every page, returning report-call indices and the total segment count."""
     page_call_indices = []
     offset = 0
     segment_count = 0
@@ -118,6 +126,7 @@ async def _read_all_pages(
         next_offset = page.get("next_offset")
         if next_offset is None:
             return page_call_indices, segment_count
+        # Reject non-progressing cursors so a malformed server cannot loop forever.
         if (
             isinstance(next_offset, bool)
             or not isinstance(next_offset, int)
@@ -128,6 +137,7 @@ async def _read_all_pages(
 
 
 async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[str, Any]:
+    """Record one source's navigation, retaining partial calls when any probe fails."""
     report: dict[str, Any] = {
         "url": url,
         "status": "failed",
@@ -155,6 +165,7 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
         ) = await _read_all_pages(session, calls, "read_transcript", {"source_id": source_id})
         chapters = report["chapters"]
         if chapters:
+            # One chapter probes the scoped read surface; the full transcript is already recorded.
             first_chapter_index = chapters[0]["index"]
             call_indices, segment_count = await _read_all_pages(
                 session,
@@ -175,7 +186,11 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
     return report
 
 
+# Report publication and batch command
+
+
 def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
+    """Atomically publish JSON, keeping an existing primary report when a probe fails."""
     stem = report_stem(report["url"])
     destination = output_dir / f"{stem}.json"
     if report["status"] != "success" and destination.exists():
@@ -183,6 +198,7 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
 
     temporary_path = None
     try:
+        # A sibling temporary file keeps replacement on the destination filesystem.
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -208,6 +224,8 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
 
 
 async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: float) -> int:
+    """Inspect URLs serially through a local server; return a nonzero status on any failure."""
+    # Source tools need a configured vault, but evaluation must not use a real user's vault.
     with TemporaryDirectory(prefix="obsidian-ingest-evaluation-") as temporary_vault:
         server = StdioServerParameters(
             command="uv",
@@ -258,6 +276,7 @@ async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: floa
 
 
 def main() -> int:
+    """Validate manifest/output arguments and run the model-free MCP inspection batch."""
     parser = argparse.ArgumentParser(
         description=(
             "Save the source-tool content exposed to an agent over local MCP for each URL in "

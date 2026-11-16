@@ -34,6 +34,8 @@ class Source:
 
 @dataclass(frozen=True, slots=True)
 class SourceOverview:
+    """Summarize acquired evidence and navigation counts for agent-led curation."""
+
     metadata: SourceMetadata
     content_category: ContentCategory | None
     chapter_count: int

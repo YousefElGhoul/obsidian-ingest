@@ -1,4 +1,4 @@
-"""Stdio MCP entry point for harness configuration."""
+"""Launch shared acquisition, curation-support, and draft operations over stdio MCP for harnesses."""
 
 import sys
 

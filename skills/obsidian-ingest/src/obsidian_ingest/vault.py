@@ -1,4 +1,7 @@
-"""Restricted, read-only vault search and note access."""
+"""Provide scoped, read-only vault evidence for agent-led curation after acquisition.
+
+All searches, reads, and generated-link references share the trusted path policy.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from typing import NoReturn, Self
 
 from obsidian_ingest.config import VaultSettings
 
+# Bound agent-facing pages by both content size and serialized transport size.
 MAX_SEARCH_LIMIT = 20
 MAX_QUERY_LENGTH = 256
 MAX_SNIPPET_CHARS = 240
@@ -37,6 +41,7 @@ def _revision(digest: hashlib._Hash) -> str:
 
 
 def _check_revision_format(revision: str | None) -> None:
+    """Reject malformed optional revisions before testing whether note content changed."""
     if revision is not None and (
         not isinstance(revision, str) or not _REVISION_PATTERN.fullmatch(revision)
     ):
@@ -62,6 +67,8 @@ class NoteChanged(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class NoteReference:
+    """Process-local handle and content revision for a scoped vault-relative note."""
+
     note_id: str
     path: str
     revision: str
@@ -73,6 +80,7 @@ class VaultReader:
     """Apply one trusted path policy to recursive search and every note operation."""
 
     def __init__(self, settings: VaultSettings) -> None:
+        """Validate trusted scope settings and hold the root open until close is called."""
         if not settings.root.is_absolute() or not settings.root.is_dir():
             raise ValueError("Vault root must be an existing absolute directory")
         if not isinstance(settings.allowed, tuple) or not settings.allowed:
@@ -130,6 +138,7 @@ class VaultReader:
         )
 
     def _could_contain_allowed(self, relative: str) -> bool:
+        """Keep ancestor directories traversable without granting access to their siblings."""
         if self._excluded(relative):
             return False
         if self.settings.allowed == ("*",):
@@ -142,6 +151,7 @@ class VaultReader:
         )
 
     def _open_relative(self, relative: str, *, directory: bool = False) -> int:
+        """Return an owned scoped descriptor or raise NoteUnavailable for unsafe access."""
         if not relative or relative.startswith("/") or "\\" in relative:
             raise NoteUnavailable
         parts = relative.split("/")
@@ -156,6 +166,7 @@ class VaultReader:
                 child = os.open(component, _DIRECTORY_FLAGS, dir_fd=parent)
                 os.close(parent)
                 parent = child
+            # Reject hard links and compare identity after open to catch replacement races.
             before = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             valid_before = (
                 stat.S_ISDIR(before.st_mode)
@@ -186,6 +197,7 @@ class VaultReader:
             os.close(parent)
 
     def _validate_settings(self) -> None:
+        """Check allowed entries and the writable destination without creating folders."""
         destination = self.settings.draft_folder
         for allowed in self.settings.allowed:
             if allowed == "*":
@@ -205,6 +217,7 @@ class VaultReader:
                     destination_parent = destination == allowed or destination.startswith(
                         allowed + "/"
                     )
+                    # The create-only writer may create a missing draft destination later.
                     if missing and destination_parent and not self._excluded(allowed):
                         continue
                     raise ValueError(f"Allowed path is missing or unsafe: {allowed}") from error
@@ -242,7 +255,10 @@ class VaultReader:
             os.close(parent)
 
     def _paths(self):
+        """Yield scoped Markdown paths in stable depth-first order, skipping unsafe entries."""
+
         def walk(parent_fd: int, prefix: str):
+            """Traverse only directories that can contain allowed notes, without symlinks."""
             try:
                 names = sorted(os.listdir(parent_fd))
             except OSError:
@@ -323,6 +339,7 @@ class VaultReader:
         return _revision(digest), frozenset(found_terms), snippet
 
     def _register(self, relative: str, revision: str) -> NoteReference:
+        """Issue a handle and mark whether the literal path is safe inside a wikilink."""
         # Short lowercase hex: weak models mistype long mixed-case handles.
         note_id = "note_" + secrets.token_hex(6)
         while note_id in self._references:
@@ -346,6 +363,7 @@ class VaultReader:
         return hashlib.sha256(policy.encode()).hexdigest()[:32]
 
     def _cursor(self, query: str, scope: str, offset: int) -> str:
+        """Encode a continuation offset bound to this query and trusted vault policy."""
         # The cursor is a stateless continuation hint, not a capability: every search
         # re-applies the current access policy, so a forged offset cannot widen access.
         payload = json.dumps(
@@ -356,6 +374,7 @@ class VaultReader:
         return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
     def _decode_cursor(self, cursor: str, query: str, scope: str) -> int:
+        """Return a matching nonnegative offset or raise a coded invalid-cursor error."""
         try:
             if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
                 raise ValueError
@@ -382,6 +401,7 @@ class VaultReader:
     def search(
         self, query: str = "", *, scope: str = "both", cursor: str | None = None, limit: int = 10
     ) -> dict:
+        """Return a bounded ranked note page; reject invalid arguments or cursor bindings."""
         if not isinstance(query, str) or len(query) > MAX_QUERY_LENGTH:
             raise ValueError("INVALID_ARGUMENT: query must be at most 256 characters")
         if scope not in {"title", "content", "both"}:
@@ -459,6 +479,7 @@ class VaultReader:
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode()
+            # Reserve transport overhead beyond the modeled MCP text envelope.
             if len(envelope) <= MAX_NOTE_RESPONSE_BYTES - 1024:
                 return result
             page.pop()
@@ -470,10 +491,12 @@ class VaultReader:
 
     @staticmethod
     def _snippet(content: str, position: int) -> str:
+        """Include a little context before the first match within the snippet budget."""
         start = max(0, position - MAX_SNIPPET_CHARS // 3)
         return content[start : start + MAX_SNIPPET_CHARS].replace("\n", " ")
 
     def get_reference(self, note_id: str, revision: str | None = None) -> NoteReference:
+        """Revalidate a handle's content; raise NoteUnavailable or NoteChanged if stale."""
         if not isinstance(note_id, str) or len(note_id) > 80:
             raise NoteUnavailable
         reference = self._references.get(note_id)
@@ -530,6 +553,7 @@ class VaultReader:
         return reference
 
     def _read_range(self, relative: str, offset: int, selected_limit: int) -> tuple[str, int, str]:
+        """Return a character slice, total length, and revision; reject inconsistent reads."""
         fd = self._open_relative(relative)
         digest = hashlib.sha256()
         decoder = codecs.getincrementaldecoder("utf-8")()
@@ -541,6 +565,7 @@ class VaultReader:
                     total_characters += len(decoder.decode(block))
                 total_characters += len(decoder.decode(b"", final=True))
                 first_revision = _revision(digest)
+                # Two complete hashes detect edits between counting and selecting text.
                 file.seek(0)
                 digest = hashlib.sha256()
                 decoder = codecs.getincrementaldecoder("utf-8")()
@@ -569,6 +594,7 @@ class VaultReader:
     def read(
         self, note_id: str, *, offset: int = 0, limit: int = 4000, revision: str | None = None
     ) -> dict:
+        """Read a bounded character page; continuation requires the unchanged revision."""
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("INVALID_ARGUMENT: offset must be nonnegative")
         if (
@@ -624,6 +650,7 @@ class VaultReader:
             if len(envelope) <= MAX_NOTE_RESPONSE_BYTES - 1024:
                 page = candidate
                 break
+            # UTF-8 and JSON escaping can exceed the byte budget despite character limits.
             selected_limit //= 2
             if selected_limit == 0:
                 break
@@ -633,10 +660,12 @@ class VaultReader:
         return page
 
     def close(self) -> None:
+        """Release the root descriptor owned by this reader."""
         os.close(self._root_fd)
 
     def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        """Close the reader even when a scoped operation raises."""
         self.close()

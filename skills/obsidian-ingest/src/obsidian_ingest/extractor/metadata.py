@@ -1,3 +1,5 @@
+"""Define normalized acquisition metadata and exclusion provenance for source navigation."""
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -6,11 +8,15 @@ from obsidian_ingest.extractor import ContentCategory, Provider, detect_provider
 
 
 class NativeFormat(StrEnum):
+    """Provider-native presentation format, independent of duration-based categories."""
+
     STANDARD = "standard"
     VERTICAL_SHORT = "vertical_short"
 
 
 class ExclusionStatus(StrEnum):
+    """Distinguish a completed lookup, an intentional opt-out, and unavailable filtering."""
+
     COMPLETE = "complete"
     DISABLED = "disabled"
     FAILED = "failed"
@@ -18,6 +24,8 @@ class ExclusionStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ExcludedRange:
+    """Attribute a half-open exclusion interval in source seconds to its lookup provider."""
+
     start: float
     end: float
     reason: str
@@ -26,6 +34,8 @@ class ExcludedRange:
 
 @dataclass(frozen=True, slots=True)
 class ExclusionLookup:
+    """Retain requested categories and lookup outcome, including explicit failure details."""
+
     ranges: tuple[ExcludedRange, ...]
     status: ExclusionStatus
     provenance: str
@@ -36,6 +46,8 @@ class ExclusionLookup:
 
 @dataclass(frozen=True, slots=True)
 class Chapter:
+    """Preserve a creator's titled interval in source seconds without semantic repartitioning."""
+
     title: str
     start: float
     end: float
@@ -43,6 +55,8 @@ class Chapter:
 
 @dataclass(frozen=True, slots=True)
 class YouTubeMetadata:
+    """Keep normalized YouTube-only context separate from common source fields."""
+
     channel_handle: str | None
     playlist_id: str | None
     playlist_title: str | None
@@ -54,6 +68,8 @@ class YouTubeMetadata:
 
 @dataclass(frozen=True, slots=True)
 class SourceMetadata:
+    """Carry source identity, attribution, and navigation context into curation."""
+
     provider: Provider
     source_id: str
 
@@ -86,6 +102,7 @@ def categorize_content(metadata: SourceMetadata) -> ContentCategory | None:
     duration = metadata.duration_seconds
     if duration is None:
         return None
+    # Navigation bands: under eight minutes, eight through fifty, and over fifty.
     if duration < 480:
         return ContentCategory.SHORT_FORM
     if duration <= 3000:
@@ -94,6 +111,7 @@ def categorize_content(metadata: SourceMetadata) -> ContentCategory | None:
 
 
 def fetch_metadata(url: str) -> SourceMetadata:
+    """Dispatch metadata acquisition, raising ValueError for providers without an extractor."""
     provider = detect_provider(url)
     if provider == Provider.YOUTUBE:
         from obsidian_ingest.extractor.providers.youtube import get_youtube_metadata

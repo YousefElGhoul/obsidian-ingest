@@ -1,3 +1,5 @@
+"""Define unchanged caption atoms and provider dispatch for acquisition before curation."""
+
 from dataclasses import dataclass
 
 from obsidian_ingest.extractor import Provider, detect_provider
@@ -5,6 +7,8 @@ from obsidian_ingest.extractor import Provider, detect_provider
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
+    """One source caption event or cue, with start and duration in seconds."""
+
     text: str
     start: float
     duration: float
@@ -12,6 +16,8 @@ class TranscriptSegment:
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
+    """Keep source-ordered caption atoms and their selected language/origin together."""
+
     video_id: str
     language: str
     language_code: str
@@ -22,6 +28,7 @@ class Transcript:
 def fetch_transcript(
     url: str,
 ) -> Transcript:
+    """Acquire a supported source's captions, raising ValueError for unsupported providers."""
     provider = detect_provider(url)
     if provider == Provider.YOUTUBE:
         from obsidian_ingest.extractor.providers.youtube import get_youtube_subtitles
@@ -40,6 +47,7 @@ def fetch_transcript(
 
 
 def format_timestamp(seconds: float) -> str:
+    """Truncate fractional seconds and render MM:SS, adding hours when nonzero."""
     total_seconds = int(seconds)
 
     hours, remainder = divmod(total_seconds, 3600)
@@ -52,6 +60,7 @@ def format_timestamp(seconds: float) -> str:
 
 
 def print_transcript(url: str) -> None:
+    """Fetch and print original caption atoms with source identity and start timestamps."""
     transcript = fetch_transcript(url)
 
     print(f"Video: {transcript.video_id}")

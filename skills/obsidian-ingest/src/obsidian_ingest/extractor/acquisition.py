@@ -10,6 +10,8 @@ MAX_CAPTION_BYTES = 16 * 1024 * 1024
 
 
 class CaptionFormat(StrEnum):
+    """Supported caption response formats, in acquisition preference order."""
+
     JSON3 = "json3"
     VTT = "vtt"
 
@@ -37,6 +39,7 @@ class OriginalCaption:
 
     @property
     def sha256(self) -> str:
+        """Identify the exact retained bytes independently of their parsed transcript."""
         return hashlib.sha256(self.data).hexdigest()
 
 
@@ -51,4 +54,5 @@ class Acquisition:
 
 
 def describe_original(original: OriginalCaption, is_translated: bool | None) -> CaptionTrack:
+    """Build compact provenance for original bytes without embedding them in the snapshot."""
     return CaptionTrack(original.format, is_translated, len(original.data), original.sha256)

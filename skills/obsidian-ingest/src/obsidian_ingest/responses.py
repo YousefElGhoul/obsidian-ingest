@@ -55,6 +55,7 @@ class OperationError(Exception):
     """An expected failure with a stable code shared by every transport."""
 
     def __init__(self, code: str, message: str) -> None:
+        """Keep the stable code separate from the user-facing failure explanation."""
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
@@ -82,6 +83,7 @@ def as_operation_error(error: BaseException) -> OperationError | None:
 
 
 def compact_json(value: Any) -> str:
+    """Serialize Unicode result data without whitespace for consistent byte budgeting."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -142,6 +144,7 @@ def _validate_ingest_request(url: object, exclude_sponsors: object, refresh: obj
 def ingest(
     cache: SourceCache, url: str, *, exclude_sponsors: bool = True, refresh: bool = False
 ) -> dict[str, Any]:
+    """Acquire or reuse a capture; distinguish invalid requests from acquisition failures."""
     _validate_ingest_request(url, exclude_sponsors, refresh)
     try:
         result = cache.ingest(url, exclude_sponsors=exclude_sponsors, refresh=refresh)
@@ -159,6 +162,7 @@ def ingest(
 
 
 def load_source(cache: SourceCache, source_id: str) -> Source:
+    """Load an issued source ID or raise INVALID_ARGUMENT or SOURCE_NOT_FOUND."""
     if not isinstance(source_id, str) or not source_id:
         raise OperationError("INVALID_ARGUMENT", "source_id must be a nonempty string")
     try:
@@ -170,6 +174,7 @@ def load_source(cache: SourceCache, source_id: str) -> Source:
 
 
 def chapters(source: Source) -> list[dict[str, Any]]:
+    """Expose creator chapters with stable indices for subsequent chapter reads."""
     return [
         {"index": index, "title": chapter.title, "start": chapter.start, "end": chapter.end}
         for index, chapter in enumerate(list_chapters(source))
@@ -177,6 +182,7 @@ def chapters(source: Source) -> list[dict[str, Any]]:
 
 
 def exclusions(source: Source) -> list[dict[str, Any]]:
+    """Expose exclusion ranges and the original transcript indices they removed."""
     return [
         {
             "range_index": range_index,
@@ -200,6 +206,7 @@ SEGMENT_FIELDS = ("source_index", "start", "duration", "text")
 def _segment_page_data(
     segments: list[list[Any]], offset: int, limit: int, total: int
 ) -> dict[str, Any]:
+    """Build compact rows' paging metadata without changing original source indices."""
     next_offset = offset + len(segments)
     return {
         # Rows instead of objects: repeating four keys per atom tripled a page's size.
@@ -262,6 +269,7 @@ def transcript_page(
     if read_token is not None:
         token_progress(source, read_token)
     ordered_read = start is None and end is None and not include_excluded
+    # Budget the token before choosing atoms so adding it cannot overflow the envelope.
     reserve = {"read_token": TOKEN_PLACEHOLDER} if ordered_read or read_token else None
     page = segment_page(entries, offset, limit, reserve)
     if ordered_read:
@@ -279,12 +287,15 @@ def chapter_page(
     offset: int = 0,
     limit: int = DEFAULT_PAGE_SIZE,
 ) -> dict[str, Any]:
+    """Page whole atoms owned by a creator chapter, preserving source indices."""
     entries = read_chapter_entries(source, chapter_index, include_excluded=include_excluded)
     return segment_page(entries, offset, limit)
 
 
 @dataclass(frozen=True, slots=True)
 class Thumbnail:
+    """Fetched image bytes and identified metadata shared by the two transport adapters."""
+
     data: bytes
     image: ImageInfo
     url: str
@@ -312,7 +323,7 @@ def thumbnail(source: Source) -> Thumbnail:
 
 
 def _with_identifier(item: dict[str, Any], identifier: NoteIdentifier) -> dict[str, Any]:
-    """Keep only identifiers that the calling transport accepts on follow-up calls."""
+    """Drop note_id and keep path for CLI results; return MCP results unchanged."""
     if identifier == "path":
         return {key: value for key, value in item.items() if key != "note_id"}
     return item
@@ -327,6 +338,7 @@ def search_vault(
     limit: int = DEFAULT_SEARCH_LIMIT,
     identifier: NoteIdentifier = "note_id",
 ) -> dict[str, Any]:
+    """Search with shared bounds; CLI results drop note_id and keep path, MCP results stay unchanged."""
     result = vault.search(query, scope=scope, cursor=cursor, limit=limit)
     return result | {"notes": [_with_identifier(note, identifier) for note in result["notes"]]}
 
@@ -340,14 +352,17 @@ def read_vault_note(
     revision: str | None = None,
     identifier: NoteIdentifier = "note_id",
 ) -> dict[str, Any]:
+    """Read a revision-checked note page and adapt its identifier without changing data."""
     page = vault.read(note_id, offset=offset, limit=limit, revision=revision)
     return _with_identifier(page, identifier)
 
 
 def _path_result(result: DraftResult) -> dict[str, str]:
+    """Expose the published path in the same result shape for both writers."""
     return {"path": str(result.path)}
 
 
+# Clock notation has optional hours; bare numbers represent seconds.
 _CLOCK_TIME = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.\d+)?|\d+(?:\.\d+)?")
 
 
@@ -380,6 +395,7 @@ def _source_timestamps(source: Source, values: tuple[float | str, ...]) -> tuple
     if entries:
         end = max(segment.start + segment.duration for _, segment in entries)
         for timestamp in timestamps:
+            # Allow one second of rounding slack against caption extent, not metadata.
             if isinstance(timestamp, (int, float)) and timestamp > end + 1:
                 raise ValueError(
                     f"INVALID_ARGUMENT: timestamp {timestamp:g}s is past the end of the "
@@ -437,6 +453,7 @@ def write_edit_suggestion(
     timestamps: tuple[float | str, ...] = (),
     read_token: str | None = None,
 ) -> dict[str, str]:
+    """Require a complete retained read before creating a review-only, attributed draft."""
     require_full_read(source, read_token)
     result = create_edit_suggestion(
         settings,

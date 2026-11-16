@@ -1,4 +1,4 @@
-"""Fetch a YouTube video's thumbnail from its fixed image host, on demand."""
+"""Fetch optional YouTube thumbnail evidence on demand, outside caption acquisition and caching."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ THUMBNAIL_HOST = "i.ytimg.com"
 THUMBNAIL_NAMES = ("hqdefault.jpg", "mqdefault.jpg")
 MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
 TIMEOUT_SECONDS = 10
+# Limit the path component to URL-safe identity characters, excluding path/query injection.
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
@@ -29,7 +30,7 @@ def thumbnail_urls(video_id: str) -> tuple[str, ...]:
 
 
 def fetch_youtube_thumbnail(video_id: str) -> tuple[bytes, str]:
-    """Return the first available thumbnail's bytes and URL."""
+    """Return the first available thumbnail's bytes and URL, or raise ThumbnailError."""
     urls = thumbnail_urls(video_id)
     options = {"quiet": True, "no_warnings": True, "socket_timeout": TIMEOUT_SECONDS}
     with yt_dlp.YoutubeDL(options) as ydl:
@@ -44,6 +45,7 @@ def fetch_youtube_thumbnail(video_id: str) -> tuple[bytes, str]:
                 ) from error
             except RequestError as error:
                 raise ThumbnailError(f"thumbnail request failed: {error}") from error
+            # One extra byte distinguishes an oversized image from an exactly-at-limit image.
             data = response.read(MAX_THUMBNAIL_BYTES + 1)
             if not isinstance(data, bytes):
                 raise ThumbnailError("thumbnail response did not return bytes")

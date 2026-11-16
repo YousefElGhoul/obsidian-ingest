@@ -40,6 +40,7 @@ from obsidian_ingest.source import Source, ingest_source
 
 SCHEMA_VERSION = 2
 _ROW = "source_id, provider, native_id, exclude_sponsors, payload, checksum"
+# Stable source handles identify option keys; capture IDs identify replaceable evidence.
 _SCHEMA = (
     (
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, capture_id TEXT NOT NULL UNIQUE, "
@@ -70,17 +71,22 @@ class CachedSource:
 
 
 def default_cache_path() -> Path:
+    """Locate disposable acquisition state, ignoring relative XDG state roots."""
     state = os.environ.get("XDG_STATE_HOME")
     root = Path(state) if state and Path(state).is_absolute() else Path.home() / ".local/state"
     return root / "obsidian-ingest/sources.sqlite3"
 
 
 def reset_instructions(path: Path) -> str:
+    """Describe explicit cache recovery without suggesting any vault-note changes."""
     return (
         f"The source cache is disposable. To recreate it, stop obsidian-ingest processes "
         f"using it and delete {path}; a new cache is created on next use. Vault notes are "
         "not affected, but existing source_id handles become unknown, so ingest URLs again."
     )
+
+
+# Snapshot serialization and validation
 
 
 def _json_default(value: object) -> str:
@@ -90,6 +96,7 @@ def _json_default(value: object) -> str:
 
 
 def _encode(source: Source) -> str:
+    """Serialize the normalized capture; original caption bytes live in a separate table."""
     acquisition = source.acquisition
     return json.dumps(
         {
@@ -110,6 +117,7 @@ def _date(value: str | None) -> datetime | None:
 
 
 def _decode_acquisition(data: dict | None) -> Acquisition | None:
+    """Restore optional provenance and reject malformed caption identity fields."""
     if data is None:
         return None
     caption = data["caption"]
@@ -138,6 +146,7 @@ def _decode_acquisition(data: dict | None) -> Acquisition | None:
 
 
 def _decode(payload: str) -> Source:
+    """Rebuild and validate a snapshot, deriving filtering from retained source atoms."""
     data = json.loads(payload)
     if type(data["version"]) is not int or data["version"] != SCHEMA_VERSION:
         raise ValueError("Incompatible extraction snapshot version")
@@ -230,6 +239,7 @@ def _decode(payload: str) -> Source:
 
 
 def _original_for_storage(source: Source) -> OriginalCaption | None:
+    """Reject original bytes that disagree with the capture's provenance record."""
     original = source.original_caption
     if original is None:
         return None
@@ -244,14 +254,19 @@ def _original_for_storage(source: Source) -> OriginalCaption | None:
     return original
 
 
+# Persistent capture access
+
+
 class SourceCache:
     """Cache one current capture per option key; refresh retains the existing handle."""
 
     def __init__(self, path: Path | None = None) -> None:
+        """Open or initialize the schema; incompatible databases require an explicit reset."""
         self.path = path if path is not None else default_cache_path()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(self.path)) as connection, connection:
+                # Serialize schema initialization with other writers, without migrating data.
                 connection.execute("BEGIN IMMEDIATE")
                 schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if schema_version not in (0, SCHEMA_VERSION):
@@ -282,11 +297,13 @@ class SourceCache:
             ) from error
 
     def _connect(self) -> sqlite3.Connection:
+        """Enable capture-dependent deletion on every operational connection."""
         connection = sqlite3.connect(self.path)
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def _read(self, column: str, values: tuple) -> tuple | None:
+        """Read with an internal SQL predicate and separately bound lookup values."""
         try:
             with closing(self._connect()) as connection:
                 return connection.execute(
@@ -296,6 +313,7 @@ class SourceCache:
             raise SourceCacheError(f"Cannot read source cache {self.path}: {error}") from error
 
     def _result(self, row: tuple, *, cached: bool) -> CachedSource:
+        """Check payload integrity and option-key agreement before exposing cached evidence."""
         source_id, provider, native_id, exclude_sponsors, payload, checksum = row
         try:
             if not isinstance(source_id, str) or not source_id:
@@ -322,6 +340,7 @@ class SourceCache:
             ) from error
 
     def get(self, source_id: str) -> Source:
+        """Return a validated capture, raising KeyError for an unknown persistent handle."""
         row = self._read("source_id = ?", (source_id,))
         if row is None:
             raise KeyError(source_id)
@@ -368,6 +387,7 @@ class SourceCache:
         if provider != Provider.YOUTUBE:
             raise ValueError(f"Source ingestion is not supported for provider: {provider}")
         native_id = extract_video_id(url)
+        # URL aliases share a capture; sponsor filtering is part of acquisition identity.
         key = (provider.value, native_id, int(exclude_sponsors))
         predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
         row = self._read(predicate, key)
@@ -384,6 +404,7 @@ class SourceCache:
         capture_id = uuid4().hex
         try:
             with closing(self._connect()) as connection, connection:
+                # Deletion and replacement commit together; any write failure rolls both back.
                 connection.execute("BEGIN IMMEDIATE")
                 existing = connection.execute(
                     f"SELECT {_ROW} FROM sources WHERE {predicate}", key

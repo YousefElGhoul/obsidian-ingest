@@ -8,6 +8,7 @@ from math import isfinite
 from obsidian_ingest.extractor.acquisition import CaptionError, CaptionFormat
 from obsidian_ingest.extractor.transcript import TranscriptSegment
 
+# Optional hours, fixed-width minutes/seconds, and milliseconds; cue settings may follow.
 _VTT_TIME = r"(?:(\d+):)?([0-5]\d):([0-5]\d)\.(\d{3})"
 _VTT_TIMING = re.compile(rf"^{_VTT_TIME}[ \t]+-->[ \t]+{_VTT_TIME}(?:[ \t].*)?$")
 _VTT_TAG = re.compile(r"<[^>]*>")
@@ -15,6 +16,7 @@ _BLANK_LINES = re.compile(r"\n[ \t]*\n")
 
 
 def _milliseconds(event: dict, field: str, index: int) -> float:
+    """Validate provider millisecond fields before converting to domain seconds."""
     value = event[field]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CaptionError(f"JSON3 event {index} has non-numeric {field}")
@@ -56,10 +58,12 @@ def parse_json3(captions: dict) -> tuple[TranscriptSegment, ...]:
 
 
 def _vtt_seconds(hours: str | None, minutes: str, seconds: str, millis: str) -> int:
+    """Return integer milliseconds, keeping cue arithmetic exact until atom creation."""
     return ((int(hours or 0) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(millis)
 
 
 def _is_vtt_metadata_block(first_line: str) -> bool:
+    """Recognize non-cue blocks without mistaking a timing line for metadata."""
     return "-->" not in first_line and any(
         first_line == name or first_line.startswith((f"{name} ", f"{name}\t"))
         for name in ("NOTE", "STYLE", "REGION")
@@ -90,6 +94,7 @@ def parse_vtt(text: str) -> tuple[TranscriptSegment, ...]:
         lines = block.split("\n")
         if _is_vtt_metadata_block(lines[0]):
             continue
+        # A cue may have one identifier line before its timing line.
         timing_index = 0 if "-->" in lines[0] else 1
         match = _VTT_TIMING.match(lines[timing_index]) if timing_index < len(lines) else None
         if match is None:

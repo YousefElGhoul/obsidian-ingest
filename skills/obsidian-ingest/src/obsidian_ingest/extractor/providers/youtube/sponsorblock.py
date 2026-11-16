@@ -1,3 +1,5 @@
+"""Acquire explicit SponsorBlock lookup outcomes for best-effort source filtering before curation."""
+
 import json
 from datetime import UTC, datetime
 from math import isfinite
@@ -14,11 +16,15 @@ _PROVENANCE = "SponsorBlock"
 
 
 class _StrictSponsorBlockPP(SponsorBlockPP):
+    """Adapt yt-dlp lookup behavior so warnings cannot masquerade as complete evidence."""
+
     def report_warning(self, text: str, *args, **kwargs) -> None:
+        """Promote optional-provider warnings to failures for the caller to report."""
         # There is no partial status: warnings must not become COMPLETE results.
         raise RuntimeError(f"SponsorBlock lookup failed: {text}")
 
     def _download_json(self, url: str, *, expected_http_errors=(404,)) -> list[dict]:
+        """Treat no-match responses as empty lists while preserving transport failures."""
         # Use yt-dlp's existing transport, distinguishing no matches from failures.
         try:
             response = self._downloader.urlopen(Request(url))
@@ -34,6 +40,7 @@ class _StrictSponsorBlockPP(SponsorBlockPP):
         return result
 
     def _get_sponsor_segments(self, video_id: str, service: str) -> list[dict]:
+        """Validate configured skip intervals before provider endpoint normalization."""
         segments = super()._get_sponsor_segments(video_id, service)
         # Validate before yt-dlp snaps/clamps endpoints, which can hide invalid input.
         for segment in segments:
@@ -53,6 +60,7 @@ class _StrictSponsorBlockPP(SponsorBlockPP):
 
 
 def _validate_categories(categories: tuple[str, ...]) -> None:
+    """Reject categories that yt-dlp cannot use as skippable ranges."""
     skip_categories = (
         SponsorBlockPP.CATEGORIES.keys() - SponsorBlockPP.NON_SKIPPABLE_CATEGORIES.keys()
     )
@@ -62,6 +70,7 @@ def _validate_categories(categories: tuple[str, ...]) -> None:
 
 
 def _seconds(value: object, field: str) -> float:
+    """Validate untrusted provider timing, explicitly rejecting booleans and nonfinite values."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"SponsorBlock {field} must be a finite nonnegative number")
     try:
@@ -111,6 +120,7 @@ def fetch_exclusions(
     if not isinstance(info.get("id"), str) or not info["id"]:
         raise ValueError("SponsorBlock requires a nonempty video id")
 
+    # Do not mutate the shared extraction snapshot or reuse its preexisting lookup results.
     lookup_info = info.copy()
     lookup_info.pop("sponsorblock_chapters", None)
     try:

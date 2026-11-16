@@ -1,4 +1,7 @@
-"""Application functions for verified vault connections and edit proposals."""
+"""Verify existing-vault connections before publishing curated drafts and edit proposals.
+
+These application functions bridge agent choices and the create-only draft writer.
+"""
 
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
 from obsidian_ingest.extractor.metadata import SourceMetadata
@@ -11,6 +14,7 @@ MAX_REASON_LENGTH = 300
 def verified_related_notes(
     vault: VaultReader, references: list[dict[str, str]] | None
 ) -> tuple[tuple[str, str], ...]:
+    """Return deduplicated verified wikilink/reason pairs or raise a coded ValueError."""
     if references is None:
         return ()
     if not isinstance(references, list) or len(references) > MAX_RELATED_NOTES:
@@ -41,6 +45,7 @@ def verified_related_notes(
         if "[[" in reason or "]]" in reason:
             raise ValueError("INVALID_ARGUMENT: related note reason must not contain wikilinks")
         try:
+            # Ordinary links require current access, not a pinned content revision.
             reference = vault.get_linkable_reference(note_id)
         except NoteUnavailable as error:
             shown = note_id[:40] if isinstance(note_id, str) else type(note_id).__name__
@@ -93,6 +98,7 @@ def create_edit_suggestion(
             "INVALID_ARGUMENT: proposed_content must be nonempty and at most 20000 characters"
         )
     try:
+        # Proposals, unlike ordinary links, must refer to the exact content reviewed.
         target = vault.get_reference(target_note_id, target_revision)
     except NoteUnavailable as error:
         raise ValueError("NOTE_UNAVAILABLE: target note is unavailable") from error
@@ -106,6 +112,7 @@ def create_edit_suggestion(
         f"## Why\n\n{reasoning.strip()}\n\n"
         f"## Proposed Content\n\n{proposed_content.strip()}"
     )
+    # Only the suggestion is published; the canonical target is never opened for writing.
     return create_draft(
         settings,
         filename=f"edit-{target.title}",

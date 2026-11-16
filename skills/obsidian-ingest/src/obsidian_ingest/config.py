@@ -1,4 +1,7 @@
-"""Trusted TOML configuration for the local MCP server."""
+"""Load trusted vault scope and draft destinations for CLI and MCP curation.
+
+Configuration grants filesystem access; acquired source text cannot extend this policy.
+"""
 
 import tomllib
 from dataclasses import dataclass
@@ -9,6 +12,8 @@ from obsidian_ingest.drafts import _draft_folder_parts
 
 @dataclass(frozen=True, slots=True)
 class VaultSettings:
+    """Trusted root, readable scope, exclusions, and create-only publication destination."""
+
     root: Path
     allowed: tuple[str, ...]
     excluded: tuple[str, ...]
@@ -21,6 +26,7 @@ def default_config_path() -> Path:
 
 
 def _relative_parts(value: object, label: str) -> tuple[str, ...]:
+    """Validate a relative policy path, raising a label-specific ValueError if unsafe."""
     if (
         not isinstance(value, str)
         or not value
@@ -80,5 +86,6 @@ def load_vault_settings(path: Path) -> VaultSettings:
         raise ValueError("vault.allowed and vault.excluded must not contain duplicates")
     draft_folder = section.get("draft_folder", "00 Inbox/AI Drafts")
     draft_folder = "/".join(_relative_parts(draft_folder, "vault.draft_folder"))
+    # Publication paths also need portable components, beyond read-scope path safety.
     _draft_folder_parts(draft_folder)
     return VaultSettings(root.resolve(strict=True), allowed, excluded, draft_folder)

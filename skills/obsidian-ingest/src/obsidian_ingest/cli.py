@@ -1,3 +1,8 @@
+"""Adapt shell commands to shared acquisition, reading, and draft-publication operations.
+
+CLI paths replace MCP note handles; application validation and results stay shared.
+"""
+
 import argparse
 import asyncio
 import json
@@ -36,6 +41,7 @@ class _Parser(argparse.ArgumentParser):
     """Report invalid tool arguments with the same coded error shape as other failures."""
 
     def error(self, message: str) -> NoReturn:
+        """Emit coded JSON for tool syntax errors while retaining normal parser behavior."""
         # Subparsers report their own errors; the top-level parser reports leftovers.
         command = self.prog.split()[-1]
         if command == "obsidian-ingest":
@@ -53,6 +59,7 @@ def _run_mcp(
     *,
     config_path: Path | None = None,
 ) -> None:
+    """Launch stdio MCP with trusted scope settings or an explicitly write-only vault."""
     from obsidian_ingest.drafts import DraftWriterSettings
     from obsidian_ingest.mcp_server import create_server
 
@@ -77,6 +84,7 @@ def _run_mcp(
 
 
 def _emit(value: Any) -> None:
+    """Write one JSON result to stdout, including supported metadata value types."""
     print(json.dumps(value, ensure_ascii=False, default=_json_default))
 
 
@@ -89,10 +97,12 @@ def _emit_error(error: OperationError) -> None:
 
 
 def _cache(args) -> SourceCache:
+    """Select the explicit acquisition database or its host-local default."""
     return SourceCache(args.cache_db)
 
 
 def _vault(path: Path | None):
+    """Open the trusted scoped reader, reporting missing or invalid settings as CONFIG_ERROR."""
     from obsidian_ingest.vault import VaultReader
 
     selected = path or default_config_path()
@@ -109,6 +119,7 @@ def _vault(path: Path | None):
 
 
 def _tool_parsers(subparsers) -> None:
+    """Register the CLI counterparts of shared MCP operations without duplicating logic."""
     parser = subparsers.add_parser(
         "ingest-source", help="Ingest a URL and return a persistent source ID"
     )
@@ -213,6 +224,7 @@ def _tool_parsers(subparsers) -> None:
 
 
 def _split(values: str) -> tuple[str, ...]:
+    """Normalize interactive comma-separated scope entries, ignoring blank items."""
     return tuple(item.strip() for item in values.split(",") if item.strip())
 
 
@@ -248,6 +260,7 @@ def _setup(
     excluded = excluded or ()
     draft_folder = draft_folder or "00 Inbox/AI Drafts"
     settings = VaultSettings(root.resolve(strict=True), allowed, excluded, draft_folder)
+    # Validate effective access before publishing a configuration that grants it.
     with VaultReader(settings):
         pass
 
@@ -258,6 +271,7 @@ def _setup(
         f"excluded = {json.dumps(list(settings.excluded), ensure_ascii=False)}\n"
         f"draft_folder = {json.dumps(settings.draft_folder, ensure_ascii=False)}\n"
     )
+    # Exclusive creation also protects against a destination appearing after exists().
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         file_fd = os.open(destination, flags, 0o600)
@@ -269,6 +283,7 @@ def _setup(
 
 
 def main() -> None:
+    """Dispatch setup/diagnostics locally and application tools through shared operations."""
     parser = _Parser(prog="obsidian-ingest")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -409,6 +424,7 @@ def _save_thumbnail(result: responses.Thumbnail, source_id: str) -> dict[str, ob
     path = directory / f"{source_id}.{result.image.extension}"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_bytes(result.data)
+    # Disposable thumbnail exports may be replaced; vault notes never use this path.
     os.replace(temporary, path)
     return {"path": str(path)} | result.summary()
 
@@ -424,6 +440,7 @@ def _path_handle(vault, path: str, label: str) -> str:
 
 
 def _run_write_command(args, source) -> dict[str, str]:
+    """Resolve CLI note paths, then delegate all publication checks to shared writers."""
     from obsidian_ingest.drafts import DraftWriterSettings
 
     with _vault(args.config) as vault:
@@ -460,6 +477,7 @@ def _run_write_command(args, source) -> dict[str, str]:
 
 
 def _json_default(value: object) -> str:
+    """Serialize metadata dates and paths; reject every unsupported JSON value type."""
     if isinstance(value, (datetime, Path)):
         return str(value) if isinstance(value, Path) else value.isoformat()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

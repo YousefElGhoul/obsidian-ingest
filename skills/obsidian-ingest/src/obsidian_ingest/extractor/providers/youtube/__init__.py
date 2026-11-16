@@ -1,3 +1,5 @@
+"""Acquire YouTube evidence and normalize provider fields before application curation."""
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -45,6 +47,9 @@ __all__ = (
 )
 
 
+# Caption selection and source identity
+
+
 def _select_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
     """Return the yt-dlp track key, generated flag, and offered formats."""
     for tracks, is_generated in (
@@ -74,11 +79,13 @@ def _select_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
 
 
 def choose_caption_track(info: dict) -> tuple[str, bool, list[dict]]:
+    """Select English captions, returning language, generated flag, and offered formats."""
     track_key, is_generated, formats = _select_caption_track(info)
     return track_key.removesuffix("-orig"), is_generated, formats
 
 
 def choose_caption_format(formats: list[dict]) -> dict:
+    """Prefer JSON3 over VTT; raise CaptionError when neither format is offered."""
     for preferred in CaptionFormat:
         for caption_format in formats:
             if caption_format.get("ext") == preferred.value:
@@ -101,6 +108,7 @@ def _translation_status(track_key: str, caption_format: dict) -> bool | None:
 
 
 def extract_video_id(url: str) -> str:
+    """Read a video identity from supported YouTube URL forms, or raise ValueError."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
 
@@ -124,8 +132,13 @@ def extract_video_id(url: str) -> str:
     return str(video_id)
 
 
+# Acquisition and provider normalization
+
+
 @dataclass(frozen=True, slots=True)
 class _Captions:
+    """Keep parsed source atoms paired with the exact response that produced them."""
+
     language: str
     is_generated: bool
     segments: tuple[TranscriptSegment, ...]
@@ -134,7 +147,7 @@ class _Captions:
 
 
 def get_youtube_subtitles(url: str) -> tuple[str, str, bool, tuple[TranscriptSegment, ...]]:
-
+    """Fetch English captions as video ID, language, generated flag, and source atoms."""
     video_id = extract_video_id(url)
 
     ydl_opts = {"quiet": True, "no_warnings": True}
@@ -147,6 +160,7 @@ def get_youtube_subtitles(url: str) -> tuple[str, str, bool, tuple[TranscriptSeg
 
 
 def _read_response(response: Any) -> bytes:
+    """Read at most one byte beyond the cap so oversized responses fail explicitly."""
     data = response.read(MAX_CAPTION_BYTES + 1)
     if not isinstance(data, bytes):
         raise CaptionError("Caption response did not return bytes")
@@ -156,6 +170,7 @@ def _read_response(response: Any) -> bytes:
 
 
 def _read_captions(ydl: yt_dlp.YoutubeDL, info: dict) -> _Captions:
+    """Fetch one selected track, retaining its original bytes alongside normalized atoms."""
     track_key, is_generated, formats = _select_caption_track(info)
     caption = choose_caption_format(formats)
     if not isinstance(caption.get("url"), str) or not caption["url"]:
@@ -177,6 +192,7 @@ def _yt_dlp_version() -> str | None:
 
 
 def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMetadata]:
+    """Reject playlist results before translating a single video's metadata."""
     info = ydl.extract_info(url, download=False)
     if not info or info.get("_type") in {"playlist", "multi_video"}:
         raise ValueError("Expected metadata for a single YouTube video")
@@ -185,6 +201,8 @@ def _extract_metadata(ydl: yt_dlp.YoutubeDL, url: str) -> tuple[dict, SourceMeta
 
 @dataclass(frozen=True, slots=True)
 class YouTubeContent:
+    """Carry one extraction snapshot and its best-effort exclusions into source assembly."""
+
     metadata: SourceMetadata
     transcript: Transcript
     exclusions: ExclusionLookup
@@ -228,6 +246,7 @@ def get_youtube_content(url: str, categories: tuple[str, ...] = ("sponsor",)) ->
 
 
 def get_youtube_metadata(url: str) -> SourceMetadata:
+    """Acquire normalized metadata for one video without downloading its media."""
     ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         _, metadata = _extract_metadata(ydl, url)
