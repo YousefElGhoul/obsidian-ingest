@@ -1,3 +1,38 @@
+<!--
+---
+portfolio:
+  title: "Obsidian Ingest"
+  subtitle: "AI Agent Skill That Turns Videos into Notes"
+  type:
+    - AI
+    - Tooling
+  status: "Active"
+  time: "2026"
+
+  description: "Send your AI agent a YouTube link and get back a few notes worth keeping, or none at all. The agent reads the whole transcript, checks your existing Obsidian vault for what you already know, and proposes new drafts or edit suggestions with timestamped source links. Python handles source access, vault scope, and a create-only writer that never touches your existing notes, so you stay in charge of what you keep. It is one skill shared by Claude Code, Codex, opencode, and Hermes, with matching CLI and MCP interfaces."
+
+  skills:
+    - Python
+    - AI Agents
+    - MCP
+    - Agent Skills
+    - LLM Tooling
+    - CLI
+    - SQLite
+    - Pydantic
+    - yt-dlp
+    - uv
+    - pytest
+    - Ruff
+    - GitHub Actions
+    - Linux
+    - Security
+
+  live: null
+  slug: "obsidian-ingest"
+---
+-->
+
 # Obsidian Ingest
 
 Turn a YouTube URL into a few useful notes for your existing Obsidian vault.
