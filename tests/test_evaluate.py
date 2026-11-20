@@ -9,8 +9,8 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from obsidian_ingest import evaluation
-from obsidian_ingest.evaluation import (
+import evaluate as evaluation
+from evaluate import (
     evaluate_source,
     main,
     parse_manifest,
