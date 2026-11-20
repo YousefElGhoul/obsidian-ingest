@@ -251,6 +251,12 @@ def test_url_and_note_are_mutually_exclusive(vault_setup, cli_runner) -> None:
     for args in ((), (URL, "--note", "Clippings/x.md")):
         error = cli_runner.fail("ingest-source", *args, *config, *db)
         assert error["code"] == "INVALID_ARGUMENT" and "exactly one" in error["message"]
+    # The note need not exist: the request is refused before the note is resolved.
+    error = cli_runner.fail("ingest-source", "--note", "Clippings/x.md", "--refresh", *config, *db)
+    assert error == {
+        "code": "INVALID_ARGUMENT",
+        "message": "--refresh applies only to a URL",
+    }
 
 
 def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli_runner) -> None:

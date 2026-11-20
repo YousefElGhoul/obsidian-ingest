@@ -8,6 +8,7 @@ from obsidian_ingest import responses
 from obsidian_ingest.extractor import SourceKind
 from obsidian_ingest.extractor.html_text import (
     Extraction,
+    ExtractionBuilder,
     _Walker,
     extract_html,
     parse,
@@ -44,10 +45,10 @@ def _source(
 
 
 def _render(xml: str, markup: str = "<html></html>") -> Extraction:
-    result = Extraction()
+    result = ExtractionBuilder()
     hints = sanitize(parse(markup), URL, result)
     _Walker(URL, hints, result).walk(etree.fromstring(f"<main>{xml}</main>"))
-    return result
+    return result.build()
 
 
 def _envelope_text_size(text: str) -> int:
@@ -162,7 +163,7 @@ def test_hidden_document_or_body_has_no_text(html_attributes: str, body_attribut
         + "A full paragraph of hidden text that should not be part of the article. " * 10
         + "</p></article></body></html>"
     )
-    assert extract_html(markup, URL).atoms == []
+    assert extract_html(markup, URL).atoms == ()
 
 
 def test_nested_list_keeps_parent_text_in_mixed_content_order() -> None:
@@ -186,7 +187,7 @@ def test_caption_follows_its_figure_when_other_occurrences_share_the_url() -> No
         '<figure><img src="/image#original" alt="figure one"><figcaption>One</figcaption></figure>'
         '<figure><img src="/image#original" alt="figure two"><figcaption>Two</figcaption></figure>'
     )
-    result = Extraction()
+    result = ExtractionBuilder()
     document = parse(markup)
     hints = sanitize(document, URL, result)
     images = list(document.iter("img"))
@@ -237,12 +238,12 @@ def test_html_heading_paths_use_full_labels_and_remain_unique() -> None:
         '<head rend="h2">Results (UK) (2)</head><p>Three</p>'
         '<head rend="h3">Detail</head><p>Four</p>'
     )
-    assert result.sections == [
+    assert result.sections == (
         ("Results (UK)", 0),
         ("Results (UK) (2)", 1),
         ("Results (UK) (2) (2)", 2),
         ("Results (UK) (2) (2) › Detail", 3),
-    ]
+    )
     assert [atom.section for atom in result.atoms] == [path for path, _ in result.sections]
 
 
@@ -270,3 +271,31 @@ def test_youtube_decoder_rejects_boolean_playlist_index(playlist_index: bool) ->
     assert details is not None
     with pytest.raises(ValueError, match="playlist_index"):
         YOUTUBE.decode_details(details | {"playlist_index": playlist_index})
+
+
+def test_rich_article_reads_back_through_the_cli(tmp_path, monkeypatch, cli_runner) -> None:
+    from articles import FakeWeb, Reply, page, words
+
+    url = "https://example.com/rich"
+    body = (
+        "<article><h1>Rich</h1>"
+        f"<p>Intro with <a href='/docs'>the docs</a>. {words(60, 'intro')}.</p>"
+        "<figure><img src='/chart.png' alt='A chart'><figcaption>Figure 1</figcaption></figure>"
+        "<h2>Code</h2><pre><code class='language-python'>print('hi')</code></pre>"
+        f"<p>{words(40, 'mid')}.</p>"
+        "<h2>Data</h2><table><tr><th>Name</th><th>Value</th></tr>"
+        "<tr><td>alpha</td><td>1</td></tr></table>"
+        f"<p>{words(40, 'end')}.</p></article>"
+    )
+    FakeWeb(routes={url: Reply(page(body, head="<title>Rich</title>"))}).install(monkeypatch)
+    db = ("--cache-db", str(tmp_path / "sources.db"))
+    source_id = cli_runner.ok("ingest-source", url, *db)["source_id"]
+    rows = cli_runner.ok("read-source", source_id, *db)["segments"]
+    by_kind = {kind: text for _, _, kind, text in rows}
+    assert "Intro with [the docs](https://example.com/docs)." in rows[0][3]
+    assert by_kind["image"] == "![A chart](https://example.com/chart.png)"
+    assert by_kind["caption"] == "Figure 1"
+    assert by_kind["code"] == "```python\nprint('hi')\n```"
+    assert by_kind["table_row"] == "Name: alpha; Value: 1"
+    sections = {section for _, section, _, _ in rows}
+    assert {"Code", "Data"} <= sections

@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 
 from obsidian_ingest import responses
 from obsidian_ingest.config import (
+    configure_providers,
     default_config_path,
     load_optional_vault_settings,
     load_vault_settings,
@@ -101,7 +102,7 @@ def _run_mcp(
                 "config/settings.example.toml to config/settings.toml and edit it"
             )
         vault_settings = load_vault_settings(selected_config)
-        _configure_providers(selected_config)
+        configure_providers(selected_config)
         settings = DraftWriterSettings(vault_settings.root, vault_settings.draft_folder)
         server = create_server(settings, cache_db=cache_db, vault_settings=vault_settings)
     else:
@@ -112,16 +113,6 @@ def _run_mcp(
     # Stdio MCP servers log to stderr; article acquisition logs one line per stage there.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="obsidian-ingest %(message)s")
     asyncio.run(server.run_stdio_async())
-
-
-def _configure_providers(config_path: Path) -> None:
-    """Apply the trusted article network policy from the settings file, if any."""
-    from dataclasses import asdict
-
-    from obsidian_ingest.config import load_article_settings
-    from obsidian_ingest.extractor.providers import configure
-
-    configure(asdict(load_article_settings(config_path)))
 
 
 def _emit(value: Any) -> None:
@@ -455,30 +446,21 @@ def _run_tool_command(args) -> Any:
             )
 
     config_path = args.config or default_config_path()
-    if args.command == "ingest-source":
-        if (args.url is None) == (args.note is None):
-            raise OperationError("INVALID_ARGUMENT", "pass exactly one of a URL or --note")
-        if args.note is not None and args.refresh:
-            raise OperationError("INVALID_ARGUMENT", "--refresh applies only to URLs")
-        if args.verbose:
-            logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
+    if args.command == "ingest-source" and args.verbose:
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
     writing = args.command in {"create-draft", "create-edit-suggestion"}
     with (_vault(config_path) if writing else _source_vault(config_path)) or nullcontext() as vault:
         if args.command == "ingest-source":
-            _configure_providers(config_path)
-            if args.note is not None:
-                return responses.ingest_note(
-                    _cache(args),
-                    vault,
-                    _path_handle(vault, args.note, "note") if vault else args.note,
-                    exclude_sponsors=not args.include_sponsors,
-                )
-            return responses.ingest(
+            configure_providers(config_path)
+            return responses.ingest_request(
                 _cache(args),
+                vault,
                 args.url,
-                vault=vault,
+                args.note,
                 exclude_sponsors=not args.include_sponsors,
                 refresh=args.refresh,
+                names=("a URL", "--note", "--refresh"),
+                note_handle=lambda note: _path_handle(vault, note, "note") if vault else note,
             )
         source = responses.load_source(_cache(args), args.source_id, vault)
         if writing:

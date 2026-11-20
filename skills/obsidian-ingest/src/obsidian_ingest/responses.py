@@ -8,6 +8,7 @@ in their own envelopes.
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -219,6 +220,33 @@ def ingest_note(
         "cached": result.cached,
         "overview": source_overview(result.source, cached=result.cached),
     }
+
+
+def ingest_request(
+    cache: SourceCache,
+    vault: VaultReader | None,
+    url: str | None,
+    note: str | None,
+    *,
+    exclude_sponsors: bool = True,
+    refresh: bool = False,
+    names: tuple[str, str, str] = ("url", "note_id", "refresh"),
+    note_handle: Callable[[str], str] = lambda note: note,
+) -> dict[str, Any]:
+    """Validate an ingest request naming a URL or a saved note, then ingest it.
+
+    ``names`` holds how the transport spells the url, note and refresh arguments, so
+    both transports share one rule with their own wording; ``note_handle`` turns the
+    transport's note reference into a note ID once the request is valid.
+    """
+    url_name, note_name, refresh_name = names
+    if (url is None) == (note is None):
+        raise OperationError("INVALID_ARGUMENT", f"pass exactly one of {url_name} or {note_name}")
+    if note is not None:
+        if refresh:
+            raise OperationError("INVALID_ARGUMENT", f"{refresh_name} applies only to {url_name}")
+        return ingest_note(cache, vault, note_handle(note), exclude_sponsors=exclude_sponsors)
+    return ingest(cache, url, vault=vault, exclude_sponsors=exclude_sponsors, refresh=refresh)
 
 
 def _note_readable(vault: VaultReader | None, note: NoteRef) -> bool:

@@ -25,7 +25,7 @@ _LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 MAX_FIELD_CHARS = 500
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class PageMetadata:
     """Article fields plus where each came from and any conflicts between sources."""
 
@@ -117,8 +117,9 @@ def _meta(document: etree._Element) -> dict[str, str]:
 
 
 def extract_metadata(document: etree._Element, doc: dict[str, str]) -> PageMetadata:
-    """Merge every metadata source of an unsanitized document; ``doc`` is trafilatura's."""
-    page = PageMetadata()
+    """Merge every metadata source of an unsanitized document; ``doc`` holds trafilatura's
+    metadata attributes."""
+    article_body: str | None = None
     candidates: dict[str, list[tuple[str, object]]] = {}
 
     def offer(name: str, source: str, value: object) -> None:
@@ -149,7 +150,7 @@ def extract_metadata(document: etree._Element, doc: dict[str, str]) -> PageMetad
             offer("is_accessible_for_free", "json-ld", free)
         body = item.get("articleBody")
         if isinstance(body, str) and body.strip():
-            page.article_body = body
+            article_body = body
 
     offer("title", "trafilatura", _text(doc.get("title")))
     if doc.get("author"):
@@ -177,15 +178,20 @@ def extract_metadata(document: etree._Element, doc: dict[str, str]) -> PageMetad
     title = document.find(".//title")
     offer("title", "html", _text(title.text_content()) if title is not None else None)
 
+    values: dict[str, object] = {}
+    provenance: dict[str, str] = {}
+    conflicts: dict[str, list[str]] = {}
     for name, offers in candidates.items():
         if name == "language":
             offers = [(s, v) for s, v in offers if isinstance(v, str) and _LANGUAGE.match(v)]
         if not offers:
             continue
         source, value = offers[0]
-        setattr(page, name, value)
-        page.provenance[name] = source
+        values[name] = value
+        provenance[name] = source
         others = sorted({str(v) for _, v in offers[1:] if str(v) != str(value)})
         if others and name not in {"description", "title"}:
-            page.conflicts[name] = [str(value), *others]
-    return page
+            conflicts[name] = [str(value), *others]
+    return PageMetadata(
+        **values, article_body=article_body, provenance=provenance, conflicts=conflicts
+    )  # type: ignore[arg-type]

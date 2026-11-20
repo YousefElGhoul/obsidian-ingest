@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -23,7 +23,13 @@ from lxml import etree
 from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, CaptionFormat, OriginalCaption
 from obsidian_ingest.extractor.exclusions import CATEGORIES, find_exclusions
-from obsidian_ingest.extractor.html_text import Extraction, extract_html, load_trafilatura, parse
+from obsidian_ingest.extractor.html_text import (
+    Extraction,
+    extract_html,
+    extraction_from_atoms,
+    load_trafilatura,
+    parse,
+)
 from obsidian_ingest.extractor.http import (
     Deadline,
     Fetcher,
@@ -41,6 +47,7 @@ from obsidian_ingest.extractor.metadata import (
 from obsidian_ingest.extractor.providers import (
     Citation,
     ProviderContent,
+    ProviderDefaults,
     UnsupportedOperation,
     resolve_url,
 )
@@ -49,6 +56,11 @@ from obsidian_ingest.extractor.providers.article.metadata import (
     PageMetadata,
     extract_metadata,
     parse_date,
+)
+from obsidian_ingest.extractor.providers.article.settings import (
+    TABLE,
+    ArticleSettings,
+    parse_settings,
 )
 from obsidian_ingest.extractor.quality import Quality, assess, instruction_like
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
@@ -88,7 +100,7 @@ class ArticleDetails:
     word_count: int | None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _Candidate:
     method: str
     extraction: Extraction
@@ -117,11 +129,14 @@ def _fallback_failure(method: str, error: FetchError | URLRejected) -> dict[str,
 
 
 # The trusted network policy, set from settings by ``configure`` (never by a tool call).
-_policy: dict[str, Any] = {"allowed_ports": frozenset({80, 443}), "allow_private_network": False}
+_settings = ArticleSettings()
 
 
 def _default_fetcher() -> Fetcher:
-    return Fetcher(**_policy)
+    return Fetcher(
+        allowed_ports=_settings.allowed_ports,
+        allow_private_network=_settings.allow_private_network,
+    )
 
 
 # Test seams: a fetcher (resolver/transport/clock) and the ingest deadline.
@@ -213,7 +228,6 @@ def _note_url(fields: dict) -> str | None:
 
 def _clip_metadata(fields: dict, canonical: str) -> PageMetadata:
     """Metadata from Web Clipper frontmatter, with the same field rules as pages."""
-    meta = PageMetadata(canonical_url=canonical)
 
     def text(name: str) -> str | None:
         value = fields.get(name)
@@ -222,31 +236,31 @@ def _clip_metadata(fields: dict, canonical: str) -> PageMetadata:
 
     authors = fields.get("author") or fields.get("authors")
     authors = authors if isinstance(authors, list) else [authors] if authors else []
-    meta.title = text("title")
-    meta.authors = tuple(a[:200] for a in authors if isinstance(a, str) and a)[:20]
-    meta.published = parse_date(text("published"))
     language = text("lang") or text("language")
-    meta.language = (
-        language
-        if language and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", language)
-        else None
-    )
-    meta.site_name = text("site")
-    meta.description = text("description")
-    meta.provenance = {
-        name: "web-clipper"
-        for name, value in (("title", meta.title), ("authors", meta.authors),
-                            ("published", meta.published), ("language", meta.language),
-                            ("site_name", meta.site_name), ("canonical_url", canonical))
-        if value
-    }  # fmt: skip
-    return meta
+    values = {
+        "title": text("title"),
+        "authors": tuple(a[:200] for a in authors if isinstance(a, str) and a)[:20],
+        "published": parse_date(text("published")),
+        "language": (
+            language
+            if language and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", language)
+            else None
+        ),
+        "site_name": text("site"),
+        "description": text("description"),
+        "canonical_url": canonical,
+    }
+    provenance = {
+        name: "web-clipper" for name, value in values.items() if value and name != "description"
+    }
+    return PageMetadata(**values, provenance=provenance)
 
 
 @dataclass(frozen=True, slots=True)
-class ArticleProvider:
+class ArticleProvider(ProviderDefaults):
     """Web articles: guarded fetch, extraction, fallbacks and section citations."""
 
+    settings_table: ClassVar[str | None] = TABLE
     name: Provider = Provider.ARTICLE
     kind: SourceKind = SourceKind.TEXT
     supported: bool = True
@@ -280,7 +294,7 @@ class ArticleProvider:
         )  # fmt: skip
         document = parse(page.text)
         primary = extract_html(page.text, page.final_url)
-        meta = extract_metadata(document, primary.doc)
+        meta = extract_metadata(document, primary.page_metadata)
         signals = {
             "declared_words": meta.word_count,
             "paywall_signals": _paywall_signals(document, page.text, meta),
@@ -395,13 +409,7 @@ class ArticleProvider:
         if _is_ip_literal(checked.host) and blocked_address(checked.host):
             raise URLRejected("URL_REJECTED: the clip's source is a private or local address")
         atoms, sections = clipper.markdown_atoms(body)
-        extraction = Extraction(atoms=atoms, sections=sections)
-        for atom in atoms:
-            extraction.words += len(atom.text.split())
-            for label in re.findall(r"(?<!!)\[([^\]]*)\]\(https?://", atom.text):
-                extraction.links += 1
-                extraction.link_words += len(label.split())
-            extraction.images += len(re.findall(r"!\[[^\]]*\]\(https?://", atom.text))
+        extraction = extraction_from_atoms(atoms, sections)
         meta = _clip_metadata(fields, checked.fetch_url)
         candidate = _candidate("web_clipper", extraction, declared_words=None)
         if candidate.quality.failed:
@@ -589,10 +597,14 @@ class ArticleProvider:
     def thumbnail(self, metadata: SourceMetadata) -> tuple[bytes, str]:
         raise UnsupportedOperation("articles have no thumbnail")
 
-    def configure(self, options: dict[str, Any]) -> None:
+    def parse_settings(self, table: object) -> ArticleSettings:
+        return parse_settings(table)
+
+    def configure(self, settings: object) -> None:
         """Apply the trusted network policy (``allow_private_network``, ``extra_ports``)."""
-        _policy["allow_private_network"] = bool(options.get("allow_private_network", False))
-        _policy["allowed_ports"] = frozenset({80, 443, *options.get("extra_ports", ())})
+        global _settings
+        assert isinstance(settings, ArticleSettings)
+        _settings = settings
 
 
 ARTICLE = ArticleProvider()

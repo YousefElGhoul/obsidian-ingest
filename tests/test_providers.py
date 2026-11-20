@@ -10,6 +10,7 @@ from obsidian_ingest import responses, source_cache
 from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.providers import (
     Citation,
+    SourceProvider,
     get_provider,
     registry,
     resolve_url,
@@ -40,6 +41,17 @@ def test_shared_code_never_names_a_specific_provider(path: Path) -> None:
             assert not (node.value.id == "Provider" and node.attr in PROVIDER_NAMES), (
                 f"{path.name} compares against Provider.{node.attr}"
             )
+
+
+def test_every_provider_implements_the_whole_protocol() -> None:
+    members = {
+        name
+        for name in vars(SourceProvider)
+        if not name.startswith("_") and name not in {"name", "kind", "supported"}
+    } | set(SourceProvider.__annotations__)
+    for provider in registry():
+        missing = {name for name in members if not hasattr(provider, name)}
+        assert not missing, f"{provider.name} lacks {sorted(missing)}"
 
 
 def test_registry_resolves_supported_and_recognized_providers() -> None:

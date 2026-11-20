@@ -12,6 +12,8 @@ from articles import FakeWeb, Reply, article
 
 from obsidian_ingest import cli
 from obsidian_ingest.config import load_vault_settings
+from obsidian_ingest.extractor import http
+from obsidian_ingest.extractor.providers.article import provider as article_provider
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
 from obsidian_ingest.vault import VaultReader
 
@@ -770,3 +772,49 @@ def test_cli_publication_is_create_only_with_verified_links(
     assert Path(edit["path"]).name == "edit-fixture-1.md"
     assert Path(edit["path"]).read_text(encoding="utf-8").startswith("[[Notes/Fixture 1.md]]")
     assert {path: path.read_bytes() for path in canonical} == canonical
+
+
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [
+        ("[articles]\nports = [8080]\n", "[articles] accepts only allow_private_network"),
+        ("[articles]\nallow_private_network = 1\n", "must be true or false"),
+        ("[articles]\nextra_ports = [0]\n", "must be an array of port numbers"),
+        ("[articles]\nextra_ports = [true]\n", "must be an array of port numbers"),
+        ("[unknown]\n", "Configuration must contain a [vault] table and optionally [articles]"),
+    ],
+)
+def test_invalid_article_settings_are_refused(tmp_path, cli_runner, table, message) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = tmp_path / "settings.toml"
+    config.write_text(f'[vault]\nroot = "{vault}"\nallowed = ["*"]\n{table}')
+    url = "https://example.com/article"
+    for args in (("ingest-source", url), ("search-vault", "x")):
+        error = cli_runner.fail(*args, "--config", str(config))
+        assert error["code"] == "CONFIG_ERROR" and message in error["message"]
+
+
+def test_article_settings_open_extra_ports(tmp_path, monkeypatch, cli_runner) -> None:
+    url = "https://example.com:8443/article"
+    web = FakeWeb(routes={url: Reply(article())}).install(monkeypatch)
+    monkeypatch.setattr(
+        article_provider,
+        "make_fetcher",
+        lambda: http.Fetcher(
+            resolver=web.resolve,
+            transport=web,
+            sleep=web._sleep,
+            allowed_ports=article_provider._settings.allowed_ports,
+        ),
+    )
+    db = ("--cache-db", str(tmp_path / "sources.db"))
+    config = tmp_path / "settings.toml"
+    config.write_text("")
+    refused = cli_runner.fail("ingest-source", url, *db, "--config", str(config))
+    assert refused == {
+        "code": "INVALID_ARGUMENT",
+        "message": "URL_REJECTED: port 8443 is not allowed",
+    }
+    config.write_text("[articles]\nextra_ports = [8443]\n")
+    assert cli_runner.ok("ingest-source", url, *db, "--config", str(config))["source_id"]

@@ -40,50 +40,38 @@ def _relative_parts(value: object, label: str) -> tuple[str, ...]:
     return parts
 
 
-@dataclass(frozen=True, slots=True)
-class ArticleSettings:
-    """Trusted network policy for fetching web pages; never set by a tool argument."""
-
-    allow_private_network: bool = False
-    extra_ports: tuple[int, ...] = ()
-
-
-def article_settings(data: dict) -> ArticleSettings:
-    """Validate the optional `[articles]` table of parsed configuration."""
-    section = data.get("articles", {})
-    if not isinstance(section, dict) or set(section) - {"allow_private_network", "extra_ports"}:
-        raise ValueError("[articles] accepts only allow_private_network and extra_ports")
-    private = section.get("allow_private_network", False)
-    ports = section.get("extra_ports", [])
-    if not isinstance(private, bool):
-        raise TypeError("articles.allow_private_network must be true or false")
-    if not isinstance(ports, list) or any(
-        isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
-        for port in ports
-    ):
-        raise ValueError("articles.extra_ports must be an array of port numbers")
-    return ArticleSettings(private, tuple(sorted(set(ports))))
-
-
-def load_article_settings(path: Path) -> ArticleSettings:
-    """Read only the article network policy; a missing file means the safe defaults."""
+def load_trusted_data(path: Path) -> dict:
+    """Parse the trusted settings file; a missing file means no settings at all."""
     if not path.is_file():
-        return ArticleSettings()
+        return {}
     try:
         with path.open("rb") as file:
-            return article_settings(tomllib.load(file))
+            return tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"Cannot load trusted configuration: {error}") from error
 
 
-_VAULT_CONFIG_SHAPE = "Configuration must contain a [vault] table and optionally [articles]"
+def configure_providers(path: Path) -> None:
+    """Apply each provider's table of the trusted settings file, such as `[articles]`."""
+    from obsidian_ingest.extractor.providers import configure
+
+    configure(load_trusted_data(path))
+
+
+def _config_shape() -> str:
+    from obsidian_ingest.extractor.providers import settings_tables
+
+    optional = " or ".join(f"[{table}]" for table in sorted(settings_tables()))
+    return "Configuration must contain a [vault] table" + (
+        f" and optionally {optional}" if optional else ""
+    )
 
 
 def load_vault_settings(path: Path) -> VaultSettings:
     """Load a required trusted `[vault]` section."""
     settings = load_optional_vault_settings(path)
     if settings is None:
-        raise ValueError(_VAULT_CONFIG_SHAPE)
+        raise ValueError(_config_shape())
     return settings
 
 
@@ -94,11 +82,13 @@ def load_optional_vault_settings(path: Path) -> VaultSettings | None:
             data = tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"Cannot load trusted configuration: {error}") from error
-    if set(data) - {"vault", "articles"} or (
+    from obsidian_ingest.extractor.providers import parse_settings, settings_tables
+
+    if set(data) - {"vault", *settings_tables()} or (
         "vault" in data and not isinstance(data["vault"], dict)
     ):
-        raise ValueError(_VAULT_CONFIG_SHAPE)
-    article_settings(data)
+        raise ValueError(_config_shape())
+    parse_settings(data)
     if "vault" not in data:
         return None
     section = data["vault"]

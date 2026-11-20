@@ -35,7 +35,7 @@ def no_live_article_fetches(monkeypatch):
         raise FetchError("DNS_FAILED", f"tests are offline ({host})")
 
     monkeypatch.setattr(provider, "make_fetcher", lambda: Fetcher(resolver=offline))
-    monkeypatch.setattr(provider, "_policy", dict(provider._policy))
+    monkeypatch.setattr(provider, "_settings", provider._settings)
 
 
 @pytest.fixture

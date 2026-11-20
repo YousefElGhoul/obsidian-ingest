@@ -170,14 +170,8 @@ def create_server(
         refresh: bool = False,
     ) -> dict[str, Any]:
         """Ingest a source: pass url (a video or article), or note_id (from search_vault) of a page saved with Obsidian Web Clipper. Reuses the persistent capture; refresh re-extracts a URL. Sponsored segments are excluded by default."""
-        if (url is None) == (note_id is None):
-            raise responses.OperationError("INVALID_ARGUMENT", "pass exactly one of url or note_id")
-        if note_id is not None:
-            if refresh:
-                raise responses.OperationError("INVALID_ARGUMENT", "refresh applies only to url")
-            return responses.ingest_note(cache(), vault, note_id, exclude_sponsors=exclude_sponsors)
-        return responses.ingest(
-            cache(), url, vault=vault, exclude_sponsors=exclude_sponsors, refresh=refresh
+        return responses.ingest_request(
+            cache(), vault, url, note_id, exclude_sponsors=exclude_sponsors, refresh=refresh
         )
 
     @server.tool()

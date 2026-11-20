@@ -6,7 +6,12 @@ from urllib.parse import urlencode, urlparse
 
 from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import SourceMetadata
-from obsidian_ingest.extractor.providers import Citation, ProviderContent, SourceKind
+from obsidian_ingest.extractor.providers import (
+    Citation,
+    ProviderContent,
+    ProviderDefaults,
+    SourceKind,
+)
 from obsidian_ingest.extractor.providers.youtube import extract_video_id, get_youtube_content
 from obsidian_ingest.extractor.providers.youtube.details import YouTubeMetadata
 from obsidian_ingest.extractor.providers.youtube.thumbnail import fetch_youtube_thumbnail
@@ -29,7 +34,7 @@ _DETAIL_TYPES: dict[str, tuple[type, ...]] = {
 
 
 @dataclass(frozen=True, slots=True)
-class YouTubeProvider:
+class YouTubeProvider(ProviderDefaults):
     """Caption-based acquisition with SponsorBlock exclusions and timestamp citations."""
 
     name: Provider = Provider.YOUTUBE

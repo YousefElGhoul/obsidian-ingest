@@ -157,7 +157,7 @@ def _shutdown(sock: socket.socket) -> None:
         pass  # The request may already have closed its socket.
 
 
-@dataclass
+@dataclass  # Mutable on purpose: it owns a live connection and its socket.
 class _HTTPClientResponse:
     connection: http.client.HTTPConnection
     response: http.client.HTTPResponse
@@ -312,7 +312,7 @@ def decode(body: bytes, header_charset: str | None) -> tuple[str, str, str, int]
     return text, "utf-8", "default", text.count("�")
 
 
-@dataclass
+@dataclass  # Mutable on purpose: it tallies the bytes each ingest has read.
 class Fetcher:
     """Fetch with every guard; resolver, transport and clock are injectable for tests."""
 

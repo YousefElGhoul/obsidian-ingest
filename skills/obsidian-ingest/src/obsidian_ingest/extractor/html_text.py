@@ -73,19 +73,65 @@ class Atom:
     section: str | None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Extraction:
     """Atoms plus what the extraction kept and removed, for evidence and quality."""
 
-    atoms: list[Atom] = field(default_factory=list)
-    sections: list[tuple[str, int]] = field(default_factory=list)  # (path, first atom)
-    doc: dict[str, str] = field(default_factory=dict)  # trafilatura's metadata attributes
+    atoms: tuple[Atom, ...] = ()
+    sections: tuple[tuple[str, int], ...] = ()  # (path, first atom)
+    page_metadata: dict[str, str] = field(default_factory=dict)  # trafilatura's attributes
     removed_hidden: int = 0
     removed_chrome: int = 0
     links: int = 0
     images: int = 0
     words: int = 0
     link_words: int = 0
+
+
+@dataclass(slots=True)
+class ExtractionBuilder:
+    """The mutable tally sanitizing and rendering fill in; ``build`` freezes it."""
+
+    atoms: list[Atom] = field(default_factory=list)
+    sections: list[tuple[str, int]] = field(default_factory=list)
+    removed_hidden: int = 0
+    removed_chrome: int = 0
+    links: int = 0
+    images: int = 0
+    words: int = 0
+    link_words: int = 0
+
+    def build(self, page_metadata: dict[str, str] | None = None) -> Extraction:
+        return Extraction(
+            atoms=tuple(self.atoms),
+            sections=tuple(self.sections),
+            page_metadata=page_metadata or {},
+            removed_hidden=self.removed_hidden,
+            removed_chrome=self.removed_chrome,
+            links=self.links,
+            images=self.images,
+            words=self.words,
+            link_words=self.link_words,
+        )
+
+
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[([^\]]*)\]\(https?://")
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(https?://")
+
+
+def extraction_from_atoms(
+    atoms: list[Atom] | tuple[Atom, ...], sections: list[tuple[str, int]] | tuple
+) -> Extraction:
+    """Count words, links and images of atoms already rendered as Markdown."""
+    links = [label for atom in atoms for label in _MARKDOWN_LINK.findall(atom.text)]
+    return Extraction(
+        atoms=tuple(atoms),
+        sections=tuple(sections),
+        words=sum(len(atom.text.split()) for atom in atoms),
+        links=len(links),
+        link_words=sum(len(label.split()) for label in links),
+        images=sum(len(_MARKDOWN_IMAGE.findall(atom.text)) for atom in atoms),
+    )
 
 
 class SectionPaths:
@@ -153,7 +199,7 @@ def parse(markup: str) -> etree._Element:
     return html.document_fromstring(markup or "<html></html>")
 
 
-def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dict:
+def sanitize(document: etree._Element, base_url: str, result: ExtractionBuilder) -> dict:
     """Remove explicitly hidden content and page chrome; return recovered hints."""
     captions: dict[str, tuple[str, str]] = {}
     code_languages: dict[str, str] = {}
@@ -348,7 +394,7 @@ def code_atoms(code: str, language: str) -> list[str]:
 
 
 class _Walker:
-    def __init__(self, base_url: str, hints: dict, result: Extraction) -> None:
+    def __init__(self, base_url: str, hints: dict, result: ExtractionBuilder) -> None:
         self.base_url = base_url
         self.hints = hints
         self.result = result
@@ -508,7 +554,7 @@ def extract_html(markup: str, base_url: str) -> Extraction:
     """Sanitize and extract one HTML document into Markdown atoms."""
     trafilatura = load_trafilatura()
 
-    result = Extraction()
+    result = ExtractionBuilder()
     document = parse(markup)
     hints = sanitize(document, base_url, result)
     cleaned = html.tostring(document, encoding="unicode")
@@ -527,12 +573,12 @@ def extract_html(markup: str, base_url: str) -> Extraction:
             favor_precision=True,
         )
     if not xml:
-        return result
+        return result.build()
     root = etree.fromstring(xml.encode("utf-8"), etree.XMLParser(resolve_entities=False))
-    result.doc = {key: value for key, value in root.attrib.items() if value}
+    page_metadata = {key: value for key, value in root.attrib.items() if value}
     walker = _Walker(base_url, hints, result)
-    walker.title = _line(result.doc.get("title", "")) or None
+    walker.title = _line(page_metadata.get("title", "")) or None
     main = root.find("main")
     if main is not None:
         walker.walk(main)
-    return result
+    return result.build(page_metadata)
