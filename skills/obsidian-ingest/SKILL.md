@@ -54,7 +54,10 @@ To install, repeat the install, or undo it, follow
    `how`, `use`, `code` or `video` that match everything. `limit` is at most 20. Then
    `read_vault_note` for the closest matches, passing `revision` on continued reads.
    Do this before writing anything.
-5. For each idea, decide:
+5. For each idea, decide as below. Before each write, check the note against its cited
+   rows: delete every sentence they don't support; rewrite every opinion, number,
+   comparison or forecast as the source's ("Tim Urban expects …", "The Coding Gopher
+   says …"); and make sure no other note or suggestion you wrote already says it.
    Pass the final `read_token` to every write. One write per tool call, never several
    in one call or script. If a write response was lost, use `search_vault` and verify
    any match against the intended note and source. If you cannot confirm the write,
@@ -90,6 +93,16 @@ To install, repeat the install, or undo it, follow
 # One idea as the title
 
 Two to six short paragraphs in your own words explaining the idea.
+```
+
+For example, a note from an essay that argues a forecast:
+
+```markdown
+# Exponential change looks linear from inside it
+
+Tim Urban argues that people judge future progress by the pace they lived through, so
+they underestimate change that compounds. In 2015 he expected the next 30 years to
+bring far more change than the previous 30.
 ```
 
 - Title in sentence case. One idea per note. Never summarize the whole source, never
