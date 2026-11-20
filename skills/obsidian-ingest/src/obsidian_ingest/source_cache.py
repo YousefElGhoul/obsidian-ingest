@@ -34,6 +34,7 @@ from obsidian_ingest.extractor.metadata import (
     SourceMetadata,
 )
 from obsidian_ingest.extractor.providers import (
+    NotModified,
     get_provider,
     required_note,
     resolve_note,
@@ -44,7 +45,7 @@ from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.notes import ClippedNote, NoteRef
 from obsidian_ingest.source import Source, ingest_source, source_from_content
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _ROW = "source_id, capture_id, provider, native_id, exclude_sponsors, payload, checksum"
 _KEY = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
 # Stable source handles identify option keys; capture IDs identify replaceable evidence.
@@ -52,8 +53,14 @@ _SCHEMA = (
     (
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, capture_id TEXT NOT NULL UNIQUE, "
         "provider TEXT NOT NULL, native_id TEXT NOT NULL, exclude_sponsors INTEGER NOT NULL, "
-        "payload TEXT NOT NULL, checksum TEXT NOT NULL, "
+        "payload TEXT NOT NULL, checksum TEXT NOT NULL, content_sha256 TEXT NOT NULL, "
         "UNIQUE(provider, native_id, exclude_sponsors))"
+    ),
+    "CREATE INDEX sources_content ON sources(content_sha256)",
+    # A requested URL whose page named another URL of the same site as its canonical one.
+    (
+        "CREATE TABLE aliases (provider TEXT NOT NULL, requested_id TEXT NOT NULL, "
+        "native_id TEXT NOT NULL, PRIMARY KEY(provider, requested_id))"
     ),
     # The original acquired response (captions, page HTML), separate from normalized atoms.
     (
@@ -70,11 +77,13 @@ class SourceCacheError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CachedSource:
-    """``cached`` is True when an existing capture was reused instead of acquired."""
+    """``cached`` is True when an existing capture was reused instead of acquired;
+    ``not_modified`` when a refresh found the source unchanged and kept the capture."""
 
     source_id: str
     source: Source
     cached: bool
+    not_modified: bool = False
 
 
 def default_cache_path() -> Path:
@@ -304,7 +313,8 @@ class SourceCache:
                     for statement in _SCHEMA:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                connection.execute(f"SELECT {_ROW} FROM sources LIMIT 0")
+                connection.execute(f"SELECT {_ROW}, content_sha256 FROM sources LIMIT 0")
+                connection.execute("SELECT provider, requested_id, native_id FROM aliases LIMIT 0")
                 connection.execute(
                     "SELECT capture_id, format, data, sha256 FROM original_payloads LIMIT 0"
                 )
@@ -410,23 +420,49 @@ class SourceCache:
         if not isinstance(exclude_sponsors, bool) or not isinstance(refresh, bool):
             raise TypeError("exclude_sponsors and refresh must be booleans")
         provider = supported_provider(url)
-        native_id = provider.identity(url)
-        # URL aliases share a capture; exclusion filtering is part of acquisition identity.
+        requested = provider.identity(url)
+        native_id = self._alias(provider.name.value, requested) or requested
+        # Aliased URLs share a capture; exclusion filtering is part of acquisition identity.
         key = (provider.name.value, native_id, int(exclude_sponsors))
 
-        def reusable(source: Source) -> bool:
+        def reusable(source: Source, stored: str) -> bool:
             note = required_note(source)
-            return note is None or (note_readable is not None and note_readable(note))
+            readable = note is None or (note_readable is not None and note_readable(note))
+            return readable and _serves(provider, source, requested, stored)
 
         row = self._read(_KEY, key)
+        previous = None
         if row is not None and not refresh:
             current = self._result(row, cached=True)
-            if reusable(current.source):
+            if reusable(current.source, native_id):
                 return current
+        elif row is not None:
+            # A refresh is conditional on the capture this request would otherwise reuse;
+            # an unreadable entry is simply replaced.
+            try:
+                current = self._result(row, cached=True)
+            except SourceCacheError:
+                current = None
+            if current is not None and reusable(current.source, native_id):
+                previous = current
 
         # Build and validate the complete new capture before touching the database.
-        source = ingest_source(url, exclude_sponsors=exclude_sponsors)
-        return self._publish(key, source, replace=refresh, reuse=None if refresh else reusable)
+        try:
+            source = ingest_source(
+                url,
+                exclude_sponsors=exclude_sponsors,
+                previous=previous.source if previous is not None else None,
+            )
+        except NotModified:
+            assert previous is not None
+            return replace(previous, not_modified=True)
+        return self._publish(
+            source,
+            exclude_sponsors,
+            requested=requested,
+            replace=refresh,
+            reuse=None if refresh else reusable,
+        )
 
     def ingest_note(self, note: ClippedNote, *, exclude_sponsors: bool = True) -> CachedSource:
         """Ingest a saved note (a web clip) into the same capture key as its source URL.
@@ -438,32 +474,75 @@ class SourceCache:
         if not isinstance(exclude_sponsors, bool):
             raise TypeError("exclude_sponsors must be a boolean")
         provider = resolve_note(note.text)
-        key = (provider.name.value, provider.note_identity(note), int(exclude_sponsors))
+        requested = provider.note_identity(note)
+        key = (provider.name.value, requested, int(exclude_sponsors))
 
-        def reusable(source: Source) -> bool:
+        def reusable(source: Source, stored: str) -> bool:
             return provider.capture_matches_note(source, note)
 
         row = self._read(_KEY, key)
         if row is not None:
             current = self._result(row, cached=True)
-            if reusable(current.source):
+            if reusable(current.source, requested):
                 return current
 
+        # The clip owns its source URL's key, so publishing drops any alias of that URL.
         content = provider.acquire_note(note, exclude_sponsors=exclude_sponsors)
-        return self._publish(key, source_from_content(content), replace=True, reuse=reusable)
+        return self._publish(
+            source_from_content(content),
+            exclude_sponsors,
+            requested=requested,
+            replace=True,
+            reuse=reusable,
+        )
+
+    def _alias(self, provider: str, requested: str) -> str | None:
+        try:
+            with closing(self._connect()) as connection:
+                row = connection.execute(
+                    "SELECT native_id FROM aliases WHERE provider = ? AND requested_id = ?",
+                    (provider, requested),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise SourceCacheError(f"Cannot read source cache {self.path}: {error}") from error
+        return row[0] if row else None
+
+    def same_content(self, source_id: str) -> tuple[str, ...]:
+        """Other captures with exactly the same text, reported and never merged."""
+        try:
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    "SELECT other.source_id FROM sources AS this JOIN sources AS other "
+                    "ON other.content_sha256 = this.content_sha256 "
+                    "AND other.source_id != this.source_id "
+                    "WHERE this.source_id = ? ORDER BY other.source_id",
+                    (source_id,),
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise SourceCacheError(f"Cannot read source cache {self.path}: {error}") from error
+        return tuple(row[0] for row in rows)
 
     def _publish(
         self,
-        key: tuple,
         source: Source,
+        exclude_sponsors: bool,
         *,
+        requested: str,
         replace: bool,
-        reuse: Callable[[Source], bool] | None = None,
+        reuse: Callable[[Source, str], bool] | None = None,
     ) -> CachedSource:
-        """Store a validated capture under its key, keeping the persistent source_id."""
+        """Store a validated capture under its own identity, keeping the persistent source_id.
+
+        The capture's identity can differ from the requested one (a page naming its
+        canonical URL); the request then becomes an alias of it, in the same transaction.
+        """
+        provider = source.metadata.provider.value
+        stored = source.metadata.source_id
+        key = (provider, stored, int(exclude_sponsors))
         original = _original_for_storage(source)
         payload = _encode(source)
         checksum = hashlib.sha256(payload.encode()).hexdigest()
+        content = _content_hash(source)
         new_id = uuid4().hex
         capture_id = uuid4().hex
         result = self._result((new_id, capture_id, *key, payload, checksum), cached=False)
@@ -471,12 +550,22 @@ class SourceCache:
             with closing(self._connect()) as connection, connection:
                 # Deletion and replacement commit together; any write failure rolls both back.
                 connection.execute("BEGIN IMMEDIATE")
+                if stored == requested:
+                    connection.execute(
+                        "DELETE FROM aliases WHERE provider = ? AND requested_id = ?",
+                        (provider, requested),
+                    )
+                else:
+                    connection.execute(
+                        "INSERT OR REPLACE INTO aliases VALUES (?, ?, ?)",
+                        (provider, requested, stored),
+                    )
                 existing = connection.execute(
                     f"SELECT {_ROW} FROM sources WHERE {_KEY}", key
                 ).fetchone()
                 if existing is not None and (reuse is not None or not replace):
                     current = self._result(existing, cached=True)
-                    if reuse is None or reuse(current.source):
+                    if reuse is None or reuse(current.source, stored):
                         return current
                 source_id = existing[0] if existing is not None else new_id
                 if existing is not None:
@@ -484,8 +573,9 @@ class SourceCache:
                     connection.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
                 connection.execute(
                     "INSERT INTO sources (source_id, capture_id, provider, native_id, "
-                    "exclude_sponsors, payload, checksum) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (source_id, capture_id, *key, payload, checksum),
+                    "exclude_sponsors, payload, checksum, content_sha256) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (source_id, capture_id, *key, payload, checksum, content),
                 )
                 if original is not None:
                     connection.execute(
@@ -495,3 +585,19 @@ class SourceCache:
         except sqlite3.Error as error:
             raise SourceCacheError(f"Cannot write source cache {self.path}: {error}") from error
         return CachedSource(source_id, result.source, cached=False)
+
+
+def _serves(provider, source: Source, requested: str, stored: str) -> bool:
+    """A capture answers a request when it was fetched from the requested URL or from
+    the URL it is stored under; a page naming another page canonical never stands in
+    for that page."""
+    return provider.fetched_identity(source) in {requested, stored}
+
+
+def _content_hash(source: Source) -> str:
+    """The SHA-256 of a capture's text atoms, to report identical content across URLs."""
+    digest = hashlib.sha256()
+    for segment in source.transcript.segments:
+        digest.update(segment.text.encode())
+        digest.update(b"\0")
+    return digest.hexdigest()

@@ -12,6 +12,7 @@ from mcp.client.stdio import stdio_client
 import evaluate as evaluation
 from evaluate import (
     evaluate_source,
+    evidence_summary,
     main,
     parse_manifest,
     report_stem,
@@ -433,3 +434,43 @@ def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path
         "get_thumbnail",
         "create_draft",
     }
+
+
+def test_evidence_summary_condenses_article_diagnostics() -> None:
+    report = {
+        "transcript_segment_count": 12,
+        "overview": {
+            "section_count": 3,
+            "language": "en",
+            "exclusions": {"excluded_segments": 1},
+            "diagnostics": {
+                "same_content_as": ["abc"],
+                "evidence": {
+                    "kind": "text",
+                    "method": "extract",
+                    "attempts": [{"method": "extract", "status": "ok", "words": 900, "x": 1}],
+                    "quality": {"status": "ok", "warnings": [], "words": 900},
+                    "metadata_provenance": {"title": "json-ld"},
+                    "http": {"encoding": "utf-8", "bytes": 4096},
+                },
+            },
+        },
+    }
+    assert evidence_summary(report) == {
+        "kind": "text",
+        "method": "extract",
+        "attempts": [{"method": "extract", "status": "ok", "reason": None, "words": 900}],
+        "quality": "ok",
+        "warnings": [],
+        "words": 900,
+        "sections": 3,
+        "segments": 12,
+        "excluded_segments": 1,
+        "language": "en",
+        "metadata_provenance": {"title": "json-ld"},
+        "encoding": "utf-8",
+        "bytes": 4096,
+        "same_content_as": ["abc"],
+    }
+    # Videos have no text evidence; the summary still records what is known.
+    assert evidence_summary({"overview": {}})["method"] is None

@@ -126,7 +126,9 @@ def test_refresh_between_reading_and_writing_invalidates_the_read(
     db = ("--cache-db", str(tmp_path / "cache.db"))
     captures = [sample_source]
     monkeypatch.setattr(
-        source_cache, "ingest_source", lambda url, exclude_sponsors=True: captures[-1]
+        source_cache,
+        "ingest_source",
+        lambda url, exclude_sponsors=True, previous=None: captures[-1],
     )
     source_id = cli_runner.ok("ingest-source", "https://youtu.be/video-123", *db)["source_id"]
 

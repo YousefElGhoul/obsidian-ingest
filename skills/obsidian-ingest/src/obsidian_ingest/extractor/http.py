@@ -255,6 +255,26 @@ class FetchResult:
     replacement_count: int
     redirect_hosts: tuple[str, ...]
     bytes_read: int
+    etag: str | None = None
+    last_modified: str | None = None
+
+    @property
+    def not_modified(self) -> bool:
+        return self.status == 304
+
+
+MAX_VALIDATOR_CHARS = 200
+
+
+def validator(value: object) -> str | None:
+    """A cache validator (ETag, Last-Modified) safe to store and send back: printable
+    ASCII, bounded, or None."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > MAX_VALIDATOR_CHARS:
+        return None
+    return value if all(" " <= char <= "~" for char in value) else None
 
 
 def _charset(headers: Message) -> tuple[str, str | None]:
@@ -448,8 +468,18 @@ class Fetcher:
         accept: frozenset[str] = HTML_TYPES,
         *,
         allow_hop: Callable[[CheckedURL], bool] | None = None,
+        validators: dict[str, str] | None = None,
     ) -> FetchResult:
-        """GET a URL with every check; raise FetchError (or URLRejected) on refusal."""
+        """GET a URL with every check; raise FetchError (or URLRejected) on refusal.
+
+        ``validators`` (``etag``, ``last_modified``) make the request conditional; only
+        then is a 304 answer accepted, returned with an empty body.
+        """
+        conditional = {
+            header: value
+            for header, key in (("If-None-Match", "etag"), ("If-Modified-Since", "last_modified"))
+            if (value := validator((validators or {}).get(key)))
+        }
         current = check_url(url, self.allowed_ports)
         redirect_hosts: list[str] = []
         retried = False
@@ -462,7 +492,7 @@ class Fetcher:
                 "Accept": ", ".join(sorted(accept)) + ";q=1.0, */*;q=0.1",
                 "Accept-Encoding": "gzip, deflate",
                 "Accept-Language": "*",
-            }
+            } | conditional
             response = self._open(current, headers, deadline)
             try:
                 deadline.check()  # A response that arrives after the deadline is too late.
@@ -486,12 +516,28 @@ class Fetcher:
                         retried = True
                         self.sleep(wait)
                         continue
+                if status == 304 and conditional:
+                    return FetchResult(
+                        requested_url=url,
+                        final_url=current.fetch_url,
+                        status=status,
+                        content_type="",
+                        body=b"",
+                        text="",
+                        encoding="",
+                        encoding_source="",
+                        replacement_count=0,
+                        redirect_hosts=tuple(redirect_hosts),
+                        bytes_read=0,
+                    )
                 if status != 200:
                     raise FetchError(f"HTTP_{status}", f"{current.host} answered {status}")
                 content_type, charset = _charset(response.headers)
                 if content_type not in accept:
                     raise FetchError("NOT_HTML", f"content type is {content_type or 'missing'}")
                 body, raw = self._read_body(response, deadline)
+                etag = validator(response.headers.get("etag"))
+                last_modified = validator(response.headers.get("last-modified"))
             finally:
                 response.close()
             text, encoding, source, replacements = decode(body, charset)
@@ -508,6 +554,8 @@ class Fetcher:
                 replacement_count=replacements,
                 redirect_hosts=tuple(redirect_hosts),
                 bytes_read=raw,
+                etag=etag,
+                last_modified=last_modified,
             )
 
 

@@ -1,7 +1,7 @@
 """The YouTube implementation of the source provider protocol."""
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse
 
 from obsidian_ingest.extractor import Provider
@@ -20,6 +20,9 @@ from obsidian_ingest.extractor.transcript import (
     distinct_moments,
     format_timestamp,
 )
+
+if TYPE_CHECKING:
+    from obsidian_ingest.source import Source
 
 _HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _DETAIL_TYPES: dict[str, tuple[type, ...]] = {
@@ -50,7 +53,9 @@ class YouTubeProvider(ProviderDefaults):
     def exclusion_categories(self, exclude_sponsors: bool) -> tuple[str, ...]:
         return ("sponsor",) if exclude_sponsors else ()
 
-    def acquire(self, url: str, *, exclude_sponsors: bool) -> ProviderContent:
+    def acquire(
+        self, url: str, *, exclude_sponsors: bool, previous: "Source | None" = None
+    ) -> ProviderContent:
         content = get_youtube_content(url, self.exclusion_categories(exclude_sponsors))
         return ProviderContent(
             content.metadata,

@@ -104,10 +104,13 @@ def fits_envelope(value: Any, max_bytes: int) -> bool:
     return len(envelope.encode("utf-8")) <= max_bytes - ENVELOPE_HEADROOM_BYTES
 
 
-def source_overview(source: Source, *, cached: bool | None = None) -> dict[str, Any]:
+def source_overview(
+    source: Source, *, cached: bool | None = None, same_content: tuple[str, ...] = ()
+) -> dict[str, Any]:
     """Build the one source overview result shared by ingest and overview operations.
 
     ``cached`` (cache reuse) is known only at ingest; reads by handle report None.
+    ``same_content`` lists other captures with identical text, which are never merged.
     """
     overview = get_source_overview(source)
     metadata = overview.metadata
@@ -138,9 +141,15 @@ def source_overview(source: Source, *, cached: bool | None = None) -> dict[str, 
             "excluded_segments": overview.excluded_segment_count,
         },
         "details": provider.encode_details(metadata.provider_details),
-        "diagnostics": source_diagnostics(source, cached=cached),
+        "diagnostics": source_diagnostics(source, cached=cached)
+        | {"same_content_as": list(same_content)},
         "notice": UNTRUSTED_NOTICE,
     }
+
+
+def overview(cache: SourceCache, source_id: str, source: Source) -> dict[str, Any]:
+    """The overview of a loaded source, with any captures sharing its exact text."""
+    return source_overview(source, same_content=cache.same_content(source_id))
 
 
 def _validate_ingest_request(url: object, exclude_sponsors: object, refresh: object) -> None:
@@ -178,11 +187,17 @@ def ingest(
     except Exception as error:
         # Includes CaptionError and any other acquisition-time failure.
         raise OperationError("INGEST_FAILED", f"Could not ingest source: {error}") from error
-    return {
+    response = {
         "source_id": result.source_id,
         "cached": result.cached,
-        "overview": source_overview(result.source, cached=result.cached),
+        "overview": source_overview(
+            result.source, cached=result.cached, same_content=cache.same_content(result.source_id)
+        ),
     }
+    if refresh:
+        # An unchanged source keeps its capture, so earlier read tokens stay valid.
+        response["refreshed"] = "not_modified" if result.not_modified else "replaced"
+    return response
 
 
 def ingest_note(
@@ -218,7 +233,9 @@ def ingest_note(
     return {
         "source_id": result.source_id,
         "cached": result.cached,
-        "overview": source_overview(result.source, cached=result.cached),
+        "overview": source_overview(
+            result.source, cached=result.cached, same_content=cache.same_content(result.source_id)
+        ),
     }
 
 

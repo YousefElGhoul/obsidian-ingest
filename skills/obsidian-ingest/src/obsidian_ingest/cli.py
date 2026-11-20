@@ -474,7 +474,7 @@ def _run_source_command(args, source: Source) -> Any:
     if args.command == "get-thumbnail":
         return _save_thumbnail(responses.thumbnail(source), source.metadata.source_id)
     if args.command == "get-source-overview":
-        return responses.source_overview(source)
+        return responses.overview(_cache(args), args.source_id, source)
     if args.command == "list-sections":
         return responses.sections(source)
     if args.command == "list-exclusions":

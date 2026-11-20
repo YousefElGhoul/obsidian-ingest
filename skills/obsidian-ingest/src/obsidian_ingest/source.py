@@ -52,11 +52,18 @@ class SourceOverview:
     timing: TimingObservations | None
 
 
-def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
-    """Fetch one normalized source; exclusion filtering is best-effort and on by default."""
+def ingest_source(
+    url: str, *, exclude_sponsors: bool = True, previous: "Source | None" = None
+) -> Source:
+    """Fetch one normalized source; exclusion filtering is best-effort and on by default.
+
+    ``previous`` (the current capture, on refresh) may let the provider raise NotModified.
+    """
     if not isinstance(exclude_sponsors, bool):
         raise TypeError("exclude_sponsors must be a boolean")
-    content = supported_provider(url).acquire(url, exclude_sponsors=exclude_sponsors)
+    content = supported_provider(url).acquire(
+        url, exclude_sponsors=exclude_sponsors, previous=previous
+    )
     return source_from_content(content)
 
 

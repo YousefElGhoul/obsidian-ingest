@@ -562,7 +562,9 @@ def test_full_metadata_with_provenance(monkeypatch) -> None:
     assert metadata.canonical_url == "https://example.com/canonical"
     details = metadata.provider_details
     assert details.authors == ("Ada Writer", "Bo Editor") and details.site_name == "Example Blog"
-    assert details.final_url == URL + "?utm_source=feed" and details.identity_key == URL
+    assert details.final_url == URL + "?utm_source=feed" and details.requested_key == URL
+    # A same-site canonical URL owns the capture; the request becomes its alias.
+    assert details.identity_key == "https://example.com/canonical"
     assert details.modified_at.date().isoformat() == "2025-03-15"
     provenance = content.acquisition.evidence["metadata_provenance"]
     assert provenance["authors"] == provenance["published"] == provenance["language"] == "json-ld"

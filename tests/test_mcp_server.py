@@ -310,7 +310,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert "INVALID_ARGUMENT: limit" in invalid_page.content[0].text
 
     asyncio.run(exercise_tools())
-    ingest.assert_called_once_with(URL, exclude_sponsors=True)
+    ingest.assert_called_once_with(URL, exclude_sponsors=True, previous=None)
 
 
 def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch, sample_source) -> None:
@@ -318,7 +318,7 @@ def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch, sam
     monkeypatch.setattr(
         source_cache,
         "ingest_source",
-        lambda url, exclude_sponsors=True: source,
+        lambda url, exclude_sponsors=True, previous=None: source,
     )
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -525,7 +525,7 @@ def test_mcp_cache_refresh_filter_variants_and_corruption_errors(
 
     source = sample_source
 
-    def extract(url, exclude_sponsors=True):
+    def extract(url, exclude_sponsors=True, previous=None):
         if exclude_sponsors:
             return source
         lookup = ExclusionLookup((), ExclusionStatus.DISABLED, "SponsorBlock", ())

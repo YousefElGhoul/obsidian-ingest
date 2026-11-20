@@ -299,3 +299,84 @@ def test_rich_article_reads_back_through_the_cli(tmp_path, monkeypatch, cli_runn
     assert by_kind["table_row"] == "Name: alpha; Value: 1"
     sections = {section for _, section, _, _ in rows}
     assert {"Code", "Data"} <= sections
+
+
+# --- Math and footnotes ---------------------------------------------------------------------
+
+
+def _math_page(body: str) -> list[tuple[str, str | None, str]]:
+    from articles import page, words
+
+    markup = page(f"<article><h1>Maths</h1><p>{words(60, 'intro')}.</p>{body}</article>")
+    return [(a.kind, a.section, a.text) for a in extract_html(markup, URL).atoms[1:]]
+
+
+@pytest.mark.parametrize(
+    ("math", "rendered"),
+    [
+        (
+            (
+                "<math><semantics><mi>e</mi>"
+                "<annotation encoding='application/x-tex'>e^{i\\pi}</annotation></semantics></math>"
+            ),
+            "$e^{i\\pi}$",
+        ),
+        ("<math alttext='a^2 + b^2'><mi>a</mi></math>", "$a^2 + b^2$"),
+        (
+            (
+                "<span class='katex'><span class='katex-mathml'><math><semantics><mi>x</mi>"
+                "<annotation encoding='application/x-tex'>x^2</annotation></semantics></math>"
+                "</span><span class='katex-html' aria-hidden='true'>x2</span></span>"
+            ),
+            "$x^2$",
+        ),
+        ("<script type='math/tex'>\\frac{1}{2}</script>", "$\\frac{1}{2}$"),
+    ],
+    ids=["annotation", "alttext", "katex", "mathjax-script"],
+)
+def test_inline_math_becomes_obsidian_math(math: str, rendered: str) -> None:
+    rows = _math_page(f"<p>Before {math} after.</p>")
+    assert rows == [("paragraph", None, f"Before {rendered} after.")]
+
+
+def test_display_math_is_its_own_row() -> None:
+    rows = _math_page(
+        "<div><math display='block' alttext='\\int_0^1 f(x)\\,dx'><mi>f</mi></math></div>"
+        "<script type='math/tex; mode=display'>E = mc^2</script>"
+    )
+    assert rows == [("math", None, "$$\\int_0^1 f(x)\\,dx$$"), ("math", None, "$$E = mc^2$$")]
+
+
+def test_markdown_inside_tex_stays_inside_the_math() -> None:
+    rows = _math_page("<p>See <math alttext='a$ [x](javascript:alert(1)) $b'></math> now.</p>")
+    assert rows == [("paragraph", None, "See $a [x](javascript:alert(1)) b$ now.")]
+
+
+def test_literal_text_outside_math_is_still_escaped() -> None:
+    rows = _math_page("<p>A [link](javascript:x) and \\(a_b\\) here.</p>")
+    assert rows == [("paragraph", None, "A \\[link\\](javascript:x) and $a_b$ here.")]
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        (
+            "<section role='doc-endnotes'><h2>Notes</h2><ol>"
+            "<li id='fn1'>First note.</li><li id='fn2'>Second note.</li></ol></section>"
+        ),
+        (
+            "<div class='reflist'><ol class='references'>"
+            "<li id='cite_note-1'><span class='mw-cite-backlink'>^</span> "
+            "<span class='reference-text'>First note.</span></li>"
+            "<li id='cite_note-2'><span class='reference-text'>Second note.</span></li></ol></div>"
+        ),
+    ],
+    ids=["doc-endnotes", "wikipedia-reflist"],
+)
+def test_footnotes_get_their_own_section_and_markers(notes: str) -> None:
+    rows = _math_page(f"<p>A claim.<sup><a href='#fn1'>[1]</a></sup></p>{notes}")
+    assert rows[0][0] == "paragraph" and "\\[1\\]" in rows[0][2]
+    footnotes = [(kind, section, text) for kind, section, text in rows if kind == "footnote"]
+    assert [section for _, section, _ in footnotes] == ["Footnotes", "Footnotes"]
+    assert footnotes[0][2].startswith("\\[1\\]") and "First note." in footnotes[0][2]
+    assert footnotes[1][2].startswith("\\[2\\]") and "Second note." in footnotes[1][2]

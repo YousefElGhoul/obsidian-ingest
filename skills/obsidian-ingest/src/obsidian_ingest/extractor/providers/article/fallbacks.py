@@ -68,7 +68,8 @@ def embedded_json_body(document: etree._Element, base_url: str) -> Extraction | 
     return extract_html(_wrap(best), base_url) if best else None
 
 
-def _same_site(host: str, candidate: str) -> bool:
+def same_site(host: str, candidate: str) -> bool:
+    """The same host, or one is a subdomain of the other."""
     return candidate == host or candidate.endswith("." + host) or host.endswith("." + candidate)
 
 
@@ -103,7 +104,7 @@ def amp_page(
     page = fetcher.fetch(
         _join_link(base_url, hrefs[0]),
         deadline,
-        allow_hop=lambda hop: _same_site(host, hop.host),
+        allow_hop=lambda hop: same_site(host, hop.host),
     )
     return extract_html(page.text, page.final_url)
 
@@ -131,7 +132,7 @@ def feed_entry(
         _join_link(base_url, hrefs[0]),
         deadline,
         accept=FEED_TYPES,
-        allow_hop=lambda hop: _same_site(host, hop.host),
+        allow_hop=lambda hop: same_site(host, hop.host),
     )
     parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
     try:

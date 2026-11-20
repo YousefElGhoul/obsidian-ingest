@@ -183,10 +183,40 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
             }
         else:
             report["chapter_probe"] = {"skipped": "No creator chapters were provided"}
+        report["evidence_summary"] = evidence_summary(report)
         report["status"] = "success"
     except Exception as error:  # noqa: BLE001 - record a per-video tool failure and continue.
         report["error"] = f"{type(error).__name__}: {error}"
     return report
+
+
+def evidence_summary(report: dict[str, Any]) -> dict[str, Any]:
+    """A compact view of how a source was acquired, for comparing runs at a glance."""
+    overview = report.get("overview") or {}
+    diagnostics = overview.get("diagnostics") or {}
+    evidence = diagnostics.get("evidence") or {}
+    quality = evidence.get("quality") or {}
+    http = evidence.get("http") or {}
+    exclusions = overview.get("exclusions") or {}
+    return {
+        "kind": evidence.get("kind"),
+        "method": evidence.get("method"),
+        "attempts": [
+            {key: attempt.get(key) for key in ("method", "status", "reason", "words")}
+            for attempt in evidence.get("attempts") or []
+        ],
+        "quality": quality.get("status"),
+        "warnings": quality.get("warnings") or [],
+        "words": quality.get("words"),
+        "sections": overview.get("section_count"),
+        "segments": report.get("transcript_segment_count"),
+        "excluded_segments": exclusions.get("excluded_segments"),
+        "language": overview.get("language"),
+        "metadata_provenance": evidence.get("metadata_provenance"),
+        "encoding": http.get("encoding"),
+        "bytes": http.get("bytes"),
+        "same_content_as": diagnostics.get("same_content_as") or [],
+    }
 
 
 # Report publication and batch command
@@ -270,9 +300,13 @@ async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: floa
                     print(f"FAILED {url}: could not save report: {error}", file=sys.stderr)
                     continue
                 if report["status"] == "success":
+                    summary = report["evidence_summary"]
+                    how = (
+                        f", {summary['method']} ({summary['quality']})" if summary["method"] else ""
+                    )
                     print(
                         f"SUCCESS {url}: {report['transcript_segment_count']} retained "
-                        f"segments, report: {path}",
+                        f"segments{how}, report: {path}",
                         file=sys.stderr,
                     )
                 else:

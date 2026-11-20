@@ -95,6 +95,7 @@ class FakeWeb:
     dns: dict[str, list[str]] = field(default_factory=dict)
     clock: FakeClock = field(default_factory=FakeClock)
     requests: list[tuple[str, str]] = field(default_factory=list)
+    sent_headers: list[dict[str, str]] = field(default_factory=list)
     resolutions: list[str] = field(default_factory=list)
     latency: float = 0.0
 
@@ -104,6 +105,7 @@ class FakeWeb:
 
     def open(self, target, address: str, headers: dict[str, str], timeout: float):
         self.requests.append((target.fetch_url, address))
+        self.sent_headers.append(dict(headers))
         self.clock.now += self.latency
         route = self.routes.get(target.fetch_url)
         if route is None:

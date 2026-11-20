@@ -57,6 +57,17 @@ _IMAGE_ONLY = re.compile(r"(\s*!\[(?:\\.|[^\]\\])*\]\([^)]*\)\s*)+")
 _SPACER = re.compile(r"(spacer|1x1|pixel|blank|trans(parent)?(_1x1)?)\.(gif|png)$", re.IGNORECASE)
 _BLOCKS = {"p", "head", "list", "item", "quote", "table", "row"}
 _INLINE_MARKS = {"#b": "**", "#i": "*", "#s": "~~"}
+_MATH = re.compile(r"\\\((.+?)\\\)|\\\[(.+?)\\\]", re.DOTALL)
+_DISPLAY_MATH = re.compile(r"\$\$[^$]+\$\$")
+_TEX = "application/x-tex"
+_MATHJAX_SCRIPT = re.compile(r"math/tex(;\s*mode=display)?$", re.IGNORECASE)
+FOOTNOTES = "Footnotes"
+_FOOTNOTE_CONTAINERS = (
+    "//*[@role='doc-endnotes'] | //*[contains(concat(' ', normalize-space(@class), ' '),"
+    " ' footnotes ')] | //*[contains(concat(' ', normalize-space(@class), ' '), ' reflist ')]"
+    " | //ol[contains(concat(' ', normalize-space(@class), ' '), ' references ')]"
+    " | //aside[@role='doc-footnote']"
+)
 _LITERAL_MARKS = re.compile(r"([\\`*_\[\]<>|]|%(?=%)|(?<=%)%)")
 _DESTINATION_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<> "})
 _SENTENCE_END = re.compile(r"[.!?؟。！？](?=\s)")
@@ -193,6 +204,89 @@ def _tokens(element: etree._Element) -> set[str]:
     return set(re.split(r"[^a-z0-9_-]+", raw))
 
 
+def _replace_with_text(element: etree._Element, text: str, *, block: bool) -> None:
+    """Put text in an element's place; a block becomes its own paragraph."""
+    parent = element.getparent()
+    if parent is None:
+        return
+    if block and not any(a.tag in {"p", "li", "td", "th"} for a in element.iterancestors()):
+        paragraph = etree.Element("p")
+        paragraph.text = text
+        paragraph.tail = element.tail
+        parent.replace(element, paragraph)
+        return
+    element.text, element.tail = None, text + (element.tail or "")
+    for child in list(element):
+        element.remove(child)
+    _drop(element)
+
+
+def _tex(element: etree._Element) -> str:
+    """The TeX source of a MathML element: its TeX annotation, alt text, or plain text."""
+    for annotation in element.iter("annotation"):
+        if (annotation.get("encoding") or "").lower() == _TEX and annotation.text:
+            return annotation.text
+    return element.get("alttext") or " ".join("".join(element.itertext()).split())
+
+
+def mark_math(document: etree._Element) -> None:
+    """Replace rendered math (MathML, KaTeX, MathJax) with marked TeX the renderer keeps.
+
+    KaTeX and MathJax also render a visual copy beside the MathML; the whole rendering
+    is replaced, so the formula appears once.
+    """
+    for script in list(document.iter("script")):
+        if match := _MATHJAX_SCRIPT.match((script.get("type") or "").strip()):
+            display = bool(match[1])
+            tex = script.text or ""
+            _replace_with_text(script, f"\\[{tex}\\]" if display else f"\\({tex}\\)", block=display)
+    renderings = document.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex ')"
+        " or local-name() = 'mjx-container'] | //math"
+    )
+    for element in renderings:
+        if element.getparent() is None or any(a in renderings for a in element.iterancestors()):
+            continue
+        math = element if element.tag == "math" else next(element.iter("math"), None)
+        if math is None:
+            continue
+        tex = _tex(math).strip()
+        display = (
+            math.get("display") == "block"
+            or element.get("display") == "true"
+            or "katex-display" in (element.getparent().get("class") or "")
+        )
+        if tex:
+            _replace_with_text(
+                element, f"\\[{tex}\\]" if display else f"\\({tex}\\)", block=display
+            )
+
+
+def mark_footnotes(document: etree._Element) -> None:
+    """Head each footnote list with a `Footnotes` heading, numbering its notes `[n]`."""
+    containers = document.xpath(_FOOTNOTE_CONTAINERS)
+    for container in containers:
+        if any(a in containers for a in container.iterancestors()):
+            continue
+        for heading in list(container.iter("h1", "h2", "h3", "h4", "h5", "h6")):
+            _drop(heading)
+        for listing in container.iter("ol"):
+            try:
+                number = int(listing.get("start") or 1)
+            except ValueError:
+                number = 1
+            for item in listing.iterchildren("li"):
+                item.text = f"[{number}] " + (item.text or "").lstrip()
+                number += 1
+        heading = etree.Element("h2")
+        heading.text = FOOTNOTES
+        container.insert(0, heading)
+        if container.tag == "ol":
+            # A heading cannot sit inside a list; put it just before.
+            container.remove(heading)
+            container.addprevious(heading)
+
+
 def parse(markup: str) -> etree._Element:
     """Parse HTML text into a tree, tolerating an XML declaration."""
     markup = re.sub(r"^\s*<\?xml[^>]*\?>", "", markup)
@@ -293,7 +387,22 @@ def escape_destination(url: str) -> str:
 
 
 def _literal(text: str | None) -> str:
-    return _LITERAL_MARKS.sub(r"\\\1", text or "")
+    """Escape page text as Markdown, rendering marked TeX (``\\(…\\)``, ``\\[…\\]``) as math."""
+    if not text:
+        return ""
+    parts: list[str] = []
+    position = 0
+    for match in _MATH.finditer(text):
+        # TeX loses its own `$` signs (they would end the math early) and line breaks.
+        tex = " ".join((match[1] if match[1] is not None else match[2]).replace("$", "").split())
+        if not tex:
+            continue
+        parts.append(_LITERAL_MARKS.sub(r"\\\1", text[position : match.start()]))
+        delimiter = "$" if match[1] is not None else "$$"
+        parts.append(f"{delimiter}{tex}{delimiter}")
+        position = match.end()
+    parts.append(_LITERAL_MARKS.sub(r"\\\1", text[position:]))
+    return "".join(parts)
 
 
 def escape_row_markers(text: str) -> str:
@@ -406,6 +515,11 @@ class _Walker:
         text = text.rstrip() if kind == "list_item" else text.strip()
         if not text.strip():
             return
+        section = self.headings.current or ""
+        if kind in {"paragraph", "list_item"} and section.split(SECTION_SEPARATOR)[-1] == FOOTNOTES:
+            kind, text = "footnote", text.strip()
+        elif kind == "paragraph" and _DISPLAY_MATH.fullmatch(text):
+            kind = "math"
         self.result.words += len(text.split())
         for part in split_atom(escape_row_markers(text)):
             self.result.atoms.append(Atom(part, kind, self.headings.current))
@@ -556,6 +670,8 @@ def extract_html(markup: str, base_url: str) -> Extraction:
 
     result = ExtractionBuilder()
     document = parse(markup)
+    mark_math(document)
+    mark_footnotes(document)
     hints = sanitize(document, base_url, result)
     cleaned = html.tostring(document, encoding="unicode")
     with warnings.catch_warnings():

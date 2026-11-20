@@ -46,6 +46,7 @@ from obsidian_ingest.extractor.metadata import (
 )
 from obsidian_ingest.extractor.providers import (
     Citation,
+    NotModified,
     ProviderContent,
     ProviderDefaults,
     UnsupportedOperation,
@@ -96,8 +97,9 @@ class ArticleDetails:
     modified_at: datetime | None
     site_name: str | None
     final_url: str
-    identity_key: str
+    identity_key: str  # The stored identity: the same-site canonical URL, or the request.
     word_count: int | None
+    requested_key: str = ""  # The identity of the URL actually requested.
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,11 @@ def _fallback_failure(method: str, error: FetchError | URLRejected) -> dict[str,
         suffix = f"; {CLIP_HINT}"
         message = message[: 200 - len(suffix)] + suffix
     return {"method": method, "status": "failed", "reason": reason, "message": message[:200]}
+
+
+def _hashed(identity_key: str) -> str:
+    """The short cache identity of a normalized URL."""
+    return hashlib.sha256(identity_key.encode()).hexdigest()[:16]
 
 
 # The trusted network policy, set from settings by ``configure`` (never by a tool call).
@@ -195,6 +202,23 @@ def _sections(extraction: Extraction) -> tuple[Chapter, ...]:
     return tuple(chapters)
 
 
+def _validators(previous: "Source | None", url: str) -> dict[str, str] | None:
+    """The validators of a previous web capture of this same URL, for a conditional GET."""
+    if previous is None or previous.acquisition is None:
+        return None
+    evidence = previous.acquisition.evidence or {}
+    details = previous.metadata.provider_details
+    if (
+        evidence.get("method") == "web_clipper"
+        or not isinstance(details, ArticleDetails)
+        or details.requested_key != check_url(url, make_fetcher().allowed_ports).identity_key
+    ):
+        return None
+    http = evidence.get("http") or {}
+    found = {key: http[key] for key in ("etag", "last_modified") if isinstance(http.get(key), str)}
+    return found or None
+
+
 def _http_evidence(page: FetchResult) -> dict[str, Any]:
     return {
         "status": page.status,
@@ -205,6 +229,8 @@ def _http_evidence(page: FetchResult) -> dict[str, Any]:
         "encoding": page.encoding,
         "encoding_source": page.encoding_source,
         "replacement_characters": page.replacement_count,
+        "etag": page.etag,
+        "last_modified": page.last_modified,
     }
 
 
@@ -270,24 +296,35 @@ class ArticleProvider(ProviderDefaults):
 
     def identity(self, url: str) -> str:
         checked = check_url(url, make_fetcher().allowed_ports)
-        return hashlib.sha256(checked.identity_key.encode()).hexdigest()[:16]
+        return _hashed(checked.identity_key)
 
     def exclusion_categories(self, exclude_sponsors: bool) -> tuple[str, ...]:
         return CATEGORIES if exclude_sponsors else ()
 
-    def acquire(self, url: str, *, exclude_sponsors: bool) -> ProviderContent:
+    def acquire(
+        self, url: str, *, exclude_sponsors: bool, previous: "Source | None" = None
+    ) -> ProviderContent:
         deadline = make_deadline()
         try:
-            return self._acquire(url, exclude_sponsors, deadline)
+            return self._acquire(url, exclude_sponsors, deadline, _validators(previous, url))
         except FetchError as error:
             if error.reason in _CLIP_REASONS:
                 raise FetchError(error.reason, f"{error.detail}; {CLIP_HINT}") from error
             raise
 
-    def _acquire(self, url: str, exclude_sponsors: bool, deadline: Deadline) -> ProviderContent:
+    def _acquire(
+        self,
+        url: str,
+        exclude_sponsors: bool,
+        deadline: Deadline,
+        validators: dict[str, str] | None,
+    ) -> ProviderContent:
         fetcher = make_fetcher()
         checked = check_url(url, fetcher.allowed_ports)
-        page = fetcher.fetch(url, deadline)
+        page = fetcher.fetch(url, deadline, validators=validators)
+        if page.not_modified:
+            LOG.info("stage=fetch status=304 seconds=%s", deadline.used())
+            raise NotModified(url)
         LOG.info(
             "stage=fetch status=%s bytes=%s redirects=%s seconds=%s",
             page.status, page.bytes_read, len(page.redirect_hosts), deadline.used(),
@@ -445,7 +482,6 @@ class ArticleProvider(ProviderDefaults):
     ) -> ProviderContent:
         trafilatura = load_trafilatura()
         extraction = best.extraction
-        source_id = hashlib.sha256(identity_key.encode()).hexdigest()[:16]
         texts = [atom.text for atom in extraction.atoms]
         kinds = [atom.kind for atom in extraction.atoms]
         categories = self.exclusion_categories(exclude_sponsors)
@@ -457,12 +493,19 @@ class ArticleProvider(ProviderDefaults):
             categories=categories,
             retrieved_at=acquired_at if categories else None,
         )
-        canonical = final_url
+        canonical, stored_key = final_url, identity_key
         if meta.canonical_url:
             try:
-                canonical = check_url(meta.canonical_url).fetch_url
+                checked = check_url(meta.canonical_url, make_fetcher().allowed_ports)
             except URLRejected:
                 pass
+            else:
+                canonical = checked.fetch_url
+                # Only a same-site canonical URL can own the capture: AMP, mobile and
+                # tracking variants then share it, and other sites cannot claim it.
+                if fallbacks.same_site(urlsplit(final_url).hostname or "", checked.host):
+                    stored_key = checked.identity_key
+        source_id = _hashed(stored_key)
         language = meta.language or "und"
         metadata = SourceMetadata(
             provider=self.name,
@@ -485,7 +528,8 @@ class ArticleProvider(ProviderDefaults):
                 modified_at=meta.modified,
                 site_name=meta.site_name,
                 final_url=final_url,
-                identity_key=identity_key,
+                identity_key=stored_key,
+                requested_key=identity_key,
                 word_count=meta.word_count,
             ),
         )
@@ -527,6 +571,12 @@ class ArticleProvider(ProviderDefaults):
         )
         return ProviderContent(metadata, transcript, lookup, acquisition, original)
 
+    def fetched_identity(self, source: "Source") -> str:
+        details = source.metadata.provider_details
+        if not isinstance(details, ArticleDetails):
+            raise TypeError("an article capture lacks its details")
+        return _hashed(details.requested_key)
+
     def encode_details(self, details: object | None) -> dict[str, Any] | None:
         if details is None:
             return None
@@ -541,7 +591,7 @@ class ArticleProvider(ProviderDefaults):
         if data is None:
             return None
         expected = {"authors", "modified_at", "site_name", "final_url", "identity_key",
-                    "word_count"}  # fmt: skip
+                    "requested_key", "word_count"}  # fmt: skip
         if not isinstance(data, dict) or set(data) != expected:
             raise ValueError("malformed article details")
         authors = data["authors"]
@@ -550,7 +600,7 @@ class ArticleProvider(ProviderDefaults):
         for key in ("site_name",):
             if data[key] is not None and not isinstance(data[key], str):
                 raise ValueError(f"malformed article detail: {key}")
-        for key in ("final_url", "identity_key"):
+        for key in ("final_url", "identity_key", "requested_key"):
             if not isinstance(data[key], str) or not data[key]:
                 raise ValueError(f"malformed article detail: {key}")
         count = data["word_count"]
@@ -565,6 +615,7 @@ class ArticleProvider(ProviderDefaults):
             site_name=data["site_name"],
             final_url=data["final_url"],
             identity_key=data["identity_key"],
+            requested_key=data["requested_key"],
             word_count=count,
         )
 

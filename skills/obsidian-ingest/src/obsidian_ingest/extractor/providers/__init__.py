@@ -61,8 +61,11 @@ class SourceProvider(Protocol):
         """Return the stable cache identity for a URL, or raise ValueError."""
         ...
 
-    def acquire(self, url: str, *, exclude_sponsors: bool) -> ProviderContent:
-        """Fetch and normalize one capture."""
+    def acquire(
+        self, url: str, *, exclude_sponsors: bool, previous: "Source | None" = None
+    ) -> ProviderContent:
+        """Fetch and normalize one capture. On refresh, ``previous`` is the current
+        capture; a provider may raise NotModified when the source has not changed."""
         ...
 
     def exclusion_categories(self, exclude_sponsors: bool) -> tuple[str, ...]:
@@ -124,9 +127,18 @@ class SourceProvider(Protocol):
         """Whether a capture was built from exactly this note revision."""
         ...
 
+    def fetched_identity(self, source: "Source") -> str:
+        """The identity of the URL a capture was fetched from; its ``source_id`` is the
+        identity it is stored under, which differs for a page naming a canonical URL."""
+        ...
+
 
 class UnsupportedOperation(ValueError):
     """A provider does not offer an optional ability, such as thumbnails."""
+
+
+class NotModified(Exception):
+    """A refresh found the source unchanged since the previous capture."""
 
 
 class ProviderDefaults:
@@ -155,6 +167,9 @@ class ProviderDefaults:
 
     def capture_matches_note(self, source: "Source", note: "ClippedNote") -> bool:
         return False
+
+    def fetched_identity(self, source: "Source") -> str:
+        return source.metadata.source_id
 
 
 @dataclass(frozen=True, slots=True)

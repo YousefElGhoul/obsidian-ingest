@@ -156,4 +156,4 @@ def test_unavailable_thumbnail_is_a_coded_error(monkeypatch, tmp_path, fake_extr
 
 def test_source_cache_is_untouched_by_thumbnails():
     # Thumbnails are fetched on demand and never stored in the source cache.
-    assert source_cache.SCHEMA_VERSION == 3
+    assert source_cache.SCHEMA_VERSION == 4

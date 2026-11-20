@@ -78,7 +78,9 @@ def sample_source() -> Source:
 @pytest.fixture
 def fake_extraction(monkeypatch, sample_source) -> MagicMock:
     """Replace provider extraction behind the source cache with the sample source."""
-    extraction = MagicMock(side_effect=lambda url, exclude_sponsors=True: sample_source)
+    extraction = MagicMock(
+        side_effect=lambda url, exclude_sponsors=True, previous=None: sample_source
+    )
     monkeypatch.setattr(source_cache, "ingest_source", extraction)
     return extraction
 

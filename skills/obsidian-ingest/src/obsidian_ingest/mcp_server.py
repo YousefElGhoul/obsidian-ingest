@@ -178,7 +178,7 @@ def create_server(
     @_tool_errors
     def get_source_overview(source_id: str) -> dict[str, Any]:
         """Get source metadata, exclusions, and acquisition evidence without the source text."""
-        return responses.source_overview(load_source(source_id))
+        return responses.overview(cache(), source_id, load_source(source_id))
 
     @server.tool()
     @_tool_errors

@@ -105,11 +105,11 @@ def test_url_ingest_does_not_reuse_clip_published_during_fetch(tmp_path, monkeyp
     database = tmp_path / "sources.db"
     acquire = source_cache.ingest_source
 
-    def interleave(url: str, *, exclude_sponsors: bool):
+    def interleave(url: str, *, exclude_sponsors: bool, previous=None):
         cache = source_cache.SourceCache(database)
         clip = cache.ingest_note(ClippedNote(NOTE, "revision", clip_text()))
         assert not clip.cached
-        return acquire(url, exclude_sponsors=exclude_sponsors)
+        return acquire(url, exclude_sponsors=exclude_sponsors, previous=previous)
 
     monkeypatch.setattr(source_cache, "ingest_source", interleave)
     result = responses.ingest(source_cache.SourceCache(database), URL)

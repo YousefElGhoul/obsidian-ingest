@@ -584,7 +584,7 @@ def test_overlapping_miss_keeps_first_published_snapshot(tmp_path, extraction, m
     cache = SourceCache(tmp_path / "sources.db")
     winner = None
 
-    def extract(url, exclude_sponsors=True):
+    def extract(url, exclude_sponsors=True, previous=None):
         nonlocal winner
         monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: snapshot)
         winner = SourceCache(cache.path).ingest(URL)
