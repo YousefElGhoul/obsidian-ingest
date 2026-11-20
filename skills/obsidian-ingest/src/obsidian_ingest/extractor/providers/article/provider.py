@@ -65,7 +65,9 @@ _PAYWALL_PHRASES = re.compile(
     r"subscribers? only|already a subscriber|create a free account to (read|continue)",
     re.IGNORECASE,
 )
-_BLOCKED_REASONS = {"HTTP_401", "HTTP_403", "HTTP_429", "HTTP_451", "TIMEOUT", "CONNECTION_FAILED"}
+_CLIP_REASONS = {
+    "HTTP_401", "HTTP_403", "HTTP_429", "HTTP_451", "TIMEOUT", "CONNECTION_FAILED", "NOT_HTML"
+}  # fmt: skip
 _JS_SHELL = re.compile(r"""id=["'](__next|root|app|__nuxt)["']""")
 
 
@@ -86,6 +88,27 @@ class _Candidate:
     method: str
     extraction: Extraction
     quality: Quality
+
+    def outcome(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "status": self.quality.status,
+            "words": self.quality.words,
+            "reason": self.quality.reason,
+        }
+
+
+def _fallback_failure(method: str, error: FetchError | URLRejected) -> dict[str, Any]:
+    if isinstance(error, FetchError):
+        reason, detail = error.reason, error.detail
+    else:
+        reason = "URL_REJECTED"
+        detail = str(error).removeprefix("URL_REJECTED: ")
+    message = "".join(char for char in detail if char.isprintable())
+    if reason == "NOT_HTML":
+        suffix = f"; {CLIP_HINT}"
+        message = message[: 200 - len(suffix)] + suffix
+    return {"method": method, "status": "failed", "reason": reason, "message": message[:200]}
 
 
 # The trusted network policy, set from settings by ``configure`` (never by a tool call).
@@ -235,21 +258,20 @@ class ArticleProvider:
 
     def acquire(self, url: str, *, exclude_sponsors: bool) -> ProviderContent:
         deadline = make_deadline()
+        try:
+            return self._acquire(url, exclude_sponsors, deadline)
+        except FetchError as error:
+            if error.reason in _CLIP_REASONS:
+                raise FetchError(error.reason, f"{error.detail}; {CLIP_HINT}") from error
+            raise
+
+    def _acquire(self, url: str, exclude_sponsors: bool, deadline: Deadline) -> ProviderContent:
         fetcher = make_fetcher()
         checked = check_url(url, fetcher.allowed_ports)
-        try:
-            page = fetcher.fetch(url, deadline)
-        except FetchError as error:
-            if error.reason in _BLOCKED_REASONS:
-                # Bot blocking and logins: the user's own browser can still open the page.
-                raise FetchError(
-                    error.reason, f"{error.args[0].split(': ', 1)[1]}; {CLIP_HINT}"
-                ) from error
-            raise
+        page = fetcher.fetch(url, deadline)
         LOG.info(
-            "stage=fetch host=%s status=%s bytes=%s redirects=%s encoding=%s seconds=%s",
-            checked.host, page.status, page.bytes_read, len(page.redirect_hosts),
-            page.encoding, deadline.used(),
+            "stage=fetch status=%s bytes=%s redirects=%s seconds=%s",
+            page.status, page.bytes_read, len(page.redirect_hosts), deadline.used(),
         )  # fmt: skip
         document = parse(page.text)
         primary = extract_html(page.text, page.final_url)
@@ -259,9 +281,11 @@ class ArticleProvider:
             "paywall_signals": _paywall_signals(document, page.text, meta),
             "replacement_count": page.replacement_count,
         }
-        candidates = [_candidate("extract", primary, **signals)]
-        attempts: list[dict[str, Any]] = []
-        if candidates[0].quality.failed or _more_exists(meta, primary, page.text):
+        best = _candidate("extract", primary, **signals)
+        assert best is not None
+        deadline.check()
+        attempts = [best.outcome()]
+        if best.quality.failed or _more_exists(meta, primary, page.text):
             identities = {checked.identity_key}
             if meta.canonical_url:
                 try:
@@ -279,29 +303,22 @@ class ArticleProvider:
                     ),
                 ),
             ):
+                deadline.check()
                 try:
-                    found = _candidate(method, attempt(), **signals | {"declared_words": None})
-                except FetchError as error:
-                    if error.reason == "TIMEOUT":
+                    found = _candidate(method, attempt(), **signals)
+                except (FetchError, URLRejected) as error:
+                    if isinstance(error, FetchError) and error.reason == "TIMEOUT":
                         raise
-                    attempts.append({"method": method, "status": "failed", "reason": str(error)})
+                    attempts.append(_fallback_failure(method, error))
                     continue
                 if found is None:
                     continue
-                candidates.append(found)
+                attempts.append(found.outcome())
+                if found.quality.score() > best.quality.score():
+                    best = found
                 if found.quality.status == "ok":
                     break
-        for candidate in candidates:
-            attempts.insert(
-                candidates.index(candidate),
-                {
-                    "method": candidate.method,
-                    "status": candidate.quality.status,
-                    "words": candidate.quality.words,
-                    "reason": candidate.quality.reason,
-                },
-            )
-        best = max(candidates, key=lambda candidate: candidate.quality.score())
+        deadline.check()
         for attempt in attempts:
             LOG.info(
                 "stage=extract method=%s status=%s words=%s reason=%s",
@@ -314,7 +331,7 @@ class ArticleProvider:
                 "LOW_QUALITY": "the page text is mostly navigation or repeated blocks",
             }[best.quality.reason]
             raise FetchError(best.quality.reason, f"{detail}; {CLIP_HINT}")
-        return self._content(
+        content = self._content(
             url,
             checked.identity_key,
             meta,
@@ -328,6 +345,8 @@ class ArticleProvider:
                 "deadline_used_seconds": deadline.used(),
             },
         )
+        deadline.check()
+        return content
 
     def accepts_note(self, text: str) -> bool:
         fields, _ = clipper.split_frontmatter(text)

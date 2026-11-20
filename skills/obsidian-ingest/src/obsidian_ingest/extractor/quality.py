@@ -59,7 +59,7 @@ def assess(
     warnings: list[str] = []
     truncated = bool(declared_words) and words < TRUNCATION_RATIO * declared_words
     reason = None
-    if paywall_signals and (truncated or words < SHORT_WORDS):
+    if paywall_signals and truncated:
         reason = "PAYWALL_SUSPECTED"
     elif words < MIN_WORDS or density > MAX_LINK_DENSITY:
         reason = "NO_ARTICLE_TEXT"

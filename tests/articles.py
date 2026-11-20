@@ -69,7 +69,11 @@ class _Response:
         if not self._chunks:
             return b""
         self._clock.now += self._drip
-        return self._chunks.pop(0)
+        chunk = self._chunks[0]
+        if len(chunk) <= size:
+            return self._chunks.pop(0)
+        self._chunks[0] = chunk[size:]
+        return chunk[:size]
 
     def close(self) -> None:
         pass

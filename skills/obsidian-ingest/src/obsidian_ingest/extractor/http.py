@@ -15,18 +15,22 @@ import ipaddress
 import re
 import socket
 import ssl
+import threading
 import time
 import zlib
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from email.message import Message
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
-from obsidian_ingest.extractor.urls import CheckedURL, URLRejected, check_url
+from obsidian_ingest.extractor.urls import CheckedURL, check_url
 
 MAX_BODY_BYTES = 5 * 1024 * 1024
 MAX_TOTAL_BYTES = 10 * 1024 * 1024
+MAX_TOTAL_DECODED_BYTES = 20 * 1024 * 1024
+MAX_HEADER_BYTES = 64 * 1024
 MAX_REDIRECTS = 5
 MAX_COMPRESSION_RATIO = 100
 CONNECT_TIMEOUT = 10.0
@@ -36,6 +40,7 @@ MAX_RETRY_AFTER = 5.0
 _CHUNK = 64 * 1024
 _REDIRECTS = {301, 302, 303, 307, 308}
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
 HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 FEED_TYPES = frozenset(
     {"application/rss+xml", "application/atom+xml", "application/xml", "text/xml"}
@@ -48,6 +53,7 @@ class FetchError(ValueError):
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
+        self.detail = detail
 
 
 class Deadline:
@@ -106,45 +112,55 @@ def system_resolver(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
-def blocked_address(address: str) -> bool:
-    """True for any address that is not on the public internet."""
+def blocked_address(address: str, *, allow_private_network: bool = False) -> bool:
+    """Reject IPv4 transition aliases and, by default, non-public addresses."""
     try:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return True
     if isinstance(ip, ipaddress.IPv6Address):
-        embedded = ip.ipv4_mapped or ip.sixtofour
-        if embedded is None and ip in _NAT64:
-            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        if embedded is not None and not embedded.is_global:
+        compatible = ip in _IPV4_COMPATIBLE and not (ip.is_unspecified or ip.is_loopback)
+        if ip.ipv4_mapped or ip.sixtofour or compatible:
             return True
-    return not ip.is_global or ip.is_multicast
+        if ip in _NAT64:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return not allow_private_network and (not ip.is_global or ip.is_multicast)
 
 
-class _PinnedHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, address: str, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._address = address
+class _MeasuredHTTPResponse(http.client.HTTPResponse):
+    header_bytes: int = 0
 
-    def connect(self) -> None:
-        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+    def begin(self) -> None:
+        # Count wire bytes before the header parser strips whitespace.
+        stream = self.fp
+        readline = stream.readline
+
+        def measured(size: int) -> bytes:
+            line = readline(size)
+            self.header_bytes += len(line)
+            return line
+
+        stream.readline = measured
+        try:
+            super().begin()
+        finally:
+            del stream.readline
 
 
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, address: str, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._address = address
-
-    def connect(self) -> None:
-        sock = socket.create_connection((self._address, self.port), self.timeout)
-        # SNI and certificate verification use the hostname, not the pinned address.
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+def _shutdown(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # The request may already have closed its socket.
 
 
 @dataclass
 class _HTTPClientResponse:
     connection: http.client.HTTPConnection
     response: http.client.HTTPResponse
+    sock: socket.socket
+    shutdown_socket: socket.socket
+    timer: threading.Timer
     status: int = field(init=False)
     headers: Message = field(init=False)
 
@@ -153,11 +169,14 @@ class _HTTPClientResponse:
         self.headers = self.response.headers
 
     def read(self, size: int, timeout: float) -> bytes:
-        if self.connection.sock is not None:
-            self.connection.sock.settimeout(max(timeout, 0.001))
+        if not self.response.isclosed():
+            self.sock.settimeout(timeout)
         return self.response.read1(size) if size else b""
 
     def close(self) -> None:
+        self.timer.cancel()
+        self.shutdown_socket.close()
+        self.response.close()
         self.connection.close()
 
 
@@ -170,24 +189,49 @@ class HTTPClientTransport:
     def open(
         self, target: CheckedURL, address: str, headers: dict[str, str], timeout: float
     ) -> RawResponse:
-        connect_timeout = min(timeout, CONNECT_TIMEOUT)
         if target.scheme == "https":
-            connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
-                address, target.host, target.port, timeout=connect_timeout, context=self._tls
+            connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+                target.host, target.port, context=self._tls
             )
         else:
-            connection = _PinnedHTTPConnection(
-                address, target.host, target.port, timeout=connect_timeout
-            )
+            connection = http.client.HTTPConnection(target.host, target.port)
+        connection.response_class = _MeasuredHTTPResponse
         parts = urlsplit(target.fetch_url)
         path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        sock = shutdown_socket = timer = None
         try:
+            sock = socket.socket(socket.AF_INET6 if ":" in address else socket.AF_INET)
+            # Keep a handle even when TLS or a close-delimited response takes ownership.
+            shutdown_socket = sock.dup()
+            timer = threading.Timer(timeout, _shutdown, args=(shutdown_socket,))
+            timer.daemon = True
+            timer.start()
+            sock.settimeout(min(timeout, CONNECT_TIMEOUT))
+            sock.connect((address, target.port))
+            if target.scheme == "https":
+                sock = self._tls.wrap_socket(sock, server_hostname=target.host)
+            sock.settimeout(min(timeout, REQUEST_TIMEOUT))
+            connection.sock = sock
             connection.request("GET", path, headers=headers)
-            return _HTTPClientResponse(connection, connection.getresponse())
-        except (OSError, http.client.HTTPException) as error:
+            response = connection.getresponse()
+            if response.header_bytes > MAX_HEADER_BYTES:
+                response.close()
+                raise FetchError("TOO_LARGE", f"headers are larger than {MAX_HEADER_BYTES} bytes")
+            return _HTTPClientResponse(connection, response, sock, shutdown_socket, timer)
+        except (OSError, http.client.HTTPException, FetchError) as error:
+            if timer is not None:
+                timer.cancel()
+            if shutdown_socket is not None:
+                shutdown_socket.close()
             connection.close()
-            if isinstance(error, TimeoutError | socket.timeout):
+            if sock is not None:
+                sock.close()
+            if isinstance(error, FetchError):
+                raise
+            if isinstance(error, TimeoutError):
                 raise FetchError("TIMEOUT", f"no response from {target.host}") from error
+            if isinstance(error, http.client.LineTooLong):
+                raise FetchError("TOO_LARGE", f"headers are larger than {MAX_HEADER_BYTES} bytes")
             raise FetchError("CONNECTION_FAILED", f"{target.host}: {error}") from error
 
 
@@ -273,27 +317,46 @@ class Fetcher:
     allow_private_network: bool = False
     user_agent: str = "obsidian-ingest (+https://github.com/YousefElGhoul/obsidian-ingest)"
     total_bytes: int = 0
+    total_decoded_bytes: int = 0
     sleep: Callable[[float], None] = time.sleep
 
-    def _addresses(self, target: CheckedURL) -> list[str]:
-        addresses = self.resolver(target.host, target.port)
+    def _addresses(self, target: CheckedURL, deadline: Deadline) -> list[str]:
+        result: Future[list[str]] = Future()
+
+        def resolve() -> None:
+            try:
+                result.set_result(self.resolver(target.host, target.port))
+            except BaseException as error:  # noqa: BLE001 - propagate across the thread boundary
+                result.set_exception(error)
+
+        deadline.check()
+        worker = threading.Thread(target=resolve, daemon=True)
+        worker.start()
+        worker.join(max(0, deadline.remaining()))
+        deadline.check()
+        if worker.is_alive():
+            raise FetchError("TIMEOUT", "DNS did not finish before the ingest deadline")
+        addresses = result.result()
         if not addresses:
             raise FetchError("DNS_FAILED", f"{target.host} has no address")
-        if not self.allow_private_network and any(blocked_address(a) for a in addresses):
+        if any(
+            blocked_address(a, allow_private_network=self.allow_private_network) for a in addresses
+        ):
             raise FetchError(
                 "ADDRESS_BLOCKED",
-                f"{target.host} resolves to a private, local or reserved address",
+                f"{target.host} resolves to a disallowed address",
             )
         return addresses
 
     def _open(self, target: CheckedURL, headers: dict[str, str], deadline: Deadline) -> RawResponse:
         """Connect to each validated address in order until one answers."""
         failure: FetchError | None = None
-        for address in self._addresses(target):
+        for address in self._addresses(target, deadline):
             left = deadline.check()
             try:
-                return self.transport.open(target, address, headers, min(left, REQUEST_TIMEOUT))
+                return self.transport.open(target, address, headers, left)
             except FetchError as error:
+                deadline.check()
                 if error.reason != "CONNECTION_FAILED":
                     raise
                 failure = error  # Such as an IPv6 address on a host without IPv6.
@@ -309,34 +372,59 @@ class Fetcher:
         size = raw = 0
         while True:
             left = deadline.check()
+            raw_left = MAX_TOTAL_BYTES - self.total_bytes
+            if raw_left < 0:
+                raise FetchError("TOO_LARGE", "the ingest's download budget is used up")
+            decoded_left = MAX_TOTAL_DECODED_BYTES - self.total_decoded_bytes
+            if decoded_left < 0:
+                raise FetchError("TOO_LARGE", "the ingest's decoded budget is used up")
+            output_limit = min(MAX_BODY_BYTES - size, decoded_left) + 1
+            read_limit = min(_CHUNK, raw_left + 1)
+            if inflater is None:
+                read_limit = min(read_limit, output_limit)
             try:
-                chunk = response.read(_CHUNK, min(left, REQUEST_TIMEOUT))
+                chunk = response.read(read_limit, min(left, REQUEST_TIMEOUT))
             except TimeoutError as error:
                 raise FetchError("TIMEOUT", "the response body stalled") from error
             except (OSError, http.client.HTTPException) as error:
+                deadline.check()
                 raise FetchError(
                     "CONNECTION_FAILED", f"reading the body failed: {error}"
                 ) from error
+            raw += len(chunk)
+            self.total_bytes += len(chunk)
+            deadline.check()
             if not chunk:
                 break
-            raw += len(chunk)
+            if self.total_bytes > MAX_TOTAL_BYTES:
+                raise FetchError("TOO_LARGE", "the ingest's download budget is used up")
             if inflater is not None:
-                chunk = inflater.decompress(chunk, MAX_BODY_BYTES - size + 1)
-                if inflater.unconsumed_tail or size + len(chunk) > MAX_BODY_BYTES:
-                    raise FetchError("TOO_LARGE", f"body is larger than {MAX_BODY_BYTES} bytes")
-                if size + len(chunk) > MAX_COMPRESSION_RATIO * raw + _CHUNK:
-                    raise FetchError("TOO_LARGE", "compressed body expands too far")
+                try:
+                    chunk = inflater.decompress(chunk, output_limit)
+                except zlib.error as error:
+                    raise FetchError(
+                        "CONNECTION_FAILED", "the compressed body is invalid"
+                    ) from error
             size += len(chunk)
+            self.total_decoded_bytes += len(chunk)
             if size > MAX_BODY_BYTES:
                 raise FetchError("TOO_LARGE", f"body is larger than {MAX_BODY_BYTES} bytes")
-            if self.total_bytes + raw > MAX_TOTAL_BYTES:
-                raise FetchError("TOO_LARGE", "the ingest's download budget is used up")
+            if self.total_decoded_bytes > MAX_TOTAL_DECODED_BYTES:
+                raise FetchError("TOO_LARGE", "the ingest's decoded budget is used up")
+            if inflater is not None and size > MAX_COMPRESSION_RATIO * raw + _CHUNK:
+                raise FetchError("TOO_LARGE", "compressed body expands too far")
             chunks.append(chunk)
-        self.total_bytes += raw
+        if inflater is not None and not inflater.eof:
+            raise FetchError("CONNECTION_FAILED", "the compressed body ended early")
         return b"".join(chunks), raw
 
     def fetch(
-        self, url: str, deadline: Deadline, accept: frozenset[str] = HTML_TYPES
+        self,
+        url: str,
+        deadline: Deadline,
+        accept: frozenset[str] = HTML_TYPES,
+        *,
+        allow_hop: Callable[[CheckedURL], bool] | None = None,
     ) -> FetchResult:
         """GET a URL with every check; raise FetchError (or URLRejected) on refusal."""
         current = check_url(url, self.allowed_ports)
@@ -344,6 +432,8 @@ class Fetcher:
         retried = False
         while True:
             deadline.check()
+            if allow_hop is not None and not allow_hop(current):
+                raise FetchError("URL_REJECTED", "the fallback points to another site")
             headers = {
                 "User-Agent": self.user_agent,
                 "Accept": ", ".join(sorted(accept)) + ";q=1.0, */*;q=0.1",
@@ -357,10 +447,10 @@ class Fetcher:
                 if status in _REDIRECTS and response.headers.get("location"):
                     if len(redirect_hosts) >= MAX_REDIRECTS:
                         raise FetchError("TOO_MANY_REDIRECTS", f"more than {MAX_REDIRECTS}")
-                    target = urljoin(current.fetch_url, response.headers["location"])
                     try:
+                        target = urljoin(current.fetch_url, response.headers["location"])
                         following = check_url(target, self.allowed_ports)
-                    except URLRejected as error:
+                    except ValueError as error:
                         raise FetchError("URL_REJECTED", f"redirect target: {error}") from error
                     if current.scheme == "https" and following.scheme == "http":
                         raise FetchError("URL_REJECTED", "redirect downgrades https to http")
@@ -382,6 +472,7 @@ class Fetcher:
             finally:
                 response.close()
             text, encoding, source, replacements = decode(body, charset)
+            deadline.check()
             return FetchResult(
                 requested_url=url,
                 final_url=current.fetch_url,

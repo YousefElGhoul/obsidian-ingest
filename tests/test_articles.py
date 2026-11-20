@@ -1,12 +1,16 @@
 """Web articles: URLs, guarded fetching, extraction, metadata, quality and fallbacks."""
 
 import json
+import socketserver
+import threading
+import time
 import zlib
 from pathlib import Path
 
 import pytest
 from articles import FakeWeb, Reply, article, gzipped, json_ld, page, words
 
+from obsidian_ingest.extractor import http
 from obsidian_ingest.extractor.http import (
     Deadline,
     Fetcher,
@@ -15,6 +19,7 @@ from obsidian_ingest.extractor.http import (
     decode,
 )
 from obsidian_ingest.extractor.providers import resolve_url
+from obsidian_ingest.extractor.providers.article import provider
 from obsidian_ingest.extractor.providers.article.provider import ARTICLE
 from obsidian_ingest.extractor.urls import URLRejected, check_url
 
@@ -80,7 +85,11 @@ def test_unsafe_urls_are_rejected_before_any_network_access(url: str) -> None:
         ("127.0.0.1", True),
         ("::1", True),
         ("::ffff:127.0.0.1", True),
+        ("::ffff:93.184.216.34", True),
+        ("::5db8:d822", True),
+        ("2002:5db8:d822::1", True),
         ("64:ff9b::7f00:1", True),
+        ("64:ff9b::5db8:d822", False),
         ("169.254.169.254", True),
         ("10.1.2.3", True),
         ("172.16.0.1", True),
@@ -125,6 +134,14 @@ def test_hosts_resolving_to_private_addresses_are_blocked(addresses) -> None:
 def test_trusted_setting_allows_private_networks() -> None:
     web = FakeWeb(dns={"example.com": ["10.0.0.5"]}, routes={URL: Reply(article())})
     assert _fetch(web, allow_private_network=True).status == 200
+
+
+@pytest.mark.parametrize("address", ["::ffff:93.184.216.34", "::5db8:d822", "2002:5db8:d822::1"])
+def test_ipv4_transition_addresses_are_blocked_even_with_trusted_settings(address: str) -> None:
+    web = FakeWeb(dns={"example.com": [address]}, routes={URL: Reply(article())})
+    with pytest.raises(FetchError, match="ADDRESS_BLOCKED"):
+        _fetch(web, allow_private_network=True)
+    assert not web.requests
 
 
 def test_connection_is_pinned_to_the_validated_address() -> None:
@@ -184,6 +201,35 @@ def test_gzip_bodies_are_decompressed() -> None:
     assert "Retry budgets" in _fetch(web).text
 
 
+def test_truncated_gzip_is_refused() -> None:
+    web = FakeWeb(
+        routes={URL: Reply(gzipped(article())[:-8], headers={"content-encoding": "gzip"})}
+    )
+    with pytest.raises(FetchError, match="CONNECTION_FAILED: the compressed body ended early"):
+        _fetch(web)
+
+
+def test_failed_download_counts_toward_the_raw_budget(monkeypatch) -> None:
+    monkeypatch.setattr(http, "MAX_BODY_BYTES", 8)
+    monkeypatch.setattr(http, "MAX_TOTAL_BYTES", 12)
+    web = FakeWeb(routes={URL: Reply(b"a" * 10, chunk=5)})
+    fetcher = Fetcher(resolver=web.resolve, transport=web)
+    with pytest.raises(FetchError, match="body is larger"):
+        fetcher.fetch(URL, Deadline())
+    web.routes[URL] = Reply(b"abcd")
+    with pytest.raises(FetchError, match="download budget"):
+        fetcher.fetch(URL, Deadline())
+
+
+def test_decoded_budget_is_separate_from_the_raw_budget(monkeypatch) -> None:
+    monkeypatch.setattr(http, "MAX_TOTAL_DECODED_BYTES", 15, raising=False)
+    web = FakeWeb(routes={URL: Reply(gzipped("1234567890"), headers={"content-encoding": "gzip"})})
+    fetcher = Fetcher(resolver=web.resolve, transport=web)
+    assert fetcher.fetch(URL, Deadline()).text == "1234567890"
+    with pytest.raises(FetchError, match="decoded budget"):
+        fetcher.fetch(URL, Deadline())
+
+
 @pytest.mark.parametrize(
     ("reply", "reason"),
     [
@@ -212,6 +258,65 @@ def test_a_slow_drip_body_hits_the_deadline() -> None:
     web = FakeWeb(routes={URL: Reply("x" * 4096, drip=25.0, chunk=1024)})
     with pytest.raises(FetchError, match="TIMEOUT"):
         _fetch(web)
+
+
+def test_dns_cannot_block_past_the_deadline() -> None:
+    release = threading.Event()
+
+    def resolve(host: str, port: int) -> list[str]:
+        release.wait(0.7)
+        return ["93.184.216.34"]
+
+    web = FakeWeb(routes={URL: Reply(article())})
+    start = time.monotonic()
+    try:
+        with pytest.raises(FetchError, match="TIMEOUT"):
+            Fetcher(resolver=resolve, transport=web).fetch(URL, Deadline(0.08))
+        assert time.monotonic() - start < 0.5
+        assert not web.requests
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("mode", ["headers", "close-delimited", "aggregate"])
+def test_loopback_transport_enforces_limits(mode: str) -> None:
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self) -> None:
+            while self.rfile.readline() not in (b"\r\n", b""):
+                pass
+            try:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n")
+                if mode == "aggregate":
+                    for _ in range(20):
+                        self.wfile.write(b"X-Example: " + b" " * 4096 + b"ok\r\n")
+                    self.wfile.write(b"\r\n<html></html>")
+                    return
+                if mode == "close-delimited":
+                    self.wfile.write(b"Connection: close\r\n\r\n")
+                piece = b"X-Example: ok\r\n" if mode == "headers" else b"data "
+                for _ in range(30):
+                    self.wfile.write(piece)
+                    time.sleep(0.025)
+                if mode == "headers":
+                    self.wfile.write(b"\r\n")
+            except OSError:
+                pass  # A deadline or limit can close the connection first.
+
+    with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as server:
+        server.daemon_threads = True
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        worker.start()
+        try:
+            host, port = server.server_address
+            fetcher = Fetcher(allowed_ports=frozenset({port}), allow_private_network=True)
+            start = time.monotonic()
+            reason = "TOO_LARGE" if mode == "aggregate" else "TIMEOUT"
+            with pytest.raises(FetchError, match=reason):
+                fetcher.fetch(f"http://{host}:{port}/", Deadline(0.2 if mode != "aggregate" else 1))
+            assert mode == "aggregate" or time.monotonic() - start < 0.55
+        finally:
+            server.shutdown()
+            worker.join()
 
 
 # --- Encoding ---------------------------------------------------------------------------
@@ -440,6 +545,27 @@ def test_paywall_teasers_fail_as_paywall_suspected(monkeypatch) -> None:
         acquire()
 
 
+@pytest.mark.parametrize("declared_words", [None, 120])
+def test_paywall_signal_alone_is_a_warning(monkeypatch, declared_words) -> None:
+    html = page(
+        f"<article><p>{words(120)}</p></article>",
+        head=json_ld(isAccessibleForFree=False, wordCount=declared_words),
+    )
+    FakeWeb(routes={URL: Reply(html)}).install(monkeypatch)
+    quality = acquire().acquisition.evidence["quality"]
+    assert quality["words"] == 120 and "paywall_signals:json-ld" in quality["warnings"]
+
+
+def test_paywall_fallback_keeps_the_declared_word_count(monkeypatch) -> None:
+    html = page(
+        f"<article><p>{words(80, 'teaser')}</p></article>",
+        head=json_ld(isAccessibleForFree=False, wordCount=2000, articleBody=words(200)),
+    )
+    FakeWeb(routes={URL: Reply(html)}).install(monkeypatch)
+    with pytest.raises(FetchError, match="PAYWALL_SUSPECTED"):
+        acquire()
+
+
 # --- Fallbacks ---------------------------------------------------------------------------
 
 
@@ -512,6 +638,74 @@ def test_feed_fallback_needs_this_pages_entry(monkeypatch) -> None:
         acquire()
 
 
+@pytest.mark.parametrize(("kind", "redirect"), [("amp", True), ("feed", False), ("feed", True)])
+def test_fallback_origin_is_checked_before_opening_each_hop(monkeypatch, kind, redirect) -> None:
+    external = "https://other.example/content"
+    local = "https://example.com/alternate"
+    link = "rel='amphtml'" if kind == "amp" else "rel='alternate' type='application/rss+xml'"
+    html = article(paragraphs=3).replace(
+        "<title>",
+        json_ld(wordCount=1000) + f"<link {link} href='{local if redirect else external}'><title>",
+    )
+    remote = Reply(article()) if kind == "amp" else Reply(_feed(URL), content_type="text/xml")
+    web = FakeWeb(
+        routes={
+            URL: Reply(html),
+            local: Reply(status=302, headers={"location": external}),
+            external: remote,
+        }
+    ).install(monkeypatch)
+    evidence = acquire().acquisition.evidence
+    assert evidence["method"] == "extract"
+    refusal = evidence["attempts"][-1]
+    assert (refusal["method"], refusal["status"], refusal["reason"]) == (
+        kind, "failed", "URL_REJECTED"
+    )  # fmt: skip
+    assert "Web Clipper" not in refusal["message"]
+    assert external not in [url for url, _ in web.requests]
+
+
+@pytest.mark.parametrize("href", ["https://example.com:22/feed", "https://[bad/feed"])
+def test_invalid_feed_does_not_discard_the_primary_candidate(monkeypatch, href) -> None:
+    head = (
+        json_ld(wordCount=1000) + f"<link rel='alternate' type='application/rss+xml' href='{href}'>"
+    )
+    html = article().replace("<title>", head + "<title>")
+    FakeWeb(routes={URL: Reply(html)}).install(monkeypatch)
+    evidence = acquire().acquisition.evidence
+    assert evidence["method"] == "extract"
+    assert evidence["attempts"][-1]["reason"] == "URL_REJECTED"
+
+
+def test_attempts_are_chronological_and_logs_exclude_remote_detail(monkeypatch, caplog) -> None:
+    amp = "https://example.com/amp"
+    feed = "https://example.com/feed.xml"
+    html = page(
+        "<div id='root'></div>",
+        head=f"<link rel='amphtml' href='{amp}'>"
+        f"<link rel='alternate' type='application/rss+xml' href='{feed}'>",
+    )
+    FakeWeb(
+        routes={
+            URL: Reply(html),
+            amp: Reply(headers={"content-encoding": "remote-marker\x85\x00" * 100}),
+            feed: Reply(_feed(URL), content_type="application/rss+xml"),
+        }
+    ).install(monkeypatch)
+    with caplog.at_level("INFO", logger=provider.LOG.name):
+        attempts = acquire().acquisition.evidence["attempts"]
+    assert [attempt["method"] for attempt in attempts] == ["extract", "amp", "feed"]
+    assert attempts[1]["reason"] == "NOT_HTML"
+    message = attempts[1]["message"]
+    assert "remote-marker" in message and "Web Clipper" in message
+    assert len(message) <= 200 and message.isprintable()
+    logs = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == provider.LOG.name
+    )
+    assert "reason=NOT_HTML" in logs
+    assert "remote-marker" not in logs and "example.com" not in logs
+
+
 def test_one_deadline_covers_the_page_and_its_fallbacks(monkeypatch) -> None:
     amp = "https://example.com/amp"
     feed_url = "https://example.com/feed.xml"
@@ -529,7 +723,7 @@ def test_one_deadline_covers_the_page_and_its_fallbacks(monkeypatch) -> None:
         },
         latency=25.0,  # every single request is well under the 30 s request limit
     ).install(monkeypatch)
-    with pytest.raises(FetchError, match="TIMEOUT"):
+    with pytest.raises(FetchError, match="TIMEOUT.*Web Clipper"):
         acquire()
     assert web.clock.now >= 60
 
@@ -680,6 +874,22 @@ def test_blocked_pages_suggest_clipping(monkeypatch, status: int) -> None:
         acquire()
 
 
+def test_non_html_suggests_clipping_but_policy_refusals_do_not(monkeypatch) -> None:
+    FakeWeb(routes={URL: Reply(content_type="application/json")}).install(monkeypatch)
+    with pytest.raises(FetchError, match="NOT_HTML.*Web Clipper"):
+        acquire()
+
+
+@pytest.mark.parametrize(
+    ("host", "reason"), [("example.com:22", "URL_REJECTED"), ("example.com", "ADDRESS_BLOCKED")]
+)
+def test_policy_failures_do_not_suggest_clipping(monkeypatch, host, reason) -> None:
+    FakeWeb(dns={"example.com": ["192.168.1.2"]}).install(monkeypatch)
+    with pytest.raises((FetchError, URLRejected), match=reason) as failure:
+        acquire(f"https://{host}/")
+    assert "Web Clipper" not in str(failure.value)
+
+
 def test_unreachable_addresses_fall_back_to_the_next_one() -> None:
     web = FakeWeb(
         dns={"example.com": ["2606:4700::1111", "93.184.216.34"]},
@@ -716,3 +926,29 @@ def test_json_ld_articles_nested_in_a_web_page_are_found(monkeypatch) -> None:
     content = acquire()
     assert content.metadata.provider_details.authors == ("Leah V. Schaffer", "Mengzhou Hu")
     assert content.acquisition.evidence["metadata_provenance"]["authors"] == "json-ld"
+
+
+@pytest.mark.parametrize("stage", ["primary", "fallback"])
+def test_extraction_finishing_after_the_deadline_is_not_cached(
+    tmp_path, monkeypatch, cli_runner, stage
+) -> None:
+    html = article()
+    if stage == "fallback":
+        html = page("<div id='root'></div>", head=json_ld(articleBody=words(200)))
+    web = FakeWeb(routes={URL: Reply(html)}).install(monkeypatch)
+    module = provider if stage == "primary" else provider.fallbacks
+    extract = module.extract_html
+
+    def late_extract(*args, **kwargs):
+        result = extract(*args, **kwargs)
+        web.clock.now += 61
+        return result
+
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "extract_html", late_extract)
+        error = cli_runner.fail("ingest-source", URL, *db)
+    assert error["code"] == "INGEST_FAILED"
+    assert "TIMEOUT" in error["message"] and "Web Clipper" in error["message"]
+    assert cli_runner.ok("ingest-source", URL, *db)["cached"] is False
+    assert len(web.requests) == 2

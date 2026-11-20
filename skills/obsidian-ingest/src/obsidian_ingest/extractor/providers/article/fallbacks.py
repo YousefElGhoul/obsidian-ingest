@@ -11,7 +11,7 @@ import json
 import re
 from collections.abc import Iterator
 from html import escape
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from lxml import etree
 
@@ -72,6 +72,13 @@ def _same_site(host: str, candidate: str) -> bool:
     return candidate == host or candidate.endswith("." + host) or host.endswith("." + candidate)
 
 
+def _join_link(base_url: str, href: str) -> str:
+    try:
+        return urljoin(base_url, href)
+    except ValueError as error:
+        raise URLRejected("URL_REJECTED: malformed fallback link") from error
+
+
 def _link(document: etree._Element, rel: str, types: set[str] | None = None) -> list[str]:
     hrefs = []
     for link in document.iter("link"):
@@ -92,13 +99,12 @@ def amp_page(
     hrefs = _link(document, "amphtml")
     if not hrefs:
         return None
-    target = urljoin(base_url, hrefs[0])
-    try:
-        if not _same_site(check_url(base_url).host, check_url(target).host):
-            raise FetchError("URL_REJECTED", "the AMP link points to another site")
-    except URLRejected as error:
-        raise FetchError("URL_REJECTED", f"AMP link: {error}") from error
-    page = fetcher.fetch(target, deadline)
+    host = urlsplit(base_url).hostname or ""
+    page = fetcher.fetch(
+        _join_link(base_url, hrefs[0]),
+        deadline,
+        allow_hop=lambda hop: _same_site(host, hop.host),
+    )
     return extract_html(page.text, page.final_url)
 
 
@@ -120,7 +126,13 @@ def feed_entry(
     hrefs = _link(document, "alternate", _FEED_TYPES)
     if not hrefs:
         return None
-    feed = fetcher.fetch(urljoin(base_url, hrefs[0]), deadline, accept=FEED_TYPES)
+    host = urlsplit(base_url).hostname or ""
+    feed = fetcher.fetch(
+        _join_link(base_url, hrefs[0]),
+        deadline,
+        accept=FEED_TYPES,
+        allow_hop=lambda hop: _same_site(host, hop.host),
+    )
     parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
     try:
         root = etree.fromstring(feed.body, parser)
@@ -132,7 +144,8 @@ def feed_entry(
         for link in links:
             try:
                 matched = (
-                    matched or check_url(urljoin(feed.final_url, link)).identity_key in identities
+                    matched
+                    or check_url(_join_link(feed.final_url, link)).identity_key in identities
                 )
             except URLRejected:
                 continue
