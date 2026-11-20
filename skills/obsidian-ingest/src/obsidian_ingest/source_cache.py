@@ -10,8 +10,9 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
@@ -32,9 +33,15 @@ from obsidian_ingest.extractor.metadata import (
     NativeFormat,
     SourceMetadata,
 )
-from obsidian_ingest.extractor.providers import get_provider, resolve_note, supported_provider
+from obsidian_ingest.extractor.providers import (
+    get_provider,
+    required_note,
+    resolve_note,
+    supported_provider,
+)
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
+from obsidian_ingest.notes import ClippedNote
 from obsidian_ingest.source import Source, ingest_source, source_from_content
 
 SCHEMA_VERSION = 3
@@ -97,11 +104,15 @@ def _json_default(value: object) -> str:
 def _encode(source: Source) -> str:
     """Serialize the normalized capture; original caption bytes live in a separate table."""
     acquisition = source.acquisition
+    metadata = asdict(replace(source.metadata, provider_details=None))
+    metadata["provider_details"] = get_provider(source.metadata.provider).encode_details(
+        source.metadata.provider_details
+    )
     return json.dumps(
         {
             "version": SCHEMA_VERSION,
             "acquisition": asdict(acquisition) if acquisition is not None else None,
-            "metadata": asdict(source.metadata),
+            "metadata": metadata,
             "transcript": asdict(source.transcript),
             "exclusion_lookup": asdict(source.exclusion_lookup),
         },
@@ -339,7 +350,7 @@ class SourceCache:
                 or any(item.reason not in expected_categories for item in lookup.ranges)
             ):
                 raise ValueError("Snapshot identity or filtering options do not match cache key")
-            return CachedSource(source_id, source, cached)
+            return CachedSource(source_id, replace(source, capture=checksum), cached)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as error:
             raise SourceCacheError(
                 f"Invalid source cache entry {source_id}: {error}; "
@@ -382,7 +393,12 @@ class SourceCache:
         return original
 
     def ingest(
-        self, url: str, *, exclude_sponsors: bool = True, refresh: bool = False
+        self,
+        url: str,
+        *,
+        exclude_sponsors: bool = True,
+        refresh: bool = False,
+        note_readable: Callable[[str], bool] | None = None,
     ) -> CachedSource:
         """Reuse the current capture, or acquire one; refresh replaces it only on success.
 
@@ -394,16 +410,22 @@ class SourceCache:
         native_id = provider.identity(url)
         # URL aliases share a capture; exclusion filtering is part of acquisition identity.
         key = (provider.name.value, native_id, int(exclude_sponsors))
-        predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
-        row = self._read(predicate, key)
+
+        def reusable(source: Source) -> bool:
+            path = required_note(source)
+            return path is None or (note_readable is not None and note_readable(path))
+
+        row = self._read("provider = ? AND native_id = ? AND exclude_sponsors = ?", key)
         if row is not None and not refresh:
-            return self._result(row, cached=True)
+            current = self._result(row, cached=True)
+            if reusable(current.source):
+                return current
 
         # Build and validate the complete new capture before touching the database.
         source = ingest_source(url, exclude_sponsors=exclude_sponsors)
-        return self._publish(key, source, replace=refresh)
+        return self._publish(key, source, replace=refresh, reuse=None if refresh else reusable)
 
-    def ingest_note(self, note: object, *, exclude_sponsors: bool = True) -> CachedSource:
+    def ingest_note(self, note: ClippedNote, *, exclude_sponsors: bool = True) -> CachedSource:
         """Ingest a saved note (a web clip) into the same capture key as its source URL.
 
         The clip is an explicit user choice, so it replaces whatever capture the key holds
@@ -414,25 +436,24 @@ class SourceCache:
             raise TypeError("exclude_sponsors must be a boolean")
         provider = resolve_note(note.text)
         key = (provider.name.value, provider.note_identity(note), int(exclude_sponsors))
-        row = self._read("provider = ? AND native_id = ? AND exclude_sponsors = ?", key)
-        if row is not None:
-            current = self._result(row, cached=True)
-            acquisition = current.source.acquisition
-            evidence = acquisition.evidence if acquisition is not None else None
-            if (
-                evidence
-                and evidence.get("method") == "web_clipper"
-                and evidence.get("note_path") == note.path
-                and evidence.get("note_revision") == note.revision
-            ):
-                return current
         content = provider.acquire_note(note, exclude_sponsors=exclude_sponsors)
-        return self._publish(key, source_from_content(content), replace=True)
+        return self._publish(
+            key,
+            source_from_content(content),
+            replace=True,
+            reuse=lambda source: provider.capture_matches_note(source, note),
+        )
 
-    def _publish(self, key: tuple, source: Source, *, replace: bool) -> CachedSource:
+    def _publish(
+        self,
+        key: tuple,
+        source: Source,
+        *,
+        replace: bool,
+        reuse: Callable[[Source], bool] | None = None,
+    ) -> CachedSource:
         """Store a validated capture under its key, keeping the persistent source_id."""
         predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
-        refresh = replace
         original = _original_for_storage(source)
         payload = _encode(source)
         checksum = hashlib.sha256(payload.encode()).hexdigest()
@@ -446,9 +467,10 @@ class SourceCache:
                 existing = connection.execute(
                     f"SELECT {_ROW} FROM sources WHERE {predicate}", key
                 ).fetchone()
-                if existing is not None and not refresh:
-                    # Another process published while extraction was in flight; keep it.
-                    return self._result(existing, cached=True)
+                if existing is not None and (reuse is not None or not replace):
+                    current = self._result(existing, cached=True)
+                    if reuse is None or reuse(current.source):
+                        return current
                 source_id = existing[0] if existing is not None else new_id
                 if existing is not None:
                     # Cascades to every row derived from the old capture.

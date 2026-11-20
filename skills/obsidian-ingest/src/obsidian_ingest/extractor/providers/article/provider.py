@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -23,7 +23,7 @@ from lxml import etree
 from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, CaptionFormat, OriginalCaption
 from obsidian_ingest.extractor.exclusions import CATEGORIES, find_exclusions
-from obsidian_ingest.extractor.html_text import Extraction, extract_html, parse
+from obsidian_ingest.extractor.html_text import Extraction, extract_html, load_trafilatura, parse
 from obsidian_ingest.extractor.http import (
     Deadline,
     Fetcher,
@@ -42,6 +42,7 @@ from obsidian_ingest.extractor.providers import (
     Citation,
     ProviderContent,
     UnsupportedOperation,
+    resolve_url,
 )
 from obsidian_ingest.extractor.providers.article import clipper, fallbacks
 from obsidian_ingest.extractor.providers.article.metadata import (
@@ -52,6 +53,10 @@ from obsidian_ingest.extractor.providers.article.metadata import (
 from obsidian_ingest.extractor.quality import Quality, assess, instruction_like
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.extractor.urls import URLRejected, check_url
+from obsidian_ingest.notes import InvalidNoteSource, NoteRef
+
+if TYPE_CHECKING:
+    from obsidian_ingest.source import Source
 
 LOG = logging.getLogger("obsidian_ingest.article")
 MAX_CITED_SECTIONS = 8
@@ -356,6 +361,25 @@ class ArticleProvider:
         fields, _ = clipper.split_frontmatter(note.text)
         return self.identity(_note_url(fields))
 
+    def required_note(self, source: "Source") -> NoteRef | None:
+        evidence = source.acquisition.evidence if source.acquisition else None
+        if not evidence or evidence.get("method") != "web_clipper":
+            return None
+        path, vault_id = evidence.get("note_path"), evidence.get("note_vault")
+        # Missing or malformed provenance must not make a clip public: it matches nothing.
+        return NoteRef(
+            vault_id if isinstance(vault_id, str) and vault_id else "\0",
+            path if isinstance(path, str) and path else "\0",
+        )
+
+    def capture_matches_note(self, source: "Source", note: clipper.ClippedNote) -> bool:
+        evidence = source.acquisition.evidence if source.acquisition else None
+        return (
+            evidence is not None
+            and self.required_note(source) == NoteRef(note.vault_id, note.path)
+            and evidence.get("note_revision") == note.revision
+        )
+
     def acquire_note(self, note: clipper.ClippedNote, *, exclude_sponsors: bool) -> ProviderContent:
         """Build a capture from a Web Clipper note; the note itself is never modified."""
         if len(note.text) > clipper.MAX_NOTE_CHARACTERS:
@@ -363,6 +387,11 @@ class ArticleProvider:
         fields, body = clipper.split_frontmatter(note.text)
         url = _note_url(fields)
         checked = check_url(url, make_fetcher().allowed_ports)
+        owner = resolve_url(url)
+        if owner.name != self.name:
+            raise InvalidNoteSource(
+                f"the clip's source is handled by {owner.name}; ingest that URL"
+            )
         if _is_ip_literal(checked.host) and blocked_address(checked.host):
             raise URLRejected("URL_REJECTED: the clip's source is a private or local address")
         atoms, sections = clipper.markdown_atoms(body)
@@ -387,7 +416,11 @@ class ArticleProvider:
             OriginalCaption(CaptionFormat.MARKDOWN, note.text.encode("utf-8")),
             exclude_sponsors,
             final_url=checked.fetch_url,
-            evidence={"note_path": note.path, "note_revision": note.revision},
+            evidence={
+                "note_path": note.path,
+                "note_revision": note.revision,
+                "note_vault": note.vault_id,
+            },
         )
 
     def _content(
@@ -402,8 +435,7 @@ class ArticleProvider:
         final_url: str,
         evidence: dict[str, Any],
     ) -> ProviderContent:
-        import trafilatura
-
+        trafilatura = load_trafilatura()
         extraction = best.extraction
         source_id = hashlib.sha256(identity_key.encode()).hexdigest()[:16]
         texts = [atom.text for atom in extraction.atoms]

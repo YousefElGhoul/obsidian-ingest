@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -19,8 +20,9 @@ from obsidian_ingest.config import default_config_path, load_vault_settings
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.transcript import format_timestamp
 from obsidian_ingest.responses import OperationError
-from obsidian_ingest.source import ingest_source
+from obsidian_ingest.source import Source, ingest_source
 from obsidian_ingest.source_cache import SourceCache
+from obsidian_ingest.vault import VaultReader
 
 
 def fetch_metadata(url: str) -> SourceMetadata:
@@ -136,17 +138,19 @@ def _cache(args) -> SourceCache:
     return SourceCache(args.cache_db)
 
 
-def _vault(path: Path | None):
-    """Open the trusted scoped reader, reporting missing or invalid settings as CONFIG_ERROR."""
-    from obsidian_ingest.vault import VaultReader
+def _missing_config(path: Path) -> OperationError:
+    return OperationError(
+        "CONFIG_ERROR",
+        f"Trusted config not found: {path}; copy "
+        "config/settings.example.toml to config/settings.toml and edit it",
+    )
 
+
+def _vault(path: Path | None) -> VaultReader:
+    """Open the trusted scoped reader, reporting missing or invalid settings as CONFIG_ERROR."""
     selected = path or default_config_path()
     if not selected.is_file():
-        raise OperationError(
-            "CONFIG_ERROR",
-            f"Trusted config not found: {selected}; copy "
-            "config/settings.example.toml to config/settings.toml and edit it",
-        )
+        raise _missing_config(selected)
     try:
         return VaultReader(load_vault_settings(selected))
     except (TypeError, ValueError) as error:
@@ -166,7 +170,9 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--cache-db", type=Path)
     parser.add_argument(
-        "--config", type=Path, help="Trusted settings with an optional [articles] network policy"
+        "--config",
+        type=Path,
+        help="Trusted vault settings with an optional [articles] network policy",
     )
     parser.add_argument("--verbose", action="store_true", help="Log acquisition stages to stderr")
 
@@ -175,16 +181,19 @@ def _tool_parsers(subparsers) -> None:
     )
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser(
         "list-sections", help="List sections (creator chapters for videos)"
     )
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser("list-exclusions", help="List excluded source ranges")
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser("read-source", help="Read a bounded source page, in order")
     parser.add_argument("source_id")
@@ -195,6 +204,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
     parser.add_argument("--read-token", help="read_token from the previous page")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser("read-section", help="Read a bounded page of one section")
     parser.add_argument("source_id")
@@ -203,6 +213,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser(
         "get-thumbnail",
@@ -210,6 +221,7 @@ def _tool_parsers(subparsers) -> None:
     )
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser("create-draft", help="Create a source-attributed Markdown draft")
     parser.add_argument("source_id")
@@ -405,26 +417,6 @@ def main() -> None:
 
 def _run_tool_command(args) -> Any:
     """Run one tool command through the same application functions as MCP."""
-    if args.command == "ingest-source":
-        _configure_providers(args.config or default_config_path())
-        if args.verbose:
-            logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
-        if (args.url is None) == (args.note is None):
-            raise OperationError("INVALID_ARGUMENT", "pass exactly one of a URL or --note")
-        if args.note is not None:
-            if args.refresh:
-                raise OperationError("INVALID_ARGUMENT", "--refresh applies only to URLs")
-            with _vault(args.config) as vault:
-                return responses.ingest_note(
-                    _cache(args),
-                    vault,
-                    _path_handle(vault, args.note, "note"),
-                    exclude_sponsors=not args.include_sponsors,
-                )
-        return responses.ingest(
-            _cache(args), args.url, exclude_sponsors=not args.include_sponsors, refresh=args.refresh
-        )
-
     if args.command in {"search-vault", "read-vault-note"}:
         with _vault(args.config) as vault:
             if args.command == "search-vault":
@@ -447,7 +439,41 @@ def _run_tool_command(args) -> Any:
                 identifier="path",
             )
 
-    source = responses.load_source(_cache(args), args.source_id)
+    config_path = args.config or default_config_path()
+    if args.command == "ingest-source":
+        if (args.url is None) == (args.note is None):
+            raise OperationError("INVALID_ARGUMENT", "pass exactly one of a URL or --note")
+        if args.note is not None and args.refresh:
+            raise OperationError("INVALID_ARGUMENT", "--refresh applies only to URLs")
+        _configure_providers(config_path)
+        if args.verbose:
+            logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
+    with _vault(config_path) if config_path.is_file() else nullcontext() as vault:
+        if args.command == "ingest-source":
+            if args.note is not None:
+                return responses.ingest_note(
+                    _cache(args),
+                    vault,
+                    _path_handle(vault, args.note, "note") if vault else args.note,
+                    exclude_sponsors=not args.include_sponsors,
+                )
+            return responses.ingest(
+                _cache(args),
+                args.url,
+                vault=vault,
+                exclude_sponsors=not args.include_sponsors,
+                refresh=args.refresh,
+            )
+        source = responses.load_source(_cache(args), args.source_id, vault)
+        if args.command in {"create-draft", "create-edit-suggestion"}:
+            if vault is None:
+                raise _missing_config(config_path)
+            return _run_write_command(args, source, vault)
+        return _run_source_command(args, source)
+
+
+def _run_source_command(args, source: Source) -> Any:
+    """Navigate a capture once its access has been checked."""
     if args.command == "get-thumbnail":
         return _save_thumbnail(responses.thumbnail(source), source.metadata.source_id)
     if args.command == "get-source-overview":
@@ -474,7 +500,6 @@ def _run_tool_command(args) -> Any:
             offset=args.offset,
             limit=args.limit,
         )
-    return _run_write_command(args, source)
 
 
 def _thumbnail_dir() -> Path:
@@ -506,41 +531,40 @@ def _path_handle(vault, path: str, label: str) -> str:
         raise OperationError("NOTE_UNAVAILABLE", f"{label} is unavailable") from error
 
 
-def _run_write_command(args, source) -> dict[str, str]:
+def _run_write_command(args, source: Source, vault: VaultReader) -> dict[str, str]:
     """Resolve CLI note paths, then delegate all publication checks to shared writers."""
     from obsidian_ingest.drafts import DraftWriterSettings
 
-    with _vault(args.config) as vault:
-        writer_settings = DraftWriterSettings(vault.settings.root, vault.settings.draft_folder)
-        if args.command == "create-draft":
-            # Ordinary related links need only current access, matching MCP note handles.
-            related = [
-                {"note_id": _path_handle(vault, path, "related note"), "reason": reason}
-                for path, reason in args.related_note or ()
-            ]
-            return responses.write_draft(
-                writer_settings,
-                source,
-                contents=args.contents,
-                filename=args.filename,
-                cite=args.cite,
-                related_notes=related,
-                vault=vault,
-                read_token=args.read_token,
-            )
-        # The target revision is checked by the shared edit-suggestion operation.
-        return responses.write_edit_suggestion(
+    writer_settings = DraftWriterSettings(vault.settings.root, vault.settings.draft_folder)
+    if args.command == "create-draft":
+        # Ordinary related links need only current access, matching MCP note handles.
+        related = [
+            {"note_id": _path_handle(vault, path, "related note"), "reason": reason}
+            for path, reason in args.related_note or ()
+        ]
+        return responses.write_draft(
             writer_settings,
             source,
-            vault,
-            target_note_id=_path_handle(vault, args.target_path, "target note"),
-            target_revision=args.target_revision,
-            change_summary=args.change_summary,
-            reasoning=args.reasoning,
-            proposed_content=args.proposed_content,
+            contents=args.contents,
+            filename=args.filename,
             cite=args.cite,
+            related_notes=related,
+            vault=vault,
             read_token=args.read_token,
         )
+    # The target revision is checked by the shared edit-suggestion operation.
+    return responses.write_edit_suggestion(
+        writer_settings,
+        source,
+        vault,
+        target_note_id=_path_handle(vault, args.target_path, "target note"),
+        target_revision=args.target_revision,
+        change_summary=args.change_summary,
+        reasoning=args.reasoning,
+        proposed_content=args.proposed_content,
+        cite=args.cite,
+        read_token=args.read_token,
+    )
 
 
 def _json_default(value: object) -> str:

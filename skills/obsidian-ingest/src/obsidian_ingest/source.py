@@ -31,6 +31,7 @@ class Source:
     filtered_transcript: FilteredTranscript
     acquisition: Acquisition | None = None
     original_caption: OriginalCaption | None = field(default=None, compare=False, repr=False)
+    capture: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

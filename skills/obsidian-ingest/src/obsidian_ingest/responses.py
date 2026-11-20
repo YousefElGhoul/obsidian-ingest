@@ -19,12 +19,13 @@ from obsidian_ingest.extractor.providers import (
     Citation,
     UnsupportedOperation,
     get_provider,
+    required_note,
     resolve_note,
     supported_provider,
 )
 from obsidian_ingest.extractor.transcript import TranscriptSegment
 from obsidian_ingest.images import ImageInfo, identify_image
-from obsidian_ingest.notes import ClippedNote
+from obsidian_ingest.notes import ClippedNote, InvalidNoteSource, NoteRef, vault_identity
 from obsidian_ingest.reading import (
     TOKEN_PLACEHOLDER,
     advance_token,
@@ -154,12 +155,22 @@ def _validate_ingest_request(url: object, exclude_sponsors: object, refresh: obj
 
 
 def ingest(
-    cache: SourceCache, url: str, *, exclude_sponsors: bool = True, refresh: bool = False
+    cache: SourceCache,
+    url: str,
+    *,
+    vault: VaultReader | None = None,
+    exclude_sponsors: bool = True,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Acquire or reuse a capture; distinguish invalid requests from acquisition failures."""
     _validate_ingest_request(url, exclude_sponsors, refresh)
     try:
-        result = cache.ingest(url, exclude_sponsors=exclude_sponsors, refresh=refresh)
+        result = cache.ingest(
+            url,
+            exclude_sponsors=exclude_sponsors,
+            refresh=refresh,
+            note_readable=lambda path: _note_readable(vault, path),
+        )
     except SourceCacheError:
         # Mapped verbatim to SOURCE_CACHE_ERROR; messages carry reset instructions.
         raise
@@ -194,11 +205,13 @@ def ingest_note(
         raise OperationError("INVALID_ARGUMENT", "exclude_sponsors must be a boolean")
     path, revision, text = vault.read_whole(note_id, max_characters=MAX_NOTE_CHARACTERS)
     resolve_note(text)  # Unsupported notes are invalid requests, not acquisition failures.
-    note = ClippedNote(path, revision, text)
+    note = ClippedNote(path, revision, text, vault_identity(vault.settings.root))
     try:
         result = cache.ingest_note(note, exclude_sponsors=exclude_sponsors)
     except SourceCacheError:
         raise
+    except InvalidNoteSource as error:
+        raise OperationError("INVALID_ARGUMENT", str(error)) from error
     except Exception as error:
         raise OperationError("INGEST_FAILED", f"Could not ingest note: {error}") from error
     return {
@@ -208,16 +221,34 @@ def ingest_note(
     }
 
 
-def load_source(cache: SourceCache, source_id: str) -> Source:
-    """Load an issued source ID or raise INVALID_ARGUMENT or SOURCE_NOT_FOUND."""
+def _note_readable(vault: VaultReader | None, note: NoteRef) -> bool:
+    """Whether this session's vault is the clip's vault and can still open the note."""
+    if vault is None or vault_identity(vault.settings.root) != note.vault_id:
+        return False
+    try:
+        vault.get_path_reference(note.path)
+    except NoteUnavailable:
+        return False
+    return True
+
+
+def load_source(cache: SourceCache, source_id: str, vault: VaultReader | None = None) -> Source:
+    """Load an issued source ID and check access to any backing note."""
     if not isinstance(source_id, str) or not source_id:
         raise OperationError("INVALID_ARGUMENT", "source_id must be a nonempty string")
     try:
-        return cache.get(source_id)
+        source = cache.get(source_id)
     except KeyError as error:
         raise OperationError(
             "SOURCE_NOT_FOUND", f"Unknown source_id: {source_id}; ingest the URL first"
         ) from error
+    path = required_note(source)
+    if path is not None and not _note_readable(vault, path):
+        raise OperationError(
+            "NOTE_UNAVAILABLE",
+            "this source comes from a clipped note the current settings cannot open",
+        )
+    return source
 
 
 def sections(source: Source) -> list[dict[str, Any]]:

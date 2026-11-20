@@ -4,8 +4,8 @@ Each source page returns a ``read_token`` recording how many retained segments h
 been read in order from the start. Passing the previous token with the next page
 advances it; writers require a token that covers the whole source. The token lives
 only in requests and responses, so CLI processes and an MCP server behave identically.
-It is bound to the source's content (so any change of capture invalidates it), which a caller cannot compute without the
-cache, but it is a guard against skipped reading, not a security credential.
+It is bound to the stored capture, so replacing the evidence invalidates it.
+It is a guard against skipped reading, not a security credential.
 """
 
 from __future__ import annotations
@@ -28,8 +28,10 @@ TOKEN_PLACEHOLDER = "rt1-9999999-" + "0" * 16
 
 
 def _mac(source: Source, read_through: int) -> str:
-    """Bind progress to retained atom indices, starts, and text, not a secret key."""
+    """Bind progress to the capture and its retained rows, not a secret key."""
     digest = hashlib.sha256()
+    if source.capture is not None:
+        digest.update(f"{source.capture}\0".encode())
     digest.update(source.metadata.source_id.encode())
     for index, segment in read_transcript_entries(source):
         # NUL delimiters distinguish adjacent fields while retaining original atom text.

@@ -16,6 +16,7 @@ from obsidian_ingest.extractor.metadata import ExcludedRange, ExclusionLookup, E
 from obsidian_ingest.extractor.providers import youtube
 from obsidian_ingest.extractor.providers.youtube import sponsorblock
 from obsidian_ingest.filtering import filter_source_transcript
+from obsidian_ingest.reading import issue_token, token_progress
 from obsidian_ingest.source import Source, ingest_source
 from obsidian_ingest.source_cache import SourceCache, SourceCacheError, default_cache_path
 
@@ -31,6 +32,35 @@ CAPTIONS = json.dumps(
     }
 ).encode()
 VTT = b"WEBVTT\n\n00:00.125 --> 00:02.125\nOriginal\nwords\n\n00:02.125 --> 00:02.875\nNext\n"
+
+
+def test_refresh_with_identical_rows_invalidates_read_token(tmp_path, extraction):
+    cache = SourceCache(tmp_path / "sources.db")
+    first = cache.ingest(URL)
+    token = issue_token(first.source, 2)
+    refreshed = cache.ingest(URL, refresh=True)
+    assert refreshed.source_id == first.source_id
+    assert refreshed.source.transcript == first.source.transcript
+    with pytest.raises(ValueError, match="source changed"):
+        token_progress(refreshed.source, token)
+
+
+def test_cache_round_trips_using_provider_codec(monkeypatch, sample_source):
+    details = sample_source.metadata.provider_details
+
+    class FakeProvider:
+        def encode_details(self, value):
+            assert value == details
+            return {"custom": "encoding"}
+
+        def decode_details(self, data):
+            assert data == {"custom": "encoding"}
+            return details
+
+    monkeypatch.setattr(source_cache, "get_provider", lambda _: FakeProvider())
+    payload = source_cache._encode(sample_source)
+    assert json.loads(payload)["metadata"]["provider_details"] == {"custom": "encoding"}
+    assert source_cache._decode(payload) == sample_source
 
 
 @pytest.fixture

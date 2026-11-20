@@ -159,7 +159,7 @@ def create_server(
 
     def load_source(source_id: str) -> Source:
         """Resolve persistent source handles through the transport-neutral error mapping."""
-        return responses.load_source(cache(), source_id)
+        return responses.load_source(cache(), source_id, vault)
 
     @server.tool()
     @_tool_errors
@@ -176,7 +176,9 @@ def create_server(
             if refresh:
                 raise responses.OperationError("INVALID_ARGUMENT", "refresh applies only to url")
             return responses.ingest_note(cache(), vault, note_id, exclude_sponsors=exclude_sponsors)
-        return responses.ingest(cache(), url, exclude_sponsors=exclude_sponsors, refresh=refresh)
+        return responses.ingest(
+            cache(), url, vault=vault, exclude_sponsors=exclude_sponsors, refresh=refresh
+        )
 
     @server.tool()
     @_tool_errors

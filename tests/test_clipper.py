@@ -156,10 +156,10 @@ def vault_setup(tmp_path):
     return vault, ("--config", str(config)), ("--cache-db", str(tmp_path / "cache.db"))
 
 
-def _read_all(cli_runner, source_id: str, db) -> str:
+def _read_all(cli_runner, source_id: str, *settings: str) -> str:
     token, offset = None, 0
     while offset is not None:
-        args = ("read-source", source_id, "--offset", str(offset), *db)
+        args = ("read-source", source_id, "--offset", str(offset), *settings)
         page_data = cli_runner.ok(*args, *(("--read-token", token) if token else ()))
         token, offset = page_data["read_token"], page_data["next_offset"]
     return token
@@ -196,6 +196,14 @@ def _read_all(cli_runner, source_id: str, db) -> str:
             "private or local",
         ),
         ("Clippings/huge.md", clip_text() + "x " * 1_100_000, "INVALID_ARGUMENT", "at most"),
+        (
+            "Clippings/video.md",
+            clip_text(
+                **{"https://example.com/posts/locked?utm_source=clipper": "https://youtu.be/video"}
+            ),
+            "INVALID_ARGUMENT",
+            "the clip's source is handled by youtube; ingest that URL",
+        ),
     ],
 )
 def test_notes_are_checked_before_ingesting(
@@ -239,7 +247,7 @@ def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli
     assert clipped["cached"] is False and evidence["method"] == "web_clipper"
     assert evidence["note_path"] == "Clippings/locked.md"
     assert clipped["overview"]["details"]["authors"] == ["Ada Writer", "Bo"]
-    excluded = cli_runner.ok("list-exclusions", source_id, *db)
+    excluded = cli_runner.ok("list-exclusions", source_id, *config, *db)
     assert [item["reason"] for item in excluded] == ["sponsored"]
 
     # 3. The bare URL now returns the clip instead of failing again.
@@ -253,7 +261,7 @@ def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli
     assert cli_runner.ok("ingest-source", *note, *config, *db)["cached"] is True
 
     # 5. Editing the note replaces the clip and invalidates earlier reads.
-    token = _read_all(cli_runner, source_id, db)
+    token = _read_all(cli_runner, source_id, *config, *db)
     clip.write_text(clip_text(**{"Opening paragraph": "Rewritten opening"}), encoding="utf-8")
     replaced = cli_runner.ok("ingest-source", *note, *config, *db)
     assert (replaced["source_id"], replaced["cached"]) == (source_id, False)
@@ -262,7 +270,7 @@ def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli
     assert stale["code"] == "INCOMPLETE_READ" and "source changed" in stale["message"]
 
     # 6. A refresh that now succeeds on the web replaces the clip.
-    clip_token = _read_all(cli_runner, source_id, db)
+    clip_token = _read_all(cli_runner, source_id, *config, *db)
     web.routes[URL] = Reply(article(title="Locked"))
     refreshed = cli_runner.ok("ingest-source", URL, "--refresh", *config, *db)
     assert refreshed["source_id"] == source_id
@@ -274,12 +282,17 @@ def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli
     web.routes[URL] = Reply("blocked", status=403)
     kept = cli_runner.fail("ingest-source", URL, "--refresh", *config, *db)
     assert kept["code"] == "INGEST_FAILED"
-    overview = cli_runner.ok("get-source-overview", source_id, *db)
+    overview = cli_runner.ok("get-source-overview", source_id, *config, *db)
     assert overview["diagnostics"]["evidence"]["method"] == "web_clipper"
 
     # 8. A fresh read allows a draft cited by section, attributed from the clip.
     created = cli_runner.ok(
-        *draft[:4], "1", *config, *db, "--read-token", _read_all(cli_runner, source_id, db)
+        *draft[:4],
+        "1",
+        *config,
+        *db,
+        "--read-token",
+        _read_all(cli_runner, source_id, *config, *db),
     )
     text = Path(created["path"]).read_text(encoding="utf-8")
     assert "- Source: Locked \\[\\[Secret\\]\\] \\| story \\#tag\n" in text
@@ -287,6 +300,49 @@ def test_clip_precedence_and_citation_invalidation(vault_setup, monkeypatch, cli
     assert "- Authors: Ada Writer, Bo\n- Published: 2025-03-14\n- Language: en\n" in text
     assert text.endswith("- Relevant sections: Why it matters\n")
     assert clip.read_text(encoding="utf-8").startswith("---\ntitle:")  # never modified
+
+
+def test_metadata_only_reclip_invalidates_read_token(vault_setup, cli_runner) -> None:
+    vault, config, db = vault_setup
+    path = "Clippings/locked.md"
+    clip = vault / path
+    clip.write_text(clip_text())
+    source_id = cli_runner.ok("ingest-source", "--note", path, *config, *db)["source_id"]
+    before = cli_runner.ok("read-source", source_id, *config, *db)
+    clip.write_text(clip_text(**{"Locked [[Secret]]": "Edited title"}))
+    result = cli_runner.ok("ingest-source", "--note", path, *config, *db)
+    assert result["source_id"] == source_id and not result["cached"]
+    assert cli_runner.ok("read-source", source_id, *config, *db)["segments"] == before["segments"]
+    error = cli_runner.fail(
+        "create-draft",
+        source_id,
+        "# Draft\n\nBody",
+        "--read-token",
+        before["read_token"],
+        *config,
+        *db,
+    )
+    assert error["code"] == "INCOMPLETE_READ" and "source changed" in error["message"]
+
+
+def test_concurrent_ingests_reuse_winning_clip(tmp_path, monkeypatch) -> None:
+    from obsidian_ingest.extractor.providers.article.provider import ArticleProvider
+    from obsidian_ingest.notes import ClippedNote
+    from obsidian_ingest.source_cache import SourceCache
+
+    database = tmp_path / "sources.db"
+    cache = SourceCache(database)
+    note = ClippedNote("clip.md", "same-revision", clip_text(), "vault-a")
+    acquire = ArticleProvider.acquire_note
+
+    def interleave(self, note, *, exclude_sponsors):
+        monkeypatch.setattr(ArticleProvider, "acquire_note", acquire)
+        winner = SourceCache(database).ingest_note(note, exclude_sponsors=exclude_sponsors)
+        assert not winner.cached
+        return acquire(self, note, exclude_sponsors=exclude_sponsors)
+
+    monkeypatch.setattr(ArticleProvider, "acquire_note", interleave)
+    assert cache.ingest_note(note).cached
 
 
 def test_mcp_ingests_a_clip_by_note_id(vault_setup, monkeypatch, tmp_path) -> None:

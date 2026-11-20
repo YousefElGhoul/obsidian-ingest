@@ -415,13 +415,18 @@ class _Walker:
             self.emit(text, "table_row")
 
 
-def extract_html(markup: str, base_url: str) -> Extraction:
-    """Sanitize and extract one HTML document into Markdown atoms."""
+def load_trafilatura():
+    """Import trafilatura lazily (heavy; only text sources need it), silencing the
+    urllib3 SOCKS warning its import prints, which MCP hosts show as stderr noise."""
     with warnings.catch_warnings():
-        # Imported lazily (heavy, only text sources need it); its urllib3 import warns
-        # about optional SOCKS support on stderr, which MCP hosts show as noise.
         warnings.simplefilter("ignore")
         import trafilatura
+    return trafilatura
+
+
+def extract_html(markup: str, base_url: str) -> Extraction:
+    """Sanitize and extract one HTML document into Markdown atoms."""
+    trafilatura = load_trafilatura()
 
     result = Extraction()
     document = parse(markup)

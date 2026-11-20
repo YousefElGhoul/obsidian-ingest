@@ -9,13 +9,17 @@ specific provider. Adding a source type means adding a package and one registry 
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, OriginalCaption
 from obsidian_ingest.extractor.metadata import ExclusionLookup, SourceMetadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+
+if TYPE_CHECKING:
+    from obsidian_ingest.notes import NoteRef
+    from obsidian_ingest.source import Source
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +107,9 @@ class RecognizedProvider:
 
     def matches_url(self, url: str) -> bool:
         return (urlparse(url).hostname or "").lower() in self.hosts
+
+    def required_note(self, source: "Source") -> "NoteRef | None":
+        return None
 
     def _unsupported(self, *_: object, **__: object) -> Any:
         raise UnsupportedOperation(f"Source ingestion is not supported for provider: {self.name}")
@@ -204,3 +211,9 @@ def get_provider(name: str | Provider) -> SourceProvider:
         if provider.name == name:
             return provider
     raise ValueError(f"Unknown provider: {name}")
+
+
+def required_note(source: "Source") -> "NoteRef | None":
+    """Ask providers with saved-note captures which note must still be accessible."""
+    requirement = getattr(get_provider(source.metadata.provider), "required_note", None)
+    return requirement(source) if requirement is not None else None
