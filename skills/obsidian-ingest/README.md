@@ -8,8 +8,8 @@ the workflow, Python runtime, stdio MCP entry point, and configuration template.
 
 Requires Linux, Python 3.13+, [uv](https://docs.astral.sh/uv/), an existing vault,
 network access, and an agent harness with skills and CLI or local stdio MCP support.
-Give an agent this directory's [SKILL.md](SKILL.md) path or link and ask it to install
-the skill and its tools. It follows [references/install.md](references/install.md),
+Give an agent this directory's [SKILL.md](SKILL.md) path or link and ask it to read it
+and follow its instructions to install the skill and its tools. It follows [references/install.md](references/install.md),
 asks for vault scope, shows a plan, waits for approval, and backs up changed host config.
 
 Harness notes record tested versions and scopes, not permanent version requirements:

@@ -1,6 +1,6 @@
 # Installing Obsidian Ingest
 
-Instructions for an agent asked to "install this skill and its tools", usually given
+Instructions for an agent asked to install this skill and its tools, usually given
 only a link to this skill's `SKILL.md`. Follow the steps in order. Ask the user only for
 the choices in step 1; everything else is discovered or fixed below.
 

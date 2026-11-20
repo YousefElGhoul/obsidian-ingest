@@ -158,12 +158,16 @@ settings still apply.
 
 ## Install
 
-Give your agent this link and ask it to install the skill and its tools:
+Give your agent this link and ask it to follow its install instructions:
 
 ```text
-Install this skill and its tools:
-https://github.com/YousefElGhoul/obsidian-ingest/blob/master/skills/obsidian-ingest/SKILL.md
+Read https://github.com/YousefElGhoul/obsidian-ingest/blob/master/skills/obsidian-ingest/SKILL.md
+and follow its instructions to install the skill and its tools.
 ```
+
+Ask it to read and follow the file rather than just "install this skill": some harnesses
+(Codex, for example) otherwise run a built-in skill installer that copies the skill
+without the plan and approval step.
 
 You can give it the path of a local
 [`SKILL.md`](skills/obsidian-ingest/SKILL.md) instead.

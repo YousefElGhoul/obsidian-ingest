@@ -8,7 +8,7 @@ argument-hint: "[url]"
 
 A bare URL is the whole request. Do all the steps below, then report. Do not stop to ask.
 
-Write few notes: usually 0–3 per video, at most 5. A person will review every one.
+Write only the notes worth keeping; zero is fine. A person will review every one.
 
 To install, repeat the install, or undo it, follow
 [references/install.md](references/install.md) instead.
@@ -28,10 +28,10 @@ To install, repeat the install, or undo it, follow
    (its mechanics, builds, farms), a lesson you draw from a game or story, and advice
    anyone would give (keep learning, find a mentor, practice, build soft skills). A
    let's-play or vlog has none, and neither does a video made only of general career
-   or study advice: write nothing for it. Keep only the 0–3 ideas
-   most worth rereading (at most 5 for a long tutorial). Small facts about one tool or
-   API belong together in one note about the technique they serve, not a note each. If
-   two notes would share most of their explanation, write one.
+   or study advice: write nothing for it. Keep only the ideas most worth rereading.
+   Small facts about one tool or API belong together in one note about the technique
+   they serve, not a note each. If two notes would share most of their explanation,
+   write one.
 4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with

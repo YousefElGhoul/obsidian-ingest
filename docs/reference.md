@@ -441,8 +441,8 @@ that grant permissions.
 ### Host Registration
 
 Give an agent the skill's
-[`SKILL.md`](../skills/obsidian-ingest/SKILL.md) and ask it to install the skill and its
-tools. It follows
+[`SKILL.md`](../skills/obsidian-ingest/SKILL.md) and ask it to read it and follow its
+instructions to install the skill and its tools. It follows
 [`references/install.md`](../skills/obsidian-ingest/references/install.md): it asks for
 the install location and vault scope, offers restricted mode only where supported,
 shows its plan and waits for approval, backs up host config, runs setup with flags,
