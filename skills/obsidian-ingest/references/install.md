@@ -52,7 +52,8 @@ this install uses as a workaround.
 ## 2. Decide where the skill will live
 
 Only decide here. Do not clone, update, or link anything until the plan in step 3 is
-approved. The skill directory must stay writable: it holds `config/settings.toml` and
+approved. Do not use a harness's built-in skill installer (such as Codex's
+skill-installer): it copies the skill without a plan and skips these steps. The skill directory must stay writable: it holds `config/settings.toml` and
 `.venv`.
 
 - From a GitHub link such as
@@ -166,7 +167,10 @@ Do not create test notes, call `create_draft`, or ingest a source to test connec
 
 Report the mode and profile, the skill, settings, and cache locations, every command and
 setting changed, the backups, each check with its result, the exact command to start a
-curation session, and concrete undo steps. State what was not verified. Do not claim an
+curation session, and concrete undo steps. Write the undo steps so they work without
+this guide: ask the user first; remove only the registration, skill link, and added
+permission rules; restore backups only after checking for later edits; keep the
+runtime, settings, source cache, and vault unless the user asks to remove them. State what was not verified. Do not claim an
 OS sandbox, support for every harness version, or restriction of already-running
 sessions. On a repeat install, reuse valid configuration rather than duplicating it.
 

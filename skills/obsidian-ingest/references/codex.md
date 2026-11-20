@@ -16,6 +16,8 @@ version pin: confirm each command with `codex --help` or `codex mcp --help` firs
   directory, not `CODEX_HOME`). `$CODEX_HOME/skills` still works but is deprecated: do
   not use it. Make the skill visible with a symlink:
   `ln -s <skill> ~/.agents/skills/obsidian-ingest`.
+- Do not use Codex's built-in skill-installer for this skill: it copies the skill into
+  `$CODEX_HOME/skills` without a plan. Clone and link it as the install steps say.
 - Codex also reads project `.codex/`, `.agents/` and `AGENTS.md` from the directory a
   session starts in. Install at user level, not into a project.
 

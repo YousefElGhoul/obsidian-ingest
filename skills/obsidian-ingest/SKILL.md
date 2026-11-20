@@ -1,6 +1,6 @@
 ---
 name: obsidian-ingest
-description: Turn a YouTube URL into a few atomic, linked notes for the user's Obsidian vault, an edit suggestion for an existing note, or nothing. Use whenever the user shares a video URL, even with no other words.
+description: Turn a YouTube URL into a few atomic, linked notes for the user's Obsidian vault, an edit suggestion for an existing note, or nothing. Use whenever the user shares a video URL, even with no other words. Also use when asked to install, update, repeat the install of, or undo or uninstall obsidian-ingest.
 argument-hint: "[url]"
 ---
 
@@ -17,11 +17,11 @@ To install, repeat the install, or undo it, follow
 
 1. `ingest_source(url)`. Keep the `source_id`.
 2. Read the whole transcript in order: `read_transcript` with `limit` 200, passing
-   each page's `next_offset` and `read_token` to the next call until `next_offset` is
-   `null`. Keep the last `read_token`: every write needs it, and writing is refused
-   until the whole transcript has been read. One page per call: read its rows before
-   requesting the next. Never fetch several pages in one call or loop, because long
-   output gets cut and you would miss parts of the video.
+   each page's `next_offset` value as `offset`, with its `read_token`, to the next call
+   until `next_offset` is `null`. Keep the last `read_token`: every write needs it, and
+   writing is refused until the whole transcript has been read. One page per call:
+   read its rows before requesting the next. Never fetch several pages in one call or
+   loop, because long output gets cut and you would miss parts of the video.
 3. Write down the ideas worth keeping. An idea is something a person would look up
    again months later: a technique, mechanism, tradeoff, gotcha, or mental model that
    the speaker states. Not ideas: what happens in the video, how a video game works
