@@ -119,7 +119,7 @@ adding random jitter to the retry delay cut her team's recovery time by half.
   true. A link in a row is not a page you read. Attribute opinions by the person, channel or author name
   the source gives, not "the speaker" or "the author". Write the source's claims as its
   claims, with their conditions: numbers, speed, security, "replaces X", and forecasts
-  ("In 2015, Tim Urban expected …"). Never turn an example into a rule or a guarantee. Rankings, "best" and "replace X with Y"
+  ("In 2019, Ana Ruiz expected …"). Never turn an example into a rule or a guarantee. Rankings, "best" and "replace X with Y"
   claims are opinions too: "The Coding Sloth ranks verification highest", not
   "Verification is the most important workflow". Do not end with a moral or lesson of your
   own; if you add anything, label it as your comment.
