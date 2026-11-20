@@ -44,16 +44,16 @@ as `INVALID_ARGUMENT: <field>: <reason>`, matching the CLI's argument checks.
 
 | Code | Meaning |
 |---|---|
-| `INVALID_ARGUMENT` | Malformed argument, unsupported provider, or URL without an extractable ID |
+| `INVALID_ARGUMENT` | Malformed argument, unsupported provider, URL without an extractable ID, a URL that cannot be fetched safely (`URL_REJECTED`), or a note that is not a Web Clipper page |
 | `INVALID_CURSOR` | Malformed cursor, or one from a different query, scope, or vault configuration; restart the search |
 | `SOURCE_NOT_FOUND` | Unknown `source_id`; ingest the URL first |
-| `INGEST_FAILED` | Acquisition failed, including unusable captions |
+| `INGEST_FAILED` | Acquisition failed, including unusable captions; article failures start the message with a stable reason (see [Articles](#articles)) |
 | `SOURCE_CACHE_ERROR` | Cache open/read/write failure, corrupt entry, or incompatible schema; the message includes reset steps |
 | `NOTE_UNAVAILABLE` | Unknown, excluded, missing, or otherwise inaccessible note (deliberately indistinguishable) |
 | `NOTE_CHANGED` | The note's revision no longer matches; search and read it again |
 | `NOTE_NOT_LINKABLE` | The note path cannot be emitted as a safe wikilink |
 | `THUMBNAIL_UNAVAILABLE` | The thumbnail could not be fetched within the bounds (missing, too large, not an image, or a network error) |
-| `INCOMPLETE_READ` | A write's `read_token` is missing or does not cover the whole retained transcript; continue reading from the named offset |
+| `INCOMPLETE_READ` | A write's `read_token` is missing, does not cover the whole retained source, or predates a changed capture; continue reading from the named offset, or read again |
 | `WRITE_FAILED` | Operating-system or runtime failure, such as rejected draft publication |
 | `CONFIG_ERROR` | CLI only: trusted config missing or invalid (MCP fails at startup instead) |
 
@@ -75,7 +75,9 @@ obsidian-ingest transcript URL  # Print timestamped captions
 obsidian-ingest metadata URL    # Print normalized metadata as JSON
 obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
 obsidian-ingest mcp [--vault PATH | --config TOML] [--draft-folder PATH] [--cache-db PATH]
-obsidian-ingest ingest-source URL [--include-sponsors] [--refresh] [--cache-db PATH]
+obsidian-ingest ingest-source URL [--include-sponsors] [--refresh] [--cache-db PATH] \
+  [--config TOML] [--verbose]
+obsidian-ingest ingest-source --note VAULT_RELATIVE_PATH [--config TOML] [--cache-db PATH]
 obsidian-ingest get-source-overview SOURCE_ID
 obsidian-ingest list-sections SOURCE_ID
 obsidian-ingest list-exclusions SOURCE_ID
@@ -504,6 +506,77 @@ To curate, send only the source URL in a fresh session; the skill treats a bare 
 a complete request to run its whole workflow (ingest, read, search and compare vault
 notes, then create drafts, edit suggestions, or nothing). Use only an explicitly
 authorized profile and vault for configuration or live trials.
+
+## Articles
+
+Any http(s) URL that no other provider claims is an article. Rows are
+`[source_index, section, kind, text]`: `section` is the heading path (`A › B`), and
+`kind` is `paragraph`, `list_item` (indented by nesting), `quote`, `code` (fenced, with
+the language when the page gives it), `table_row` (`Header: value; …`), `image`
+(`![alt](url)`, not downloaded) or `caption`. Text is Markdown with absolute http(s)
+links; other link schemes become plain text. `list_sections` returns heading paths
+with `first_index` and `row_count`; `start`/`end` reads apply only to videos.
+
+**Fetching.** URLs are validated before any network access: http(s) only, no user
+name or password, at most 2,048 characters, ports 80 and 443 (plus trusted
+`extra_ports`), and no numeric-host tricks (`2130706433`, `0x7f.1`, `127.1`). Three
+forms are kept apart: the original URL (shown in drafts), the fetch URL (IDNA host,
+percent-encoded, no fragment, query kept as given), and the identity key (for the cache:
+tracking parameters such as `utm_*`, `fbclid` and `gclid` removed, query sorted). Every
+address a host resolves to must be public; the connection is pinned to the checked
+address (TLS still verifies the hostname), and every redirect (at most 5) is checked
+again, with no https-to-http downgrade. Bodies are capped at 5 MiB after decompression,
+10 MiB per ingest, and one 60 s deadline covers the page and all fallbacks.
+Environment proxies, cookies and credentials are never used. Character sets follow
+the BOM, then the HTTP header, then `<meta charset>`, then detection.
+
+**Extraction.** Scripts, styles, templates, comments, hidden and `aria-hidden`
+elements, and form controls are removed first, so hidden text never reaches the agent;
+image alt text that addresses an AI agent is dropped. Page chrome (ads, sponsored and
+promo blocks, newsletter and paywall prompts, related and share widgets, cookie
+banners, comment sections) is pruned by whole class/id names, never blocks over 300
+words. trafilatura then extracts the main text. Figure captions and code languages are
+restored. Visible text that addresses an agent is kept but listed in
+`evidence.instruction_like`.
+
+**Exclusions and quality.** Sponsorship disclosures (`sponsored`), short calls to action
+(`promo`) and repeated blocks (`duplicate`, first copy kept) are excluded by default,
+like video sponsor segments. A page fails only on clear evidence: `NO_ARTICLE_TEXT`
+(under 50 words or mostly links), `PAYWALL_SUSPECTED` (a paywall signal with a body far
+shorter than declared) or `LOW_QUALITY` (mostly repeated). Short articles pass, with a
+`short_text` warning.
+
+**Fallbacks.** When extraction fails or the page shows more text exists, the JSON-LD
+`articleBody`, embedded JSON HTML (such as `__NEXT_DATA__`), the AMP page on the same
+site, and this page's full-content entry in its own RSS/Atom feed are tried in order.
+`evidence.attempts` records each one.
+
+**Metadata.** Title, authors, published and modified dates, canonical URL, language,
+site name, description and word count come from JSON-LD, then trafilatura, then
+OpenGraph and `meta` tags, then `<title>`. `evidence.metadata_provenance` names each
+field's source, and missing fields stay `null`. Drafts add `Author`/`Authors`, `Site`,
+`Published` and `Language` lines, and cite `Relevant sections` (section names, escaped
+as plain text).
+
+**Failure reasons.** `INGEST_FAILED` messages start with `URL_REJECTED`,
+`ADDRESS_BLOCKED`, `DNS_FAILED`, `CONNECTION_FAILED`, `TOO_MANY_REDIRECTS`,
+`HTTP_<status>`, `NOT_HTML`, `TOO_LARGE`, `TIMEOUT`, `NO_ARTICLE_TEXT`,
+`PAYWALL_SUSPECTED` or `LOW_QUALITY`. Blocked, timed-out and unreadable pages add a
+hint to save the page with Obsidian Web Clipper.
+
+**Web Clipper notes.** `ingest_source(note_id=…)` (CLI `ingest-source --note PATH`)
+reads a note through the vault policy and parses its frontmatter (`title`, `source`,
+`author`, `published`, `lang`, `site`, `description`) and Markdown body into the same
+row kinds. The note is never modified, and its `source` must pass URL validation. A clip
+shares its source URL's capture: ingesting it replaces the current capture unless the
+same note revision is already stored; the bare URL then returns the clip; a refresh
+that succeeds on the web replaces it, and one that fails keeps it. Any replacement
+invalidates earlier read tokens.
+
+**Settings and logs.** An optional `[articles]` table in the trusted settings accepts
+`allow_private_network = true` and `extra_ports = [8080]`; no tool argument can change
+them. The MCP server, and `ingest-source --verbose`, log one line per acquisition stage
+to stderr, without page text or vault paths.
 
 ## Source Inspection
 

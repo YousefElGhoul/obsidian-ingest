@@ -9,7 +9,7 @@ authors = [
     { name = "Yousef El-Ghoul", email = "contact@yousefelghoul.dev" }
 ]
 requires-python = ">=3.13"
-keywords = ["obsidian", "knowledge-management", "agent-skill", "youtube", "mcp"]
+keywords = ["obsidian", "knowledge-management", "agent-skill", "youtube", "articles", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

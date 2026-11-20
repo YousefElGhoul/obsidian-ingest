@@ -94,6 +94,9 @@ def _json_ld_objects(document: etree._Element) -> list[dict[str, Any]]:
                 graph = item.get("@graph")
                 if isinstance(graph, list):
                     stack.extend(graph)
+                # A WebPage often wraps the article itself as its mainEntity.
+                entity = item.get("mainEntity")
+                stack.extend(entity if isinstance(entity, list) else [entity])
     return objects
 
 

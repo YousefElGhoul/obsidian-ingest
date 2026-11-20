@@ -678,3 +678,41 @@ def test_blocked_pages_suggest_clipping(monkeypatch, status: int) -> None:
     FakeWeb(routes={URL: Reply("no", status=status)}).install(monkeypatch)
     with pytest.raises(FetchError, match=f"HTTP_{status}.*Web Clipper"):
         acquire()
+
+
+def test_unreachable_addresses_fall_back_to_the_next_one() -> None:
+    web = FakeWeb(
+        dns={"example.com": ["2606:4700::1111", "93.184.216.34"]},
+        routes={URL: Reply(article())},
+    )
+    real_open = web.open
+
+    def open_ipv4_only(target, address, headers, timeout):
+        if ":" in address:
+            web.requests.append((target.fetch_url, address))
+            raise FetchError("CONNECTION_FAILED", "Network is unreachable")
+        return real_open(target, address, headers, timeout)
+
+    web.open = open_ipv4_only
+    assert _fetch(web).status == 200
+    assert [address for _, address in web.requests] == ["2606:4700::1111", "93.184.216.34"]
+
+
+def test_json_ld_articles_nested_in_a_web_page_are_found(monkeypatch) -> None:
+    nested = {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "mainEntity": {
+            "@type": "ScholarlyArticle",
+            "headline": "Cell maps",
+            "author": [{"name": "Leah V. Schaffer"}, {"name": "Mengzhou Hu"}],
+            "datePublished": "2025-04-09",
+        },
+    }
+    head = f"<script type='application/ld+json'>{json.dumps(nested)}</script>"
+    FakeWeb(routes={URL: Reply(article().replace("<title>", head + "<title>"))}).install(
+        monkeypatch
+    )
+    content = acquire()
+    assert content.metadata.provider_details.authors == ("Leah V. Schaffer", "Mengzhou Hu")
+    assert content.acquisition.evidence["metadata_provenance"]["authors"] == "json-ld"

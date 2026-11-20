@@ -80,7 +80,7 @@ this server's tools, added under `agents` in `opencode.jsonc`:
 ```jsonc
 "agents": {
   "obsidian-ingest": {
-    "description": "Curate a video into vault drafts with obsidian-ingest only",
+    "description": "Curate a video or article into vault drafts with obsidian-ingest only",
     "mode": "primary",
     "permissions": [
       { "action": "*", "resource": "*", "effect": "deny" },

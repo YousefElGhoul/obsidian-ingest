@@ -102,7 +102,8 @@ def system_resolver(host: str, port: int) -> list[str]:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as error:
         raise FetchError("DNS_FAILED", f"could not resolve {host}: {error}") from error
-    return sorted({str(info[4][0]) for info in infos})
+    # Keep the system's preference order (RFC 6724), without duplicates.
+    return list(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
 def blocked_address(address: str) -> bool:
@@ -274,7 +275,7 @@ class Fetcher:
     total_bytes: int = 0
     sleep: Callable[[float], None] = time.sleep
 
-    def _address(self, target: CheckedURL) -> str:
+    def _addresses(self, target: CheckedURL) -> list[str]:
         addresses = self.resolver(target.host, target.port)
         if not addresses:
             raise FetchError("DNS_FAILED", f"{target.host} has no address")
@@ -283,7 +284,21 @@ class Fetcher:
                 "ADDRESS_BLOCKED",
                 f"{target.host} resolves to a private, local or reserved address",
             )
-        return addresses[0]
+        return addresses
+
+    def _open(self, target: CheckedURL, headers: dict[str, str], deadline: Deadline) -> RawResponse:
+        """Connect to each validated address in order until one answers."""
+        failure: FetchError | None = None
+        for address in self._addresses(target):
+            left = deadline.check()
+            try:
+                return self.transport.open(target, address, headers, min(left, REQUEST_TIMEOUT))
+            except FetchError as error:
+                if error.reason != "CONNECTION_FAILED":
+                    raise
+                failure = error  # Such as an IPv6 address on a host without IPv6.
+        assert failure is not None
+        raise failure
 
     def _read_body(self, response: RawResponse, deadline: Deadline) -> tuple[bytes, int]:
         encoding = (response.headers.get("content-encoding") or "identity").strip().lower()
@@ -328,15 +343,14 @@ class Fetcher:
         redirect_hosts: list[str] = []
         retried = False
         while True:
-            left = deadline.check()
-            address = self._address(current)
+            deadline.check()
             headers = {
                 "User-Agent": self.user_agent,
                 "Accept": ", ".join(sorted(accept)) + ";q=1.0, */*;q=0.1",
                 "Accept-Encoding": "gzip, deflate",
                 "Accept-Language": "*",
             }
-            response = self.transport.open(current, address, headers, min(left, REQUEST_TIMEOUT))
+            response = self._open(current, headers, deadline)
             try:
                 deadline.check()  # A response that arrives after the deadline is too late.
                 status = response.status

@@ -2,14 +2,14 @@
 ---
 portfolio:
   title: "Obsidian Ingest"
-  subtitle: "AI Agent Skill That Turns Videos into Notes"
+  subtitle: "AI Agent Skill That Turns Videos and Articles into Notes"
   type:
     - AI
     - Tooling
   status: "Active"
   time: "2026"
 
-  description: "Send your AI agent a YouTube link and get back a few notes worth keeping, or none at all. The agent reads the whole transcript, checks your existing Obsidian vault for what you already know, and proposes new drafts or edit suggestions with timestamped source links. Python handles source access, vault scope, and a create-only writer that never touches your existing notes, so you stay in charge of what you keep. It is one skill shared by Claude Code, Codex, opencode, and Hermes, with matching CLI and MCP interfaces."
+  description: "Send your AI agent a YouTube or article link and get back a few notes worth keeping, or none at all. The agent reads the whole transcript or article, checks your existing Obsidian vault for what you already know, and proposes new drafts or edit suggestions with timestamped source links. Python handles source access, vault scope, and a create-only writer that never touches your existing notes, so you stay in charge of what you keep. It is one skill shared by Claude Code, Codex, opencode, and Hermes, with matching CLI and MCP interfaces."
 
   skills:
     - Python
@@ -35,9 +35,10 @@ portfolio:
 
 # Obsidian Ingest
 
-Turn a YouTube URL into a few useful notes for your existing Obsidian vault.
-An agent reads the captions, searches your allowed notes, and chooses new drafts,
-review-only edit suggestions, or nothing. You review the result.
+Turn a YouTube video or a web article into a few useful notes for your existing
+Obsidian vault. An agent reads the captions or the article, searches your allowed
+notes, and chooses new drafts, review-only edit suggestions, or nothing. You review
+the result.
 
 This is an alpha release: it works on the harnesses and scopes listed under
 [tested harnesses](#tested-harnesses), and install and distribution are still being
@@ -55,6 +56,22 @@ The agent reads the whole retained English transcript in timestamped pages, pres
 caption wording and order; writes require a token covering that full read. Creator
 chapters are available for navigation, and SponsorBlock filters `sponsor` segments
 best-effort, reporting lookup failures rather than claiming filtering succeeded.
+
+### Read articles, too
+
+Any other web link is read as an article: fetched once, with its main text extracted
+into ordered blocks (paragraphs, lists, quotes, code, tables, images with captions),
+keeping links and formatting as Markdown and sections as heading paths. Ads, comments,
+sign-up prompts, related-story widgets and hidden text are removed; sponsored and
+repeated blocks are excluded but still readable. The author, publication date,
+canonical URL and language come from the page's own metadata, with the source of each
+field recorded, and nothing missing is guessed.
+
+When a page can't be read (it needs JavaScript or a login, it is paywalled, or the site
+blocks automated clients), the tool says why. Save the page with
+[Obsidian Web Clipper](https://obsidian.md/clipper) and ingest the clipped note
+instead; your browser has already rendered it. The fetcher never reaches private or
+local network addresses, and every redirect is checked.
 
 ### Compare with what you already know
 
@@ -92,8 +109,9 @@ inside the accessible scope; these are application boundaries, not host permissi
 
 ### Trace ideas back to the source
 
-The writer adds source identity, URL, creator when available, and timestamp links
-supplied by the agent. Source diagnostics expose manual or generated caption origin,
+The writer adds source identity, URL, creator or author, publication date and language
+when known, and the cited moments: timestamp links for videos, section names for
+articles. Source diagnostics expose manual or generated caption origin,
 translation status, acquisition details, and timing observations such as caption gaps;
 they do not certify the source's claims or caption accuracy.
 
@@ -105,7 +123,8 @@ validation, limits, and write behavior; their syntax and note identifiers differ
 
 ### Reuse source acquisition, not a generated answer
 
-A local SQLite cache reuses acquired source metadata and captions across sessions.
+A local SQLite cache reuses acquired source metadata, captions and article text across
+sessions; tracking parameters such as `utm_*` don't create a second copy.
 Vision-capable agents can optionally fetch a thumbnail on demand; it is not video
 inspection, and thumbnails are not retained in the SQLite cache.
 
@@ -151,7 +170,9 @@ does not by itself justify another attempt.
 - An agent harness that can load skills and use local stdio MCP tools or the CLI.
   See [tested harnesses](#tested-harnesses).
 - An existing Obsidian vault and your choice of allowed and excluded paths.
-- Network access and a YouTube video with usable English JSON3 or WebVTT captions.
+- Network access, and a YouTube video with usable English JSON3 or WebVTT captions or a
+  web article that is readable without JavaScript or a login (or a Web Clipper note of
+  one).
 
 The runtime does not include a model. Your harness's model, network, and approval
 settings still apply.
@@ -194,7 +215,8 @@ Open the fresh curation session reported by the installer. Send a source URL:
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-Replace `VIDEO_ID` with a real video ID. A bare URL is the skill's complete request.
+Replace `VIDEO_ID` with a real video ID, or send an article URL. A bare URL is the
+skill's complete request.
 If your harness does not select the skill automatically, invoke it explicitly:
 
 | Harness | Invocation |
@@ -305,6 +327,11 @@ settings, source cache, vault, and published notes alone unless you ask otherwis
 - No media downloads, frame preparation, OCR, speech-to-text, structured corrections,
   or retained supporting images are implemented. An optional thumbnail fetch is not
   a video inspection.
+- Articles are fetched without running JavaScript, logging in, or passing paywalls;
+  such pages fail with a reason and can be clipped with Web Clipper instead. Some sites
+  block automated clients outright. Environment proxies are not used.
+- Article extraction is heuristic: page chrome can slip through or, rarely, content can
+  be dropped. Quality warnings say when a page looks short or truncated.
 - Instagram and TikTok hostnames are recognized, but extraction is not implemented.
 - Search is literal word matching, not semantic search or exhaustive deduplication.
 - The SQLite cache is disposable. Refresh replaces the current capture, not published

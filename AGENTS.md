@@ -13,8 +13,11 @@ predictable operations, traceable evidence, explicit unavailable/partial results
 preserved canonical knowledge, not identical prose or proof that source claims are true.
 
 Today: YouTube English captions, creator chapters, sponsor filtering, and diagnostics;
-shared CLI/MCP operations; scoped vault search/read; create-only drafts and review-only
-edit suggestions; a SQLite acquisition cache; and optional on-demand thumbnails.
+web articles through a guarded fetch, trafilatura extraction, in-page fallbacks and
+Obsidian Web Clipper notes; shared CLI/MCP operations; scoped vault search/read;
+create-only drafts and review-only edit suggestions; a SQLite acquisition cache; and
+optional on-demand thumbnails. Source types are providers behind one protocol in
+`extractor/providers/`; shared code never names a specific provider.
 Agent-led installation supports Hermes, Claude Code, Codex, and opencode. The trial kit
 is in `scripts/trials/`. See [README.md](README.md) for tested scopes and limitations.
 Video inspection, OCR, and speech-to-text are not built; keep them optional when added.
@@ -30,7 +33,8 @@ Implement one roadmap item at a time and verify it before calling it done.
 - Use Python, uv, a `src/` layout, type hints, Ruff, pytest, small functions, frozen
   dataclasses for internal values, and tuples for immutable collections.
 - Keep provider-specific extraction fields in provider code; application functions use
-  normalized domain models and remain independent of CLI/MCP and harness adapters.
+  normalized domain models and remain independent of CLI/MCP and harness adapters. A new
+  source type is a provider package plus one registry entry, never a branch in shared code.
 - Preserve one-to-one CLI/MCP parity in operations, validation, limits, result data,
   error meanings, and side effects; only transport syntax, envelopes, and note IDs differ.
 - Preserve transcript wording, source order, and timestamps. JSON3 events and VTT cues

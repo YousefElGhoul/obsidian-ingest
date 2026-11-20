@@ -3,3 +3,9 @@ root = "/absolute/path/to/your/vault"
 allowed = ["Notes", "00 Inbox/AI Drafts"]
 excluded = [".obsidian", ".trash", ".git", "Private"]
 draft_folder = "00 Inbox/AI Drafts"
+
+# Optional: the network policy for fetching web articles. The defaults are safe:
+# private and local network addresses are never fetched, and only ports 80 and 443.
+# [articles]
+# allow_private_network = true   # for intranet pages you trust
+# extra_ports = [8080]

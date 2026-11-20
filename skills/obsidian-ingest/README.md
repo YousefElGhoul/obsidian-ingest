@@ -1,6 +1,6 @@
 # Obsidian Ingest skill
 
-This self-contained Agent Skill turns a YouTube URL into a few new drafts,
+This self-contained Agent Skill turns a YouTube or web article URL into a few new drafts,
 review-only edit suggestions, or nothing in your existing Obsidian vault. It includes
 the workflow, Python runtime, stdio MCP entry point, and configuration template.
 
@@ -36,7 +36,7 @@ directory or absolute paths, as described in the install steps.
 
 ## Use and boundaries
 
-In the installer's fresh curation session, send a bare YouTube URL. Explicit invocation
+In the installer's fresh curation session, send a bare YouTube or article URL. Explicit invocation
 is `/obsidian-ingest <url>` on Claude Code, `$obsidian-ingest <url>` on Codex, or
 `@obsidian-ingest <url>` on opencode. Hermes uses `--skills obsidian-ingest` in the
 session command. Review the created drafts, by default under `00 Inbox/AI Drafts/`.
@@ -51,10 +51,12 @@ envelopes differ. See [SKILL.md](SKILL.md) for the workflow and
 [references/details.md](references/details.md) for evidence limits, errors, and
 transport differences.
 
-This skill extracts YouTube metadata and existing English JSON3 or VTT captions. It
+This skill extracts YouTube metadata and existing English JSON3 or VTT captions, and
+the main text and metadata of web articles readable without JavaScript or a login.
+Pages it cannot read can be saved with Obsidian Web Clipper and ingested as a note. It
 does not download media, prepare frames, run OCR/STT, record corrections, run an agent,
-or support Instagram/TikTok extraction. The alpha target is Linux and English-caption
-YouTube. Captions and source attribution do not independently verify a claim. The
+render JavaScript, log in, or support Instagram/TikTok extraction. The alpha target is
+Linux, English-caption YouTube, and web articles. Captions and source attribution do not independently verify a claim. The
 source cache is disposable, not a historical evidence archive.
 
 To undo, ask an agent with terminal access to follow
