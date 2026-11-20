@@ -42,7 +42,10 @@ To install, repeat the install, or undo it, follow
    "someone would look this up when …" with a concrete situation. If you can't, drop it. Small facts about one tool or API belong together in
    one note about the technique they serve, not a note each. Compare your list before
    writing: if two ideas need the same background to explain, they are one note. Never
-   write an overview of the whole source next to notes on its parts.
+   write an overview of the whole source next to notes on its parts: a title that names
+   the source's subject ("X is proved", "Three ways to Y") instead of one idea is a recap.
+   In a long tutorial, steps to follow and catalogs (lists of annotations, methods or
+   commands) are not ideas; keep only what it explains beyond the steps.
 4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with
@@ -60,8 +63,9 @@ To install, repeat the install, or undo it, follow
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. Use the reviewed `revision`
      as `target_revision`. `proposed_content` is only the new or changed lines, never
-     a copy of the whole note or a summary of the source. Repeat nothing the note
-     already says. An idea goes in a suggestion or a draft, never both.
+     a copy of the whole note or a summary of the source: a few lines on the note's
+     own topic. Repeat nothing the note already says. An idea goes in a suggestion or a
+     draft, never both.
    - A tip you can state in one sentence (a command, shortcut, flag or setting) →
      tips for the same tool belong together. If any search found a list note of tips
      for that tool, add every such tip from the source to its edit suggestion, including
@@ -85,9 +89,7 @@ To install, repeat the install, or undo it, follow
 ```markdown
 # One idea as the title
 
-Two to six short paragraphs in your own words explaining the idea. For a video, add
-the timestamp of the moment it comes from: (MM:SS), or (H:MM:SS) past an hour, for
-example (05:12) or (1:03:56). For an article, no inline citation is needed.
+Two to six short paragraphs in your own words explaining the idea.
 ```
 
 - Title in sentence case. One idea per note. Never summarize the whole source, never
@@ -95,12 +97,13 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, no source
   section and no row numbers: the tool adds the source and the related links.
 - Also pass `cite`: the `source_index` (the first value of each row) of every row the
-  note uses, no others (at most 200). The tool turns them into video links or article
-  section names. Every timestamp in the body must be the `start` of a row you cite.
-  Video row `start` values are seconds: `11.68` is (00:11), and `3661` is (1:01:01).
+  note uses, no others (at most 200). The tool turns them into video timestamps or
+  article section names, so write no timestamps or row numbers in the body.
 - Keep a link from the source (`[text](url)` in a row) when a reader would follow it.
 - Write in the language the user writes in, even when the source is in another one.
-- Only what the source says. Attribute opinions by the person, channel or author name
+- Only what the source says: every sentence must come from rows you cite. Add no
+  facts, steps, mechanisms or numbers the source does not give, even ones you know are
+  true. A link in a row is not a page you read. Attribute opinions by the person, channel or author name
   the source gives, not "the speaker" or "the author". Write the source's claims as its
   claims, with their conditions: numbers, speed, security, "replaces X", and forecasts
   ("In 2015, Tim Urban expected …"). Never turn an example into a rule or a guarantee. Rankings, "best" and "replace X with Y"
