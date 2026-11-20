@@ -1,6 +1,6 @@
 [project]
 name = "obsidian-ingest"
-version = "0.1.2"
+version = "0.2.0"
 description = "Harness-neutral skill and tools for agent-driven knowledge ingestion into Obsidian drafts"
 readme = "README.md"
 license = "Apache-2.0"
