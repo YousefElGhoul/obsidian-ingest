@@ -59,19 +59,21 @@ best-effort, reporting lookup failures rather than claiming filtering succeeded.
 
 ### Read articles, too
 
-Any other web link is read as an article: fetched once, with its main text extracted
-into ordered blocks (paragraphs, lists, quotes, code, tables, images with captions),
-keeping links and formatting as Markdown and sections as heading paths. Ads, comments,
-sign-up prompts, related-story widgets and hidden text are removed; sponsored and
-repeated blocks are excluded but still readable. The author, publication date,
-canonical URL and language come from the page's own metadata, with the source of each
-field recorded, and nothing missing is guessed.
+An http(s) link not claimed by another provider is read as an article. The fetch can
+follow checked redirects, retry once, and try same-site AMP or feed fallbacks. The
+extractor keeps the main text in ordered Markdown blocks with links and heading paths.
+It prunes page chrome and explicitly hidden HTML, but does not evaluate stylesheet
+visibility. Pruning and instruction-like flags are heuristics; retained text,
+including image alt text, is untrusted. Sponsored, promo and repeated blocks are
+excluded by default but still readable. Metadata records where its values came from;
+the canonical URL falls back to the final URL, and diagnostics use `und` for unknown
+language.
 
-When a page can't be read (it needs JavaScript or a login, it is paywalled, or the site
-blocks automated clients), the tool says why. Save the page with
+When the tool suggests clipping an unreadable page, save it with
 [Obsidian Web Clipper](https://obsidian.md/clipper) and ingest the clipped note
-instead; your browser has already rendered it. The fetcher never reaches private or
-local network addresses, and every redirect is checked.
+instead; your browser has already rendered it. Private and local network addresses
+are refused by default, and every redirect is checked. See the
+[article reference](docs/reference.md#articles) for fetch limits and error reasons.
 
 ### Compare with what you already know
 
@@ -109,11 +111,12 @@ inside the accessible scope; these are application boundaries, not host permissi
 
 ### Trace ideas back to the source
 
-The writer adds source identity, URL, creator or author, publication date and language
-when known, and the cited moments: timestamp links for videos, section names for
-articles. Source diagnostics expose manual or generated caption origin,
-translation status, acquisition details, and timing observations such as caption gaps;
-they do not certify the source's claims or caption accuracy.
+The writer adds source identity and URL. Videos add the creator when known and
+timestamp links for citations. Articles add authors, site, publication date and
+language when known, and section names for citations. Source diagnostics expose
+manual or generated caption origin, translation status, acquisition details, and
+timing observations such as caption gaps; they do not certify the source's claims
+or caption accuracy.
 
 ### Use your existing agent
 
@@ -203,6 +206,11 @@ creates private `config/settings.toml` settings. It registers the tools where ne
 checks that a fresh session loads the skill, and reports the paths, changes, and undo
 steps. Setup refuses to overwrite existing settings.
 
+**Upgrading from v0.1.x:** Use a fresh SQLite schema 3 cache or approve resetting
+the old one, then re-ingest your sources. Old source IDs do not carry over. In host
+allowlists, replace `list_chapters`, `read_transcript` and `read_chapter` with
+`list_sections`, `read_source` and `read_section`, respectively.
+
 For manual setup and operations, see the [technical reference](docs/reference.md).
 Harness notes are linked below. They describe tested commands, not
 permanent version requirements.
@@ -226,9 +234,9 @@ If your harness does not select the skill automatically, invoke it explicitly:
 | Codex | `$obsidian-ingest <url>` |
 | opencode | `@obsidian-ingest <url>` |
 
-The agent should read the whole retained transcript, search for each useful idea,
+The agent should read the whole retained source, search for each useful idea,
 read the closest existing notes, and then decide what to write. It reports its
-searches, decisions, and the paths actually created. Review the Markdown before
+searches, decisions, returned paths, and any failed writes. Review the Markdown before
 promoting a draft or applying any suggestion yourself.
 
 If a session has the tools but does not follow that workflow, check that it loaded
@@ -255,9 +263,12 @@ from normal agent work. The Claude Code, Codex, and opencode harness notes docum
 advanced restricted launches for experienced users; their installer path stays trusted.
 MCP restrictions are not an OS sandbox and do not restrict already-running sessions.
 
-Allowed and excluded vault paths apply to this application's reads. Exclusions cannot
-hide private text copied into an allowed note. Keep the configured vault and draft
-directory tree trusted against concurrent moves or replacements by other processes.
+Allowed and excluded vault paths apply to this application's reads. Serving a cached
+clip requires access to its original note path in the vault it came from; a matching
+path in another vault is not enough. The cache still stores clip text, so protect
+the database file itself. Exclusions cannot hide private text copied into an allowed
+note. Keep the configured vault and draft directory tree trusted against concurrent
+moves or replacements by other processes.
 Source captions, metadata, and retrieved notes are untrusted data, not permissions.
 
 ## How it compares
@@ -327,11 +338,11 @@ settings, source cache, vault, and published notes alone unless you ask otherwis
 - No media downloads, frame preparation, OCR, speech-to-text, structured corrections,
   or retained supporting images are implemented. An optional thumbnail fetch is not
   a video inspection.
-- Articles are fetched without running JavaScript, logging in, or passing paywalls;
-  such pages fail with a reason and can be clipped with Web Clipper instead. Some sites
-  block automated clients outright. Environment proxies are not used.
+- Articles are fetched without running JavaScript, logging in, or bypassing paywalls.
+  Some sites block automated clients outright. Environment proxies are not used.
 - Article extraction is heuristic: page chrome can slip through or, rarely, content can
-  be dropped. Quality warnings say when a page looks short or truncated.
+  be dropped. Quality warnings flag short text, possible truncation, and paywall
+  signals. A paywall signal alone does not fail ingestion.
 - Instagram and TikTok hostnames are recognized, but extraction is not implemented.
 - Search is literal word matching, not semantic search or exhaustive deduplication.
 - The SQLite cache is disposable. Refresh replaces the current capture, not published

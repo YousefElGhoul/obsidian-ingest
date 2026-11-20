@@ -15,9 +15,9 @@ To install, repeat the install, or undo it, follow
 
 ## Steps
 
-1. `ingest_source(url)`. Keep the `source_id`. If it fails with `NO_ARTICLE_TEXT`,
-   `PAYWALL_SUSPECTED` or a blocked page, tell the user to save the page with Obsidian
-   Web Clipper and stop. When the user then names the clipped note, find it with
+1. `ingest_source(url)`. Keep the `source_id`. If the URL can't be read and the error
+   suggests Obsidian Web Clipper, offer clipping; if the URL is rejected, explain why.
+   If ingest fails, stop and report. When the user names a clipped note, find it with
    `search_vault` and call `ingest_source(note_id=...)` instead.
 2. Read the whole source in order: `read_source` with `limit` 200, passing
    each page's `next_offset` value as `offset`, with its `read_token`, to the next call
@@ -41,29 +41,30 @@ To install, repeat the install, or undo it, follow
    other forms you want too (`index indexes`): names, tools, terms
    (`kubernetes pod eviction`, `react useeffect cleanup`). Leave out common words like
    `how`, `use`, `code` or `video` that match everything. `limit` is at most 20. Then
-   `read_vault_note` for the closest matches. Do this before writing anything.
+   `read_vault_note` for the closest matches, passing `revision` on continued reads.
+   Do this before writing anything.
 5. For each idea, decide:
    Pass the final `read_token` to every write. One write per tool call, never several
-   in one call or script. If a write fails, check which paths already exist before
-   retrying. Never suggest edits to a note in the drafts folder; those are new drafts,
-   not vault notes.
+   in one call or script. If a write response was lost, check with `search_vault`
+   before retrying; never guess paths. Never suggest edits to notes in the drafts folder.
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
-     every idea that belongs in it into one suggestion. `proposed_content` is only the
-     new or changed lines, never a copy of the whole note or a summary of the source.
+     every idea that belongs in it into one suggestion. Use the reviewed `revision`
+     as `target_revision`. `proposed_content` is only the new or changed lines, never
+     a copy of the whole note or a summary of the source.
    - A tip you can state in one sentence (a command, shortcut, flag or setting) →
      tips for the same tool belong together. If any search found a list note of tips
      for that tool, add every such tip from the source to its edit suggestion, including
      tips whose own search found nothing. Otherwise write nothing for them.
-   - The idea is new → `create_draft`. Pass `related_notes` for notes from step 4 that
-     a reader of this note would want to open next:
+   - The idea is new → `create_draft`. Pass up to five `related_notes` from step 4
+     that a reader would open next, each with a one-line reason:
      `[{"note_id": "<id from search_vault>", "reason": "<what that note adds>"}]`.
      Always link the overview note of the same tool or topic if you found one (a
      `Kubernetes` note for a Kubernetes idea). Never link a note only because it
      shares a word or a broad theme; no link is fine.
    - The idea is already covered or weak → write nothing.
-6. Only after every `create_draft` and `create_edit_suggestion` you chose has returned
-   a path, report: the searches you ran, each idea, your choice for it, and those
-   paths. Never list a note you did not create. If you wrote nothing, say why.
+6. After the write attempts, report your searches and decisions, the returned paths,
+   and any failed or unconfirmed writes separately. Never list a note you did not
+   create. If you wrote nothing, say why.
 
 ## How a note looks
 
@@ -80,9 +81,9 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, and no source
   section: the tool adds the source and the related links.
 - Also pass `cite`: the `source_index` (the first value of each row) of every row the
-  note uses, no others. The tool turns them into video links or article section
-  names. Video row `start` values are seconds: `11.68` is (00:11), and `3661` is
-  (1:01:01).
+  note uses, no others (at most 200). The tool turns them into video links or article
+  section names. Video row `start` values are seconds: `11.68` is (00:11), and `3661`
+  is (1:01:01).
 - Keep a link from the source (`[text](url)` in a row) when a reader would follow it.
 - Write in the language the user writes in, even when the source is in another one.
 - Only what the source says. Attribute opinions by the person, channel or author name

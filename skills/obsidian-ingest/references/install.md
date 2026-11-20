@@ -68,6 +68,11 @@ skill-installer): it copies the skill without a plan and skips these steps. The 
   survive that. A skills-CLI copy is replaced on update, which removes
   `config/settings.toml` and `.venv` kept inside it: back up the settings first and
   run setup again afterwards.
+- **Upgrading from v0.1.x:** Include the cache and tool changes in your approval
+  plan. This version requires SQLite schema 3: select a fresh cache or get approval
+  to reset the old one, then re-ingest sources. Old source IDs do not carry over.
+  In host allowlists, replace `list_chapters`, `read_transcript` and `read_chapter`
+  with `list_sections`, `read_source` and `read_section`, respectively.
 
 The skill must also be visible to the harness. Prefer a symlink from the harness's
 skills directory to the skill directory over copying, so updates and settings stay in
@@ -121,9 +126,9 @@ args:    run --no-dev --project <skill> python <skill>/mcp/server.py
 Allow exactly these eleven tools: `ingest_source`, `get_source_overview`,
 `list_sections`, `list_exclusions`, `read_source`, `read_section`, `get_thumbnail`,
 `create_draft`, `search_vault`, `read_vault_note`, `create_edit_suggestion`. Disable
-MCP resources and prompts. If the server reports a different tool list, use what it
-reports and tell the user. In trusted CLI-only mode, registration is optional: use
-`uv run --no-dev --project <skill> obsidian-ingest --help`.
+MCP resources and prompts. If the server reports a different tool list, stop and
+report the mismatch; never expand the allowlist. In trusted CLI-only mode,
+registration is optional: use `uv run --no-dev --project <skill> obsidian-ingest --help`.
 
 ## 6. Restrict (restricted mode only; skip in trusted mode)
 
@@ -152,7 +157,8 @@ final check in a fresh session. In trusted mode, change nothing in this step.
 
 ## 7. Verify with the harness's own commands
 
-- The MCP server connects and lists the eleven tools (on Hermes: `mcp test`).
+- The MCP server connects and lists exactly the eleven tools (on Hermes: `mcp test`).
+  If they differ, stop and report the mismatch.
 - A fresh session started from an unrelated directory loads the skill and exposes only
   the intended tools. Prefer the harness's own tool listing or banner. If those
   disagree, say so instead of writing scripts against the harness's internals.

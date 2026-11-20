@@ -18,8 +18,9 @@ writer mode; broader agent permissions are a host choice, not a transport featur
 CLI and MCP call the same application functions (`obsidian_ingest.responses`), so
 operations, validation, limits, result data, error meanings, and side effects are
 shared; only transport syntax, envelopes, and note identifiers differ. MCP issues
-opaque, process-scoped `note_id` handles; the CLI uses vault-relative paths. Each
-transport's search/read results carry only the identifier it accepts. `source_id`
+opaque, process-scoped `note_id` handles; the CLI uses vault-relative paths. Vault
+search and read results include a relative `path` in both transports, plus `note_id`
+in MCP. Write results return an absolute draft path in both transports. `source_id`
 handles and search cursors work across both transports and restarts. One case is
 not a transport difference: `diagnostics.acquisition.reused_from_cache` depends on
 whether a given call reused the cache.
@@ -34,9 +35,10 @@ through live harness sessions (see
 Errors share stable codes across transports. MCP tool errors read `CODE: message`
 (after the framework's `Error executing tool …:` prefix). CLI tool commands print
 `{"error": {"code": "...", "message": "..."}}` to stderr and exit with status 1 for
-operation errors or 2 for invalid arguments (also coded `INVALID_ARGUMENT`); results go
-to stdout as JSON. The non-tool commands `transcript`, `inspect`, `metadata`, `mcp`,
-and `setup` keep plain argparse behavior.
+operation errors (including parsed but invalid values such as `read-source --limit 0`),
+or 2 for parser errors (coded `INVALID_ARGUMENT`). Results go to stdout as JSON;
+`--help` prints help text, not JSON. The non-tool commands `transcript`, `inspect`,
+`metadata`, `mcp`, and `setup` keep plain argparse behavior.
 
 MCP arguments are validated strictly before any coercion: a boolean for an integer,
 a numeric string, a JSON-encoded list, or an unknown or missing argument is rejected
@@ -47,7 +49,7 @@ as `INVALID_ARGUMENT: <field>: <reason>`, matching the CLI's argument checks.
 | `INVALID_ARGUMENT` | Malformed argument, unsupported provider, URL without an extractable ID, a URL that cannot be fetched safely (`URL_REJECTED`), or a note that is not a Web Clipper page |
 | `INVALID_CURSOR` | Malformed cursor, or one from a different query, scope, or vault configuration; restart the search |
 | `SOURCE_NOT_FOUND` | Unknown `source_id`; ingest the URL first |
-| `INGEST_FAILED` | Acquisition failed, including unusable captions; article failures start the message with a stable reason (see [Articles](#articles)) |
+| `INGEST_FAILED` | Acquisition failed, including unusable captions; article URL failures include a reason after `Could not ingest source:` (see [Articles](#articles)) |
 | `SOURCE_CACHE_ERROR` | Cache open/read/write failure, corrupt entry, or incompatible schema; the message includes reset steps |
 | `NOTE_UNAVAILABLE` | Unknown, excluded, missing, or otherwise inaccessible note (deliberately indistinguishable) |
 | `NOTE_CHANGED` | The note's revision no longer matches; search and read it again |
@@ -74,10 +76,12 @@ The current CLI does not run an agent. Available commands:
 obsidian-ingest transcript URL  # Print timestamped captions
 obsidian-ingest metadata URL    # Print normalized metadata as JSON
 obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
-obsidian-ingest mcp [--vault PATH | --config TOML] [--draft-folder PATH] [--cache-db PATH]
+obsidian-ingest mcp [--config TOML] [--cache-db PATH]
+obsidian-ingest mcp --vault PATH [--draft-folder PATH] [--cache-db PATH]
 obsidian-ingest ingest-source URL [--include-sponsors] [--refresh] [--cache-db PATH] \
   [--config TOML] [--verbose]
-obsidian-ingest ingest-source --note VAULT_RELATIVE_PATH [--config TOML] [--cache-db PATH]
+obsidian-ingest ingest-source --note VAULT_RELATIVE_PATH [--include-sponsors] \
+  [--config TOML] [--cache-db PATH] [--verbose]
 obsidian-ingest get-source-overview SOURCE_ID
 obsidian-ingest list-sections SOURCE_ID
 obsidian-ingest list-exclusions SOURCE_ID
@@ -96,13 +100,18 @@ obsidian-ingest create-edit-suggestion SOURCE_ID PATH REVISION SUMMARY REASONING
   [--cite SOURCE_INDEX] --read-token TOKEN
 ```
 
-Source commands accept `--cache-db`; vault commands accept `--config`. `--cite`
-and `--related-note` are repeatable. See `obsidian-ingest COMMAND --help` for details.
+The six source navigation commands (`get-source-overview`, `list-sections`,
+`list-exclusions`, `read-source`, `read-section`, `get-thumbnail`) and both write
+commands also accept `--cache-db PATH` and `--config TOML`. Vault search and note read
+accept `--config TOML`. `--cite` and `--related-note` are repeatable. See
+`obsidian-ingest COMMAND --help` for details.
 
 Vault-aware CLI commands use the trusted configuration at
 `skills/obsidian-ingest/config/settings.toml` by default, independent of the current
-working directory; pass `--config` to select another file. Run `obsidian-ingest setup`
-to interactively set the absolute vault root and explicitly choose the permitted scope,
+working directory; pass `--config` to select another file. Source commands use those
+default settings when present; clip captures require access through the originating
+vault's settings. Run `obsidian-ingest setup` to set the absolute vault root and
+explicitly choose the permitted scope interactively,
 or pass `--vault-root PATH` with repeatable `--allow PATH` and `--exclude PATH` and an
 optional `--draft-folder PATH`; with `--vault-root`, setup never prompts. Setup refuses
 to overwrite existing settings. CLI note paths are vault-relative; pass
@@ -181,13 +190,14 @@ break, and a trailing `.md` on a given `filename` is dropped first. So
 capped at 120 UTF-8 bytes, contains no path separators or dots, and reserved Windows
 device names gain a `-note` suffix (`con-note.md`). Without a given filename or a
 leading H1, or when the slug is empty, the call fails with `INVALID_ARGUMENT`.
-A readable source section is appended with source identity, URL, creator when
-available, and an optional citation line. The tools build that line from the cited rows
-(`cite`): the source's provider renders it, so YouTube citations are timestamp links to
-the normalized video ID at each distinct whole second. Source titles and creator names
-are written as inert text: bracket, backtick, pipe, angle-bracket and `#` characters
-are escaped, control and bidi-override characters are removed, and long values are cut
-to 300 characters.
+A readable source section is appended with source identity and URL. YouTube adds
+`Creator` when known; articles add `Author`/`Authors`, `Site`, `Published` and `Language`
+when known. The optional citation line is built from `cite`: YouTube lists up to eight
+timestamp links, starting with the earliest and keeping the next only if it is at
+least 30 seconds after the last kept one. Articles list up to eight unique section
+names. Source titles and creator names are written as inert text: brackets,
+backticks, pipes, angle brackets, `#`, `%%` and `==` are neutralized, control and
+bidi-override characters are removed, and long values are cut to 300 characters.
 Related-note links are verified against accessible notes when created. Vault search and
 read operations are available through the configured MCP and CLI adapters.
 
@@ -259,9 +269,14 @@ the failure and leaves the previous capture intact. Failed acquisition does not 
 an entry. Unknown IDs produce `SOURCE_NOT_FOUND`; corrupt entries produce errors rather
 than incomplete data, and refresh can replace a bad entry.
 
-The cache schema is version 2 (SQLite `user_version`). An older (version 1) or
-unrecognized database is rejected with `SOURCE_CACHE_ERROR`, never migrated or deleted
-automatically; the MCP server still starts and vault tools keep working. To reset it:
+The cache requires SQLite schema version 3 (`user_version`). Incompatible caches are
+rejected with `SOURCE_CACHE_ERROR`, never migrated or deleted automatically; the MCP
+server still starts and vault tools keep working. When upgrading from v0.1.x, start
+with a fresh cache (or approve resetting the old one), then re-ingest sources.
+In host allowlists, replace `list_chapters`, `read_transcript` and `read_chapter` with
+`list_sections`, `read_source` and `read_section`, respectively. Update scripted writes
+to cite source row indices (`cite` or `--cite`) instead of timestamps. To reset the
+cache:
 
 1. Stop obsidian-ingest processes (MCP servers and CLI runs) using that cache.
 2. Delete the file named in the error, by default
@@ -291,17 +306,19 @@ errors are reported and ingestion continues with unfiltered text. Transcript rea
 default to 100 segments and cap a request at 200. The serialized MCP content envelope is
 limited to 20 KiB; a page may therefore contain fewer than the requested number of
 whole segments. The response includes `fields` (`source_index`, `start`, `duration`,
-`text`), `segments` as rows in that order, `offset`, requested `limit`, `total_segments`,
-`remaining_segments`, `next_offset`, and (for in-order reads of the retained view)
-`read_token`. The token is stateless, so it works the same across CLI processes and
-MCP. It records how far the transcript has been read in order from offset 0, and draft
-and edit writes require one that covers the whole retained transcript. Continue with
-the returned `next_offset` (as `offset`) and `read_token` until `next_offset` is `null`.
-The token is bound to the capture's content, so after a refresh that changed the source
-a write with an older token fails with `INCOMPLETE_READ` ("the source changed"), and
-the agent reads again. Writes cite rows by `source_index` (`cite`); unknown or
-excluded indices fail with `INVALID_ARGUMENT`, and duplicates are ignored. Ranged,
-chapter, skipped-ahead, or `include_excluded` reads do not advance full-read coverage.
+`text` for videos; see [Articles](#articles) for text fields), `segments` as rows in
+that order, `offset`, applied `limit` (at most 200), `total_segments`,
+`remaining_segments`, and `next_offset`. Only contiguous `read_source` pages of the
+retained view without time bounds advance `read_token` coverage. Start at offset 0,
+then pass each returned `next_offset` (as `offset`) and `read_token` until `next_offset`
+is `null`. Skipping ahead does not advance coverage; ranged and `include_excluded`
+reads can pass an existing token through unchanged. `read_section` neither takes nor
+returns a token. Tokens work across CLI processes and MCP, and writes require one
+covering the whole retained source. A successful refresh or re-clip that replaces
+the capture invalidates earlier tokens even if the rows match. A write with an older
+token fails with `INCOMPLETE_READ`; read again from offset 0. Writes accept up to 200
+supporting `source_index` values in `cite`; unknown or excluded indices fail with
+`INVALID_ARGUMENT`, and duplicates are ignored.
 Source indices, wording, timestamps, and order are preserved. An individual atom that
 cannot fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
 are returned as one compact JSON text result instead of duplicated text and structured
@@ -316,15 +333,17 @@ For `create_draft`, start `contents` with an H1 that is the note's title; the op
 Do not include a mid-body Source/Sources/Source Attribution/Provenance section or an
 agent-authored `## Related Notes` section; a final agent-written source section is
 dropped. The application appends one `## Source`
-section with the source URL, creator when available, and the cited rows. A separate
+section with the source URL, provider-specific attribution, and citations. A separate
 `## References` section for additional papers and materials is allowed. Heading
 validation covers ordinary ATX and Setext Markdown headings and ignores fenced or
 indented code examples; it is not a general-purpose Markdown parser.
 
 ### Source Diagnostics
 
-`ingest_source` and `get_source_overview` (CLI `ingest-source`, `get-source-overview`)
-include `overview.diagnostics`, built by one shared function:
+`ingest_source` (CLI `ingest-source`) returns `overview.diagnostics`.
+`get_source_overview` (CLI `get-source-overview`) returns the overview directly, with
+top-level `diagnostics`. For articles, `diagnostics.evidence.quality.status` is `ok`
+or `degraded`, and `diagnostics.timing` is `null`. For videos:
 
 - `evidence`: `kind` (`captions` for video), `language`, `origin` (`manual` or `generated`), `format` (`json3` or
   `vtt`), `translated`, and the retained original payload's byte size and SHA-256.
@@ -339,10 +358,10 @@ include `overview.diagnostics`, built by one shared function:
   and `overrun_seconds` when captions extend more than 2 s past the duration. Seconds
   are rounded to three decimals.
 
-`null` always means unknown. Timing values are observations, not quality scores: a gap
-may be music, silence, or on-screen text and does not prove missing speech; no gap does
-not prove complete or accurate captions; provider durations can be wrong. Measured
-media duration is not collected.
+For video diagnostics, `null` means unknown. Timing values are observations, not
+quality scores: a gap may be music, silence, or on-screen text and does not prove
+missing speech; no gap does not prove complete or accurate captions. Provider
+durations can be wrong. Measured media duration is not collected.
 
 Caption acquisition fails explicitly with `INGEST_FAILED`, rather than producing an
 apparently silent source, for an empty, non-UTF-8, malformed, or timed-text-free
@@ -409,16 +428,18 @@ The source and configured vault tools include:
   result lists its `matched_terms`.
 - `read_vault_note(note_id, offset=0, limit=4000, revision=None)` returns a bounded
   Markdown character range. `limit` must be 1–8,000 characters. Continue with
-  `next_offset` and the returned `revision`; changed notes require a fresh search/read.
+  `next_offset` and the returned `revision` (required when `offset > 0`); changed
+  notes require a fresh search/read.
   Both tools return compact JSON in one text result, bounded to 16 KiB.
 - `create_edit_suggestion(source_id, target_note_id, target_revision, change_summary,
   reasoning, proposed_content, read_token, cite=None)` creates a review-only
   `edit-<target-title-slug>.md` draft.
-  It starts with a Python-generated wikilink to the verified target and never modifies
-  that target.
+  Pass the reviewed note's `revision` as `target_revision`. The draft starts with a
+  Python-generated wikilink to the verified target and never modifies that target.
 
-`create_draft` also accepts optional `related_notes`, each containing a `note_id` and a
-short `reason`. Python revalidates each target's current accessibility, existence, and
+`create_draft` also accepts up to five `related_notes`, each containing a `note_id`
+and a one-line `reason` of at most 300 characters, without wikilinks.
+Python revalidates each target's current accessibility, existence, and
 linkability at draft creation; ordinary related links are not tied to a content revision.
 A legacy optional `revision` field is accepted but ignored. Python alone constructs the
 generated `## Related Notes` section and its full vault-relative `[[path/to/note.md]]`
@@ -438,8 +459,8 @@ generated Markdown.
 
 Unknown, excluded, expired, and otherwise inaccessible note IDs or paths all return the
 same `NOTE_UNAVAILABLE` error. A changed note returns `NOTE_CHANGED`; malformed cursors
-and arguments fail explicitly (see [Errors](#errors)). Vault tools return vault-relative
-paths only, never absolute filesystem paths.
+and arguments fail explicitly (see [Errors](#errors)). Vault search and read return
+vault-relative note paths; draft and edit-suggestion writes return absolute paths.
 
 These restrictions are enforced by the MCP server, not by the operating system. Other
 Hermes tools, shell access, or processes with vault access can bypass them. For private
@@ -523,60 +544,89 @@ name or password, at most 2,048 characters, ports 80 and 443 (plus trusted
 forms are kept apart: the original URL (shown in drafts), the fetch URL (IDNA host,
 percent-encoded, no fragment, query kept as given), and the identity key (for the cache:
 tracking parameters such as `utm_*`, `fbclid` and `gclid` removed, query sorted). Every
-address a host resolves to must be public; the connection is pinned to the checked
-address (TLS still verifies the hostname), and every redirect (at most 5) is checked
-again, with no https-to-http downgrade. Bodies are capped at 5 MiB after decompression,
-10 MiB per ingest, and one 60 s deadline covers the page and all fallbacks.
-Environment proxies, cookies and credentials are never used. Character sets follow
-the BOM, then the HTTP header, then `<meta charset>`, then detection.
+address a host resolves to must be public by default (see trusted settings below).
+The connection is pinned to a checked address, with TLS hostname verification.
+Each fetch follows at most five checked redirects (no HTTPS-to-HTTP downgrade) and
+may retry once on HTTP 429 or 503 with a numeric `Retry-After` of at most 5 s and
+time remaining. The transport rejects response headers over 64 KiB and decoded
+bodies over 5 MiB. Body reads are charged by chunk, including chunks read before a
+failure and during fallbacks, against 10 MiB raw and 20 MiB decoded per ingest.
+One 60 s deadline bounds DNS and network I/O; extraction is checked before accepting
+a result, not interrupted mid-computation. Environment proxies, cookies and
+credentials are not used. Character sets follow the BOM, HTTP header, then
+`<meta charset>`, with UTF-8 and charset detection as fallbacks.
 
-**Extraction.** Scripts, styles, templates, comments, hidden and `aria-hidden`
-elements, and form controls are removed first, so hidden text never reaches the agent;
-image alt text that addresses an AI agent is dropped. Page chrome (ads, sponsored and
+**Extraction.** The HTML sanitizer removes scripts, styles, templates, comments, form
+controls and elements marked `hidden`, `aria-hidden="true"`, or with inline
+`display: none` or `visibility: hidden`, including `<html>` and `<body>`. It does not
+evaluate stylesheet visibility. Page chrome (ads, sponsored and
 promo blocks, newsletter and paywall prompts, related and share widgets, cookie
 banners, comment sections) is pruned by whole class/id names, never blocks over 300
 words. trafilatura then extracts the main text. Figure captions and code languages are
-restored. Visible text that addresses an agent is kept but listed in
-`evidence.instruction_like`.
+restored when available. The HTML renderer drops image alt text matching its
+instruction-like heuristic; retained alt text is still untrusted.
+`evidence.instruction_like` flags matching source row indices. Neither the flags nor
+pruning guarantee that all hidden or instruction-like text was caught.
 
 **Exclusions and quality.** Sponsorship disclosures (`sponsored`), short calls to action
 (`promo`) and repeated blocks (`duplicate`, first copy kept) are excluded by default,
-like video sponsor segments. A page fails only on clear evidence: `NO_ARTICLE_TEXT`
-(under 50 words or mostly links), `PAYWALL_SUSPECTED` (a paywall signal with a body far
-shorter than declared) or `LOW_QUALITY` (mostly repeated). Short articles pass, with a
-`short_text` warning.
+like video sponsor segments. `exclude_sponsors=false` (CLI `--include-sponsors`)
+disables all three article exclusion rules. Quality failures are `NO_ARTICLE_TEXT`
+(under 50 words or mostly links), `PAYWALL_SUSPECTED` (a paywall signal and a body under
+half the declared `wordCount`) or `LOW_QUALITY` (mostly repeated). A paywall signal
+alone produces a `paywall_signals` warning, not a paywall failure. Short readable
+articles can pass with a `short_text` warning.
 
 **Fallbacks.** When extraction fails or the page shows more text exists, the JSON-LD
 `articleBody`, embedded JSON HTML (such as `__NEXT_DATA__`), the AMP page on the same
 site, and this page's full-content entry in its own RSS/Atom feed are tried in order.
-`evidence.attempts` records each one.
+AMP and feed URLs must use the final page's host or a parent/subdomain relationship
+on every hop, including redirects. On success, `evidence.attempts` lists the primary
+extraction and completed fallback attempts in order, including refusals with a
+reason and bounded message. Missing candidates are omitted, and no later fallback
+is tried once one rates `ok`.
 
 **Metadata.** Title, authors, published and modified dates, canonical URL, language,
 site name, description and word count come from JSON-LD, then trafilatura, then
 OpenGraph and `meta` tags, then `<title>`. `evidence.metadata_provenance` names each
-field's source, and missing fields stay `null`. Drafts add `Author`/`Authors`, `Site`,
-`Published` and `Language` lines, and cite `Relevant sections` (section names, escaped
-as plain text).
+field's source. `canonical_url` falls back to the final URL; when language is unknown,
+metadata `language` is `null` and `diagnostics.evidence.language` is `und`. Drafts
+add `Author`/`Authors`, `Site`, `Published` and `Language` when known, and cite up to
+eight unique `Relevant sections` as escaped plain text.
 
-**Failure reasons.** `INGEST_FAILED` messages start with `URL_REJECTED`,
-`ADDRESS_BLOCKED`, `DNS_FAILED`, `CONNECTION_FAILED`, `TOO_MANY_REDIRECTS`,
-`HTTP_<status>`, `NOT_HTML`, `TOO_LARGE`, `TIMEOUT`, `NO_ARTICLE_TEXT`,
-`PAYWALL_SUSPECTED` or `LOW_QUALITY`. Blocked, timed-out and unreadable pages add a
-hint to save the page with Obsidian Web Clipper.
+**Failure reasons.** Article URL acquisition errors take the form
+`INGEST_FAILED: Could not ingest source: <REASON>: …` (CLI JSON separates code and
+message). Initial URL validation can instead return `INVALID_ARGUMENT`. The Web
+Clipper hint accompanies `HTTP_401`, `HTTP_403`, `HTTP_429`, `HTTP_451`,
+`CONNECTION_FAILED`, `NOT_HTML`, `TIMEOUT`, `NO_ARTICLE_TEXT`, `PAYWALL_SUSPECTED`
+and `LOW_QUALITY` when returned as web acquisition errors. Fallback `NOT_HTML` records
+the hint in attempt evidence rather than failing the ingest by itself; fallback
+`TIMEOUT` fails the ingest with the hint. `URL_REJECTED` and `ADDRESS_BLOCKED` are
+policy refusals without the hint. `DNS_FAILED`, `TOO_MANY_REDIRECTS`, `TOO_LARGE`,
+and other HTTP statuses also carry no hint.
 
 **Web Clipper notes.** `ingest_source(note_id=…)` (CLI `ingest-source --note PATH`)
 reads a note through the vault policy and parses its frontmatter (`title`, `source`,
 `author`, `published`, `lang`, `site`, `description`) and Markdown body into the same
-row kinds. The note is never modified, and its `source` must pass URL validation. A clip
-shares its source URL's capture: ingesting it replaces the current capture unless the
-same note revision is already stored; the bare URL then returns the clip; a refresh
-that succeeds on the web replaces it, and one that fails keeps it. Any replacement
-invalidates earlier read tokens.
+row kinds. The note is never modified, its `source` must be a valid article URL, and
+its total length must be at most 2,000,000 characters. `refresh` / `--refresh` applies
+only to URL ingest. A clip shares the URL's capture for the same exclusion option:
+re-clipping replaces it unless the originating vault, note path and revision all
+match the stored clip. Every CLI/MCP operation loading a cached clip rechecks that
+the configured vault is the originating vault (identified by its resolved root)
+and can open that path. It does not recheck the note's revision; editing the note
+does not update the capture. A direct source-ID call fails with `NOTE_UNAVAILABLE`
+if the check fails. A URL ingest treats
+an inaccessible clip as a miss and tries the web; a successful acquisition replaces
+it, while a failure leaves it stored without returning its text. A successful URL
+refresh also replaces it. Any replacement invalidates earlier read tokens.
+The cache still stores clipped text: this check does not restrict direct access to
+the database file.
 
 **Settings and logs.** An optional `[articles]` table in the trusted settings accepts
 `allow_private_network = true` and `extra_ports = [8080]`; no tool argument can change
-them. The MCP server, and `ingest-source --verbose`, log one line per acquisition stage
-to stderr, without page text or vault paths.
+them. The MCP server and `ingest-source --verbose` log fetch and extraction
+outcomes to stderr using codes and counts, without page text or vault paths.
 
 ## Source Inspection
 

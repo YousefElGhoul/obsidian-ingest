@@ -34,6 +34,10 @@ the settings elsewhere. The server refuses to guess a vault or broaden permissio
 For MCP, configure the host to launch `mcp/server.py` using `uv run --no-dev` from this
 directory or absolute paths, as described in the install steps.
 
+**Upgrading from v0.1.x:** Use a fresh SQLite schema 3 cache or approve resetting the
+old one. Update host allowlists for the renamed tools and re-ingest sources; see
+[the upgrade steps](references/install.md#2-decide-where-the-skill-will-live).
+
 ## Use and boundaries
 
 In the installer's fresh curation session, send a bare YouTube or article URL. Explicit invocation
@@ -53,11 +57,15 @@ transport differences.
 
 This skill extracts YouTube metadata and existing English JSON3 or VTT captions, and
 the main text and metadata of web articles readable without JavaScript or a login.
-Pages it cannot read can be saved with Obsidian Web Clipper and ingested as a note. It
-does not download media, prepare frames, run OCR/STT, record corrections, run an agent,
-render JavaScript, log in, or support Instagram/TikTok extraction. The alpha target is
-Linux, English-caption YouTube, and web articles. Captions and source attribution do not independently verify a claim. The
-source cache is disposable, not a historical evidence archive.
+When an acquisition error suggests Web Clipper, save the page with it and ingest the
+note. CLI and MCP serve a cached clip only if the configured vault is the originating
+vault and its note path is still accessible. The database itself still stores the clip.
+
+The runtime does not download media, prepare frames, run OCR/STT, record corrections,
+run an agent, render JavaScript, log in, or support Instagram/TikTok extraction. The
+alpha target is Linux, English-caption YouTube, and web articles. Captions and source
+attribution do not independently verify a claim. The source cache is disposable,
+not a historical evidence archive.
 
 To undo, ask an agent with terminal access to follow
 [the undo steps](references/install.md#undo). It asks first, removes the registration

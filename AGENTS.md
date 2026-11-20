@@ -34,7 +34,8 @@ Implement one roadmap item at a time and verify it before calling it done.
   dataclasses for internal values, and tuples for immutable collections.
 - Keep provider-specific extraction fields in provider code; application functions use
   normalized domain models and remain independent of CLI/MCP and harness adapters. A new
-  source type is a provider package plus one registry entry, never a branch in shared code.
+  source type needs a provider package, a shared `Provider` enum member, and one
+  registry entry, never a provider-specific branch in shared code.
 - Preserve one-to-one CLI/MCP parity in operations, validation, limits, result data,
   error meanings, and side effects; only transport syntax, envelopes, and note IDs differ.
 - Preserve transcript wording, source order, and timestamps. JSON3 events and VTT cues
