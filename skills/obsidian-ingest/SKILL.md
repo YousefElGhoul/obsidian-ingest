@@ -69,7 +69,8 @@ To install, repeat the install, or undo it, follow
      as `target_revision`. `proposed_content` is only the new or changed lines, never
      a copy of the whole note or a summary of the source: a few lines on the note's
      own topic. Repeat nothing the note already says. An idea goes in a suggestion or a
-     draft, never both.
+     draft, never both: once you suggest it for an existing note, write no draft about
+     it, and leave out of the suggestion anything a draft of yours explains.
    - A tip you can state in one sentence (a command, shortcut, flag or setting) →
      tips for the same tool belong together. If any search found a list note of tips
      for that tool, add every such tip from the source to its edit suggestion, including
@@ -106,7 +107,8 @@ add load to a service that is already struggling, so it stays down longer. She s
 adding random jitter to the retry delay cut her team's recovery time by half.
 ```
 
-- Title in sentence case. One idea per note. Never summarize the whole source, never
+- Title in sentence case. One idea per note. Lead with the idea; keep history, anecdotes
+  and backstory only where they explain it. Never summarize the whole source, never
   write one note per chapter or section. A one-line tip is never a note of its own.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, no source
   section and no row numbers: the tool adds the source and the related links.
