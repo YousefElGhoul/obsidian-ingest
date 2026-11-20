@@ -38,9 +38,11 @@ To install, repeat the install, or undo it, follow
    trivia (dates, company history, where a name comes from, who did what first), a recap
    of the whole source or one of its sections, and predictions or forecasts unless the
    source argues for them and you attribute them. Keep only the ideas most worth
-   rereading; for most sources that is a few, sometimes none. Small facts about one tool or API belong together in
+   rereading; for most sources that is a few, sometimes none. Test each one: finish
+   "someone would look this up when …" with a concrete situation. If you can't, drop it. Small facts about one tool or API belong together in
    one note about the technique they serve, not a note each. Compare your list before
-   writing: if two ideas need the same background to explain, they are one note.
+   writing: if two ideas need the same background to explain, they are one note. Never
+   write an overview of the whole source next to notes on its parts.
 4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with
@@ -90,8 +92,8 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
 
 - Title in sentence case. One idea per note. Never summarize the whole source, never
   write one note per chapter or section. A one-line tip is never a note of its own.
-- No "Summary", "Takeaways", "How to apply" or disclaimer sections, and no source
-  section: the tool adds the source and the related links.
+- No "Summary", "Takeaways", "How to apply" or disclaimer sections, no source
+  section and no row numbers: the tool adds the source and the related links.
 - Also pass `cite`: the `source_index` (the first value of each row) of every row the
   note uses, no others (at most 200). The tool turns them into video links or article
   section names. Every timestamp in the body must be the `start` of a row you cite.
@@ -99,7 +101,9 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
 - Keep a link from the source (`[text](url)` in a row) when a reader would follow it.
 - Write in the language the user writes in, even when the source is in another one.
 - Only what the source says. Attribute opinions by the person, channel or author name
-  the source gives, not "the speaker" or "the author". Rankings, "best" and "replace X with Y"
+  the source gives, not "the speaker" or "the author". Write the source's claims as its
+  claims, with their conditions: numbers, speed, security, "replaces X", and forecasts
+  ("In 2015, Tim Urban expected …"). Never turn an example into a rule or a guarantee. Rankings, "best" and "replace X with Y"
   claims are opinions too: "The Coding Sloth ranks verification highest", not
   "Verification is the most important workflow". Do not end with a moral or lesson of your
   own; if you add anything, label it as your comment.
