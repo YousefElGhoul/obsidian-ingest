@@ -89,6 +89,9 @@ class YouTubeProvider:
             links.append(f"[{format_timestamp(seconds)}]({url})")
         return Citation("Relevant timestamps", ", ".join(links))
 
+    def attribution(self, metadata: SourceMetadata) -> tuple[tuple[str, str], ...]:
+        return (("Creator", metadata.creator_name),) if metadata.creator_name else ()
+
     def thumbnail(self, metadata: SourceMetadata) -> tuple[bytes, str]:
         return fetch_youtube_thumbnail(metadata.source_id)
 

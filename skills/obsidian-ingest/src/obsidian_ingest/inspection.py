@@ -1,6 +1,7 @@
 """Human-readable source and SponsorBlock diagnostics without transcript partitioning."""
 
 from obsidian_ingest.diagnostics import source_diagnostics
+from obsidian_ingest.extractor import SourceKind
 from obsidian_ingest.extractor.metadata import categorize_content
 from obsidian_ingest.extractor.transcript import format_timestamp
 from obsidian_ingest.filtering import ExcludedSegment
@@ -75,8 +76,43 @@ def _caption_lines(source: Source) -> list[str]:
     return lines
 
 
+def _format_text_inspection(source: Source) -> str:
+    """Text sources: metadata, evidence, exclusions and the retained atoms by section."""
+    import json
+
+    metadata = source.metadata
+    filtered = source.filtered_transcript
+    lines = [
+        f"Source: {metadata.original_url}",
+        f"Title: {metadata.title or '(unknown)'}",
+        f"Author: {metadata.creator_name or '(unknown)'}",
+        f"Published: {metadata.published_at.isoformat() if metadata.published_at else 'unknown'}",
+        f"Language: {metadata.language or 'unknown'}",
+        f"Provider: {metadata.provider}",
+        f"Sections: {len(metadata.chapters)}",
+        (
+            f"Atoms: {len(source.transcript.segments)} original, "
+            f"{len(filtered.retained_indices)} retained, {len(filtered.excluded)} excluded"
+        ),
+        "Evidence: " + json.dumps(source_diagnostics(source)["evidence"], ensure_ascii=False),
+        "",
+        "Exclusions:",
+    ]
+    for exclusion in filtered.ranges:
+        lines.append(f"[{exclusion.start}] {exclusion.reason} ({exclusion.provenance})")
+    if not filtered.ranges:
+        lines.append("None.")
+    lines.extend(["", "Retained atoms (not semantic chunks):"])
+    for source_index in filtered.retained_indices:
+        segment = source.transcript.segments[source_index]
+        lines.append(f"[{source_index}] [{segment.section or '-'}] {segment.kind}: {segment.text}")
+    return "\n".join(lines)
+
+
 def format_source_inspection(source: Source) -> str:
     """Show the retained source view and filtering outcome, without creating chunks."""
+    if source.transcript.kind == SourceKind.TEXT:
+        return _format_text_inspection(source)
     metadata = source.metadata
     lookup = source.exclusion_lookup
     filtered = source.filtered_transcript

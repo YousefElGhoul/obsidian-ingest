@@ -33,7 +33,7 @@ def _mac(source: Source, read_through: int) -> str:
     digest.update(source.metadata.source_id.encode())
     for index, segment in read_transcript_entries(source):
         # NUL delimiters distinguish adjacent fields while retaining original atom text.
-        digest.update(f"\0{index}\0{segment.start!r}\0{segment.text}".encode())
+        digest.update(f"\0{index}\0{segment.start!r}\0{segment.section!r}\0{segment.text}".encode())
     digest.update(f"\0{read_through}".encode())
     return digest.hexdigest()[:16]
 

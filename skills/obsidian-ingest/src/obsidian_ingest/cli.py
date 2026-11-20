@@ -6,6 +6,7 @@ CLI paths replace MCP note handles; application validation and results stay shar
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict
@@ -37,7 +38,8 @@ def print_transcript(url: str) -> None:
     print(f"Segments: {len(transcript.segments)}")
     print()
     for segment in transcript.segments:
-        print(f"[{format_timestamp(segment.start)}] {segment.text}")
+        where = segment.section or "-" if segment.start is None else format_timestamp(segment.start)
+        print(f"[{where}] {segment.text}")
 
 
 TOOL_COMMANDS = frozenset(
@@ -93,6 +95,7 @@ def _run_mcp(
                 "config/settings.example.toml to config/settings.toml and edit it"
             )
         vault_settings = load_vault_settings(selected_config)
+        _configure_providers(selected_config)
         settings = DraftWriterSettings(vault_settings.root, vault_settings.draft_folder)
         server = create_server(settings, cache_db=cache_db, vault_settings=vault_settings)
     else:
@@ -100,7 +103,19 @@ def _run_mcp(
             raise ValueError(f"Vault path must be an existing directory: {vault_path}")
         settings = DraftWriterSettings(vault_path, draft_folder or "00 Inbox/AI Drafts")
         server = create_server(settings, cache_db=cache_db)
+    # Stdio MCP servers log to stderr; article acquisition logs one line per stage there.
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="obsidian-ingest %(message)s")
     asyncio.run(server.run_stdio_async())
+
+
+def _configure_providers(config_path: Path) -> None:
+    """Apply the trusted article network policy from the settings file, if any."""
+    from dataclasses import asdict
+
+    from obsidian_ingest.config import load_article_settings
+    from obsidian_ingest.extractor.providers import configure
+
+    configure(asdict(load_article_settings(config_path)))
 
 
 def _emit(value: Any) -> None:
@@ -147,6 +162,10 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--include-sponsors", action="store_true")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--cache-db", type=Path)
+    parser.add_argument(
+        "--config", type=Path, help="Trusted settings with an optional [articles] network policy"
+    )
+    parser.add_argument("--verbose", action="store_true", help="Log acquisition stages to stderr")
 
     parser = subparsers.add_parser(
         "get-source-overview", help="Get source metadata and filtering status"
@@ -384,6 +403,9 @@ def main() -> None:
 def _run_tool_command(args) -> Any:
     """Run one tool command through the same application functions as MCP."""
     if args.command == "ingest-source":
+        _configure_providers(args.config or default_config_path())
+        if args.verbose:
+            logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
         return responses.ingest(
             _cache(args), args.url, exclude_sponsors=not args.include_sponsors, refresh=args.refresh
         )

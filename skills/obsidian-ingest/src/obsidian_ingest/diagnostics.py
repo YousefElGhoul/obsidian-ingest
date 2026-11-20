@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from obsidian_ingest.extractor import SourceKind
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.transcript import Transcript
 
@@ -122,6 +123,19 @@ def source_diagnostics(source: "Source", *, cached: bool | None = None) -> dict[
     acquisition = source.acquisition
     track = acquisition.caption if acquisition is not None else None
     transcript = source.transcript
+    acquired = {
+        "acquired_at": acquisition.acquired_at.isoformat() if acquisition else None,
+        "extractor": acquisition.extractor if acquisition else None,
+        "extractor_version": acquisition.extractor_version if acquisition else None,
+        "reused_from_cache": cached,
+    }
+    if transcript.kind == SourceKind.TEXT:
+        evidence = dict(acquisition.evidence or {}) if acquisition is not None else {}
+        return {
+            "evidence": {"kind": "text", "language": transcript.language} | evidence,
+            "acquisition": acquired,
+            "timing": None,
+        }
     return {
         "evidence": {
             "kind": "captions",

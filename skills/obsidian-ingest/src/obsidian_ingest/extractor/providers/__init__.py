@@ -8,22 +8,14 @@ specific provider. Adding a source type means adding a package and one registry 
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cache
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from obsidian_ingest.extractor import Provider
+from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, OriginalCaption
 from obsidian_ingest.extractor.metadata import ExclusionLookup, SourceMetadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
-
-
-class SourceKind(StrEnum):
-    """How a source's atoms are located: by time (video) or by position in a text."""
-
-    TIMED = "timed"
-    TEXT = "text"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +31,15 @@ class ProviderContent:
 
 @dataclass(frozen=True, slots=True)
 class Citation:
-    """A rendered `## Source` citation line: a label and provider-built Markdown."""
+    """A rendered `## Source` citation line: a label and its value.
+
+    ``literal`` values (such as section names taken from a page) are untrusted text
+    that the writer escapes; otherwise the value is provider-built Markdown (links).
+    """
 
     label: str
     value: str
+    literal: bool = False
 
 
 class SourceProvider(Protocol):
@@ -80,6 +77,10 @@ class SourceProvider(Protocol):
         self, metadata: SourceMetadata, segments: tuple[TranscriptSegment, ...]
     ) -> Citation | None:
         """Render the cited atoms as one `## Source` line, or None when nothing to show."""
+        ...
+
+    def attribution(self, metadata: SourceMetadata) -> tuple[tuple[str, str], ...]:
+        """Labelled attribution lines (such as Creator or Author); the writer escapes them."""
         ...
 
     def thumbnail(self, metadata: SourceMetadata) -> tuple[bytes, str]:
@@ -122,6 +123,9 @@ class RecognizedProvider:
     ) -> Citation | None:
         return None
 
+    def attribution(self, metadata: SourceMetadata) -> tuple[tuple[str, str], ...]:
+        return ()
+
 
 def _youtube() -> SourceProvider:
     from obsidian_ingest.extractor.providers.youtube.provider import YOUTUBE
@@ -140,15 +144,29 @@ def _tiktok() -> SourceProvider:
     )
 
 
-# Ordered: the first provider whose matches_url accepts a URL handles it. A catch-all
-# provider (such as articles) must come last. Factories keep heavy imports lazy.
-_FACTORIES: tuple[Callable[[], SourceProvider], ...] = (_youtube, _instagram, _tiktok)
+def _article() -> SourceProvider:
+    from obsidian_ingest.extractor.providers.article.provider import ARTICLE
+
+    return ARTICLE
+
+
+# Ordered: the first provider whose matches_url accepts a URL handles it. The article
+# provider accepts any http(s) URL, so it must come last. Factories keep imports lazy.
+_FACTORIES: tuple[Callable[[], SourceProvider], ...] = (_youtube, _instagram, _tiktok, _article)
 
 
 @cache
 def registry() -> tuple[SourceProvider, ...]:
     """Return every registered provider, in resolution order."""
     return tuple(factory() for factory in _FACTORIES)
+
+
+def configure(options: dict[str, Any]) -> None:
+    """Pass trusted settings to every provider that accepts configuration."""
+    for provider in registry():
+        configure_provider = getattr(provider, "configure", None)
+        if configure_provider is not None:
+            configure_provider(options)
 
 
 def resolve_url(url: str) -> SourceProvider:

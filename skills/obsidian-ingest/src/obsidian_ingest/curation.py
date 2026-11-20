@@ -74,6 +74,7 @@ def create_edit_suggestion(
     reasoning: str,
     proposed_content: str,
     citation: Citation | None = None,
+    attribution: tuple[tuple[str, str], ...] | None = None,
 ) -> DraftResult:
     """Write a human-review-only proposal linked to an unchanged existing note."""
     if (
@@ -120,5 +121,6 @@ def create_edit_suggestion(
         contents=contents,
         source=source,
         citation=citation,
+        attribution=attribution,
         leading_link=f"[[{target.path}]]",
     )

@@ -35,7 +35,7 @@ _BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
 _MAX_METADATA_CHARS = 300
 
 
-def _inert(value: str) -> str:
+def _inert(value: str, limit: int = _MAX_METADATA_CHARS) -> str:
     """Render untrusted source metadata as one line of literal text.
 
     Titles and creator names come from the source, so they must not inject wikilinks,
@@ -44,8 +44,8 @@ def _inert(value: str) -> str:
     text = _BIDI_CONTROLS.sub("", value)
     text = "".join(" " if unicodedata.category(char) == "Cc" else char for char in text)
     text = " ".join(text.split())
-    if len(text) > _MAX_METADATA_CHARS:
-        text = text[: _MAX_METADATA_CHARS - 1].rstrip() + "…"
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
     return re.sub(r"([\\`\[\]<>|#])", r"\\\1", text)
 
 
@@ -152,6 +152,7 @@ def _render_draft(
     citation: Citation | None = None,
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
+    attribution: tuple[tuple[str, str], ...] | None = None,
 ) -> bytes:
     """Validate curated text and return UTF-8 Markdown with writer-owned attribution."""
     if not isinstance(contents, str):
@@ -207,11 +208,16 @@ def _render_draft(
 
     lines = ["## Source", "", f"- Source: {_inert(source.title or source.source_id)}"]
     lines.append(f"- URL: {single_line(source.original_url)}")
-    if source.creator_name:
-        lines.append(f"- Creator: {_inert(source.creator_name)}")
+    if attribution is None:
+        attribution = (("Creator", source.creator_name),) if source.creator_name else ()
+    for label, value in attribution:
+        if not isinstance(label, str) or not label.isprintable() or not isinstance(value, str):
+            raise TypeError("attribution must be (label, value) text pairs")
+        lines.append(f"- {label}: {_inert(value)}")
     if citation is not None:
         # Provider-rendered from validated atoms, so its Markdown links are intended.
-        lines.append(f"- {single_line(citation.label)}: {single_line(citation.value)}")
+        value = _inert(citation.value, 1200) if citation.literal else single_line(citation.value)
+        lines.append(f"- {single_line(citation.label)}: {value}")
     separator = "" if not rendered_body else "\n" if rendered_body.endswith("\n") else "\n\n"
     return f"{rendered_body}{separator}{'\n'.join(lines)}\n".encode()
 
@@ -429,6 +435,7 @@ def create_draft(
     citation: Citation | None = None,
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
+    attribution: tuple[tuple[str, str], ...] | None = None,
 ) -> DraftResult:
     """Create a new draft beneath the configured folder, never modifying a note.
 
@@ -447,7 +454,7 @@ def create_draft(
     if isinstance(contents, str):
         contents = _strip_trailing_source_section(contents)
     parts = _draft_folder_parts(settings.draft_folder)
-    payload = _render_draft(contents, source, citation, related_notes, leading_link)
+    payload = _render_draft(contents, source, citation, related_notes, leading_link, attribution)
     _require_writer_capabilities()
 
     vault_path = Path(settings.vault_path)

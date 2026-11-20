@@ -14,6 +14,7 @@ from typing import Any, Literal
 from obsidian_ingest.curation import create_edit_suggestion, verified_related_notes
 from obsidian_ingest.diagnostics import source_diagnostics
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
+from obsidian_ingest.extractor import SourceKind
 from obsidian_ingest.extractor.providers import (
     Citation,
     UnsupportedOperation,
@@ -105,15 +106,18 @@ def source_overview(source: Source, *, cached: bool | None = None) -> dict[str, 
     """
     overview = get_source_overview(source)
     metadata = overview.metadata
+    provider = get_provider(metadata.provider)
     return {
         "title": metadata.title,
         "creator": metadata.creator_name,
         "source_url": metadata.original_url,
         "canonical_url": metadata.canonical_url,
+        "published_at": metadata.published_at.isoformat() if metadata.published_at else None,
+        "language": metadata.language,
         "duration_seconds": metadata.duration_seconds,
         "description": metadata.description,
         "provider": metadata.provider.value,
-        "kind": get_provider(metadata.provider).kind.value,
+        "kind": provider.kind.value,
         "native_format": metadata.native_format.value,
         "content_category": (
             overview.content_category.value if overview.content_category is not None else None
@@ -128,6 +132,7 @@ def source_overview(source: Source, *, cached: bool | None = None) -> dict[str, 
             "retained_segments": overview.retained_segment_count,
             "excluded_segments": overview.excluded_segment_count,
         },
+        "details": provider.encode_details(metadata.provider_details),
         "diagnostics": source_diagnostics(source, cached=cached),
         "notice": UNTRUSTED_NOTICE,
     }
@@ -183,20 +188,21 @@ def sections(source: Source) -> list[dict[str, Any]]:
     ``first_index`` is the source_index of the section's first retained row (None when
     every row is excluded) and ``row_count`` counts its retained rows.
     """
+    timed = source.transcript.kind == SourceKind.TIMED
     result = []
     for index, chapter in enumerate(list_chapters(source)):
         entries = read_chapter_entries(source, index)
-        result.append(
-            {
-                "index": index,
-                "title": chapter.title,
-                "path": chapter.title,
-                "first_index": entries[0][0] if entries else None,
-                "row_count": len(entries),
-                "start": chapter.start,
-                "end": chapter.end,
-            }
-        )
+        item = {
+            "index": index,
+            # Text section titles are heading paths; the last part is the heading itself.
+            "title": chapter.title.rsplit(" › ", 1)[-1],
+            "path": chapter.title,
+            "first_index": entries[0][0] if entries else None,
+            "row_count": len(entries),
+        }
+        if timed:
+            item |= {"start": chapter.start, "end": chapter.end}
+        result.append(item)
     return result
 
 
@@ -220,16 +226,24 @@ def exclusions(source: Source) -> list[dict[str, Any]]:
 
 
 SEGMENT_FIELDS = ("source_index", "start", "duration", "text")
+TEXT_SEGMENT_FIELDS = ("source_index", "section", "kind", "text")
+
+
+def _row(source_index: int, segment: TranscriptSegment) -> list[Any]:
+    """One compact row: times for timed atoms, section and block kind for text atoms."""
+    if segment.start is None:
+        return [source_index, segment.section, segment.kind, segment.text]
+    return [source_index, segment.start, segment.duration, segment.text]
 
 
 def _segment_page_data(
-    segments: list[list[Any]], offset: int, limit: int, total: int
+    segments: list[list[Any]], offset: int, limit: int, total: int, fields: tuple[str, ...]
 ) -> dict[str, Any]:
     """Build compact rows' paging metadata without changing original source indices."""
     next_offset = offset + len(segments)
     return {
         # Rows instead of objects: repeating four keys per atom tripled a page's size.
-        "fields": list(SEGMENT_FIELDS),
+        "fields": list(fields),
         "segments": segments,
         "offset": offset,
         "limit": limit,
@@ -255,10 +269,11 @@ def segment_page(
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
     limit = min(limit, MAX_PAGE_SIZE)
+    fields = TEXT_SEGMENT_FIELDS if entries and entries[0][1].start is None else SEGMENT_FIELDS
     segments: list[list[Any]] = []
     for source_index, segment in entries[offset : offset + limit]:
-        segments.append([source_index, segment.start, segment.duration, segment.text])
-        page = _segment_page_data(segments, offset, limit, len(entries)) | (extra or {})
+        segments.append(_row(source_index, segment))
+        page = _segment_page_data(segments, offset, limit, len(entries), fields) | (extra or {})
         if not fits_envelope(page, MAX_PAGE_ENVELOPE_BYTES):
             segments.pop()
             if not segments:
@@ -267,7 +282,7 @@ def segment_page(
                     f"{MAX_PAGE_ENVELOPE_BYTES}-byte response limit"
                 )
             break
-    return _segment_page_data(segments, offset, limit, len(entries)) | (extra or {})
+    return _segment_page_data(segments, offset, limit, len(entries), fields) | (extra or {})
 
 
 def source_page(
@@ -458,6 +473,7 @@ def write_draft(
         filename=filename,
         source=source.metadata,
         citation=citation,
+        attribution=get_provider(source.metadata.provider).attribution(source.metadata),
         related_notes=verified,
     )
     return _path_result(result)
@@ -489,5 +505,6 @@ def write_edit_suggestion(
         reasoning=reasoning,
         proposed_content=proposed_content,
         citation=citation,
+        attribution=get_provider(source.metadata.provider).attribution(source.metadata),
     )
     return _path_result(result)

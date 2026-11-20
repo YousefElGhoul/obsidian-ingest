@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from math import isfinite
 
+from obsidian_ingest.extractor import SourceKind
 from obsidian_ingest.extractor.metadata import (
     Chapter,
     ExcludedRange,
@@ -31,10 +32,53 @@ class FilteredTranscript:
     excluded: tuple[ExcludedSegment, ...]
 
 
+def _filter_text(transcript: Transcript, ranges: tuple[ExcludedRange, ...]) -> FilteredTranscript:
+    """Exclude text atoms by index membership in half-open [start, end) index ranges."""
+    for index, exclusion in enumerate(ranges):
+        if (
+            isinstance(exclusion.start, bool)
+            or not isinstance(exclusion.start, int)
+            or isinstance(exclusion.end, bool)
+            or not isinstance(exclusion.end, int)
+            or not 0 <= exclusion.start < exclusion.end <= len(transcript.segments)
+            or not isinstance(exclusion.reason, str)
+            or not exclusion.reason
+            or not isinstance(exclusion.provenance, str)
+            or not exclusion.provenance
+        ):
+            raise ValueError(f"Invalid exclusion range {index}")
+    retained = []
+    excluded = []
+    for index, segment in enumerate(transcript.segments):
+        if (
+            segment.start is not None
+            or segment.duration is not None
+            or not isinstance(segment.kind, str)
+            or not segment.kind
+            or (segment.section is not None and not isinstance(segment.section, str))
+        ):
+            raise ValueError(f"Invalid text atom at segment {index}")
+        matches = tuple(
+            range_index
+            for range_index, exclusion in enumerate(ranges)
+            if exclusion.start <= index < exclusion.end
+        )
+        if matches:
+            excluded.append(ExcludedSegment(index, matches))
+        else:
+            retained.append(index)
+    return FilteredTranscript(transcript, ranges, tuple(retained), tuple(excluded))
+
+
 def filter_transcript(
     transcript: Transcript, ranges: tuple[ExcludedRange, ...]
 ) -> FilteredTranscript:
-    """Exclude atoms by start-time membership in half-open ranges, without editing atoms."""
+    """Exclude atoms by start-time membership in half-open ranges, without editing atoms.
+
+    Text sources have no times: their ranges are half-open source-index ranges instead.
+    """
+    if transcript.kind == SourceKind.TEXT:
+        return _filter_text(transcript, ranges)
     for index, exclusion in enumerate(ranges):
         if (
             isinstance(exclusion.start, bool)

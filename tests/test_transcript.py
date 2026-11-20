@@ -229,9 +229,9 @@ def test_resolve_url_by_host(url: str, provider: Provider) -> None:
     ],
     ids=["unknown", "suffix-spoof", "prefix-spoof", "path-spoof", "userinfo-spoof"],
 )
-def test_unknown_or_spoofed_provider_is_rejected(url: str) -> None:
-    with pytest.raises(ValueError):
-        resolve_url(url)
+def test_unknown_or_spoofed_hosts_are_never_youtube(url: str) -> None:
+    # Any other http(s) URL is an article; spoofed YouTube hosts must not be videos.
+    assert resolve_url(url).name == Provider.ARTICLE
 
 
 def test_print_transcript_with_mocked_extraction(

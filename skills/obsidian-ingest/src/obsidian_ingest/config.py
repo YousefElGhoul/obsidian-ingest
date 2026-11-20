@@ -40,6 +40,42 @@ def _relative_parts(value: object, label: str) -> tuple[str, ...]:
     return parts
 
 
+@dataclass(frozen=True, slots=True)
+class ArticleSettings:
+    """Trusted network policy for fetching web pages; never set by a tool argument."""
+
+    allow_private_network: bool = False
+    extra_ports: tuple[int, ...] = ()
+
+
+def article_settings(data: dict) -> ArticleSettings:
+    """Validate the optional `[articles]` table of parsed configuration."""
+    section = data.get("articles", {})
+    if not isinstance(section, dict) or set(section) - {"allow_private_network", "extra_ports"}:
+        raise ValueError("[articles] accepts only allow_private_network and extra_ports")
+    private = section.get("allow_private_network", False)
+    ports = section.get("extra_ports", [])
+    if not isinstance(private, bool):
+        raise TypeError("articles.allow_private_network must be true or false")
+    if not isinstance(ports, list) or any(
+        isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+        for port in ports
+    ):
+        raise ValueError("articles.extra_ports must be an array of port numbers")
+    return ArticleSettings(private, tuple(sorted(set(ports))))
+
+
+def load_article_settings(path: Path) -> ArticleSettings:
+    """Read only the article network policy; a missing file means the safe defaults."""
+    if not path.is_file():
+        return ArticleSettings()
+    try:
+        with path.open("rb") as file:
+            return article_settings(tomllib.load(file))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"Cannot load trusted configuration: {error}") from error
+
+
 def load_vault_settings(path: Path) -> VaultSettings:
     """Load the strict trusted `[vault]` section from a TOML configuration file."""
     try:
@@ -47,8 +83,13 @@ def load_vault_settings(path: Path) -> VaultSettings:
             data = tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"Cannot load trusted configuration: {error}") from error
-    if set(data) != {"vault"} or not isinstance(data["vault"], dict):
-        raise ValueError("Configuration must contain only a [vault] table")
+    if (
+        "vault" not in data
+        or set(data) - {"vault", "articles"}
+        or not isinstance(data["vault"], dict)
+    ):
+        raise ValueError("Configuration must contain a [vault] table and optionally [articles]")
+    article_settings(data)
     section = data["vault"]
     allowed_keys = {"root", "allowed", "excluded", "draft_folder"}
     if set(section) - allowed_keys:

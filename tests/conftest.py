@@ -25,6 +25,19 @@ def isolated_host_state(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
 
 
+@pytest.fixture(autouse=True)
+def no_live_article_fetches(monkeypatch):
+    """Automated tests never use the network: the default article fetcher cannot resolve."""
+    from obsidian_ingest.extractor.http import Fetcher, FetchError
+    from obsidian_ingest.extractor.providers.article import provider
+
+    def offline(host: str, port: int) -> list[str]:
+        raise FetchError("DNS_FAILED", f"tests are offline ({host})")
+
+    monkeypatch.setattr(provider, "make_fetcher", lambda: Fetcher(resolver=offline))
+    monkeypatch.setattr(provider, "_policy", dict(provider._policy))
+
+
 @pytest.fixture
 def sample_source() -> Source:
     """A 600 s source with one chapter, two atoms sharing a start, and one sponsor atom."""

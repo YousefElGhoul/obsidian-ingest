@@ -10,10 +10,12 @@ MAX_CAPTION_BYTES = 16 * 1024 * 1024
 
 
 class CaptionFormat(StrEnum):
-    """Supported caption response formats, in acquisition preference order."""
+    """Formats of retained original responses: captions first, then text sources."""
 
     JSON3 = "json3"
     VTT = "vtt"
+    HTML = "html"
+    MARKDOWN = "markdown"
 
 
 class CaptionError(ValueError):
@@ -45,12 +47,18 @@ class OriginalCaption:
 
 @dataclass(frozen=True, slots=True)
 class Acquisition:
-    """When and with which extractor one capture was made; unknown version stays None."""
+    """When and with which extractor one capture was made; unknown version stays None.
+
+    Caption sources describe their caption track; text sources leave it None and record
+    provider evidence instead (method, fallback attempts, quality, encoding, ...), a
+    JSON-serializable mapping that diagnostics report as it is.
+    """
 
     acquired_at: datetime
     extractor: str
     extractor_version: str | None
-    caption: CaptionTrack
+    caption: CaptionTrack | None
+    evidence: dict | None = None
 
 
 def describe_original(original: OriginalCaption, is_translated: bool | None) -> CaptionTrack:

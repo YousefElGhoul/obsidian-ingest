@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from math import isfinite
 
 from obsidian_ingest.diagnostics import TimingObservations, observe_timing
-from obsidian_ingest.extractor import ContentCategory
+from obsidian_ingest.extractor import ContentCategory, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, OriginalCaption
 from obsidian_ingest.extractor.metadata import (
     Chapter,
@@ -47,7 +47,7 @@ class SourceOverview:
     caption_language: str
     caption_generated: bool
     acquisition: Acquisition | None
-    timing: TimingObservations
+    timing: TimingObservations | None
 
 
 def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
@@ -79,7 +79,11 @@ def get_source_overview(source: Source) -> SourceOverview:
         caption_language=source.transcript.language,
         caption_generated=source.transcript.is_generated,
         acquisition=source.acquisition,
-        timing=observe_timing(source.metadata, source.transcript),
+        timing=(
+            observe_timing(source.metadata, source.transcript)
+            if source.transcript.kind == SourceKind.TIMED
+            else None
+        ),
     )
 
 
@@ -111,6 +115,11 @@ def read_transcript_entries(
         raise ValueError("end must not precede start")
     if not isinstance(include_excluded, bool):
         raise TypeError("include_excluded must be a boolean")
+    if source.transcript.kind == SourceKind.TEXT and (start is not None or end is not None):
+        raise ValueError(
+            "start and end are seconds and apply only to videos; read a text source in "
+            "order, or one section with read_section"
+        )
 
     indices = (
         range(len(source.transcript.segments))
@@ -162,6 +171,13 @@ def read_chapter_entries(
     if not 0 <= chapter_index < len(chapters):
         raise IndexError(f"section_index {chapter_index} out of range for {len(chapters)} sections")
     chapter = chapters[chapter_index]
+    if source.transcript.kind == SourceKind.TEXT:
+        # Text sections are half-open source-index ranges, not time ranges.
+        return tuple(
+            entry
+            for entry in read_transcript_entries(source, include_excluded=include_excluded)
+            if chapter.start <= entry[0] < chapter.end
+        )
     return read_transcript_entries(
         source,
         start=chapter.start,

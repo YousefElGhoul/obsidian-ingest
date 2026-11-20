@@ -950,10 +950,10 @@ def test_ingest_and_cache_errors_have_the_same_meaning_in_cli_and_mcp(
             {"url": URL},
         ),
         (
-            ("ingest-source", "https://example.com/video", "--cache-db", str(database)),
+            ("ingest-source", "ftp://example.com/video", "--cache-db", str(database)),
             server,
             "ingest_source",
-            {"url": "https://example.com/video"},
+            {"url": "ftp://example.com/video"},
         ),
         (
             ("get-source-overview", "abc", "--cache-db", str(old)),

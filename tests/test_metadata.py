@@ -288,7 +288,7 @@ def test_get_youtube_metadata_rejects_non_video_results(
     [
         "https://www.instagram.com/reel/abc/",
         "https://vm.tiktok.com/abc/",
-        "https://example.com/video",
+        "ftp://example.com/video",
     ],
 )
 def test_unsupported_sources_have_no_acquiring_provider(

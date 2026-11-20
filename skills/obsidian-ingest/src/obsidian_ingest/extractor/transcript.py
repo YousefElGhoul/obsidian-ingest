@@ -2,14 +2,23 @@
 
 from dataclasses import dataclass
 
+from obsidian_ingest.extractor import SourceKind
+
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
-    """One source caption event or cue, with start and duration in seconds."""
+    """One source atom, unchanged from the source.
+
+    Timed atoms (caption events or cues) have start and duration in seconds. Text atoms
+    (an article's paragraphs, list items, code blocks...) have no times; they carry
+    their heading path as ``section`` and their block ``kind`` instead.
+    """
 
     text: str
-    start: float
-    duration: float
+    start: float | None = None
+    duration: float | None = None
+    section: str | None = None
+    kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +30,7 @@ class Transcript:
     language_code: str
     is_generated: bool
     segments: tuple[TranscriptSegment, ...]
+    kind: SourceKind = SourceKind.TIMED
 
 
 TIMESTAMP_GAP_SECONDS = 30

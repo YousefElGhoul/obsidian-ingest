@@ -17,7 +17,7 @@ from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
-from obsidian_ingest.extractor import Provider
+from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import (
     Acquisition,
     CaptionFormat,
@@ -119,13 +119,10 @@ def _decode_acquisition(data: dict | None) -> Acquisition | None:
     """Restore optional provenance and reject malformed caption identity fields."""
     if data is None:
         return None
+    evidence = data["evidence"]
+    if evidence is not None and not isinstance(evidence, dict):
+        raise ValueError("Invalid acquisition evidence")
     caption = data["caption"]
-    track = CaptionTrack(
-        format=CaptionFormat(caption["format"]),
-        is_translated=caption["is_translated"],
-        payload_bytes=caption["payload_bytes"],
-        payload_sha256=caption["payload_sha256"],
-    )
     acquired_at = _date(data["acquired_at"])
     if acquired_at is None or acquired_at.tzinfo is None:
         raise ValueError("Missing acquisition time")
@@ -134,6 +131,14 @@ def _decode_acquisition(data: dict | None) -> Acquisition | None:
     version = data["extractor_version"]
     if version is not None and (not isinstance(version, str) or not version):
         raise ValueError("Invalid extractor version")
+    if caption is None:
+        return Acquisition(acquired_at, data["extractor"], version, None, evidence)
+    track = CaptionTrack(
+        format=CaptionFormat(caption["format"]),
+        is_translated=caption["is_translated"],
+        payload_bytes=caption["payload_bytes"],
+        payload_sha256=caption["payload_sha256"],
+    )
     if track.is_translated is not None and not isinstance(track.is_translated, bool):
         raise ValueError("Invalid caption translation status")
     size = track.payload_bytes
@@ -141,7 +146,7 @@ def _decode_acquisition(data: dict | None) -> Acquisition | None:
         raise ValueError("Invalid caption payload size")
     if not isinstance(track.payload_sha256, str) or len(track.payload_sha256) != 64:
         raise ValueError("Invalid caption payload checksum")
-    return Acquisition(acquired_at, data["extractor"], version, track)
+    return Acquisition(acquired_at, data["extractor"], version, track, evidence)
 
 
 def _decode(payload: str) -> Source:
@@ -165,6 +170,7 @@ def _decode(payload: str) -> Source:
     transcript_data["segments"] = tuple(
         TranscriptSegment(**segment) for segment in transcript_data["segments"]
     )
+    transcript_data["kind"] = SourceKind(transcript_data["kind"])
     transcript = Transcript(**transcript_data)
     lookup_data = dict(data["exclusion_lookup"])
     lookup_data["ranges"] = tuple(ExcludedRange(**item) for item in lookup_data["ranges"])
@@ -231,7 +237,18 @@ def _original_for_storage(source: Source) -> OriginalCaption | None:
     original = source.original_caption
     if original is None:
         return None
-    track = source.acquisition.caption if source.acquisition is not None else None
+    acquisition = source.acquisition
+    track = acquisition.caption if acquisition is not None else None
+    if track is None and acquisition is not None and acquisition.evidence:
+        # Text sources record their original payload's identity in their evidence.
+        evidence = acquisition.evidence
+        if (
+            evidence.get("original_payload_format") != original.format.value
+            or evidence.get("original_payload_bytes") != len(original.data)
+            or evidence.get("original_payload_sha256") != original.sha256
+        ):
+            raise ValueError("Original payload does not match its acquisition record")
+        return original
     if (
         track is None
         or track.format != original.format
