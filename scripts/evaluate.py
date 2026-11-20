@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 
 # Default manifest/report locations and the launched server are this repository checkout.
 ROOT = Path(__file__).resolve().parents[1]
@@ -228,8 +228,14 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
 
 async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: float) -> int:
     """Inspect URLs serially through a local server; return a nonzero status on any failure."""
-    # Source tools need a configured vault, but evaluation must not use a real user's vault.
-    with TemporaryDirectory(prefix="obsidian-ingest-evaluation-") as temporary_vault:
+    # Source tools need a configured vault, but evaluation must not use a real user's vault
+    # or source cache. The MCP client passes the server only a minimal environment, so the
+    # temporary cache location is passed explicitly.
+    with TemporaryDirectory(prefix="obsidian-ingest-evaluation-") as temporary_root:
+        temporary_vault = str(Path(temporary_root, "vault"))
+        temporary_state = Path(temporary_root, "state")
+        Path(temporary_vault).mkdir()
+        temporary_state.mkdir()
         server = StdioServerParameters(
             command="uv",
             args=[
@@ -242,6 +248,7 @@ async def run_batch(urls: tuple[str, ...], output_dir: Path, delay_seconds: floa
                 temporary_vault,
             ],
             cwd=str(SKILL_ROOT),
+            env={**get_default_environment(), "XDG_STATE_HOME": str(temporary_state)},
         )
         async with (
             stdio_client(server) as (read_stream, write_stream),

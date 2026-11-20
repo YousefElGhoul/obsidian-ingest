@@ -246,6 +246,11 @@ def test_batch_reports_each_source_and_returns_failure_when_any_failed(
 
     (server,) = servers
     assert server.args[:2] == ["run", "--directory"] and "--vault" in server.args
+    vault = Path(server.args[server.args.index("--vault") + 1])
+    state = Path(server.env["XDG_STATE_HOME"])
+    assert state.parent == vault.parent and state != vault
+    assert not state.parent.exists()  # the temporary cache is removed with the vault
+    assert server.env["PATH"] == os.environ["PATH"]
     assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
         f"{report_stem(url)}.json" for url in (_URL, failing_url)
     )
