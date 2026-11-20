@@ -36,8 +36,9 @@ authorizes permission changes.
   page's source URL. Clips are limited to 2,000,000 characters and cannot use
   `refresh` / `--refresh`. Reuse requires the same originating vault, path,
   revision and exclusion option. Every tool that loads a cached clip checks that
-  the current settings can open its path in the originating vault, not just a
-  matching path in another vault. A URL ingest treats an inaccessible clip as a
+  the current settings can open its path in the originating vault, identified by
+  its resolved root and that directory's device and inode. Clips without a matching
+  vault identity are inaccessible. A URL ingest treats an inaccessible clip as a
   cache miss; a successful web fetch replaces it, while failure leaves it stored.
 - Diagnostics are under `overview.diagnostics` on `ingest_source` results and
   directly under `diagnostics` on `get_source_overview` results:
@@ -75,8 +76,8 @@ authorizes permission changes.
   can pass a token through unchanged. `read_section` neither takes nor returns one.
   `create_draft` and `create_edit_suggestion` require the final token and fail with
   `INCOMPLETE_READ` (naming the offset to continue from) until it covers the whole
-  retained source. A successful refresh or re-clip that replaces the capture
-  invalidates earlier tokens even if the rows match; read again from offset 0.
+  retained source. A read token is bound to the stored capture. Any republication
+  invalidates earlier tokens, even if the payload is identical; read again from offset 0.
   A source-page `limit` above 200 is capped at 200.
   Each page lists its `fields` once. A video row is `[source_index, start, duration,
   text]`; an article row is `[source_index, section, kind, text]`, where `section` is
@@ -145,8 +146,9 @@ authorizes permission changes.
     `INVALID_CURSOR` when the query, scope, or vault configuration changed.
 - `ingest-source`, `get-source-overview`, `list-sections`, `list-exclusions`,
   `read-source`, `read-section` and `get-thumbnail` accept `--config TOML`;
-  they use the skill's default settings when present unless overridden. Use
-  the originating vault's settings to access a clip capture.
+  they use the skill's default settings when present unless overridden. An
+  `[articles]`-only file grants no vault access. Use the originating vault's
+  settings to access a clip capture.
 - Article fetching is trusted configuration, never a tool argument. An optional
   `[articles]` table in `config/settings.toml` can set `allow_private_network = true`
   (for intranet pages) and `extra_ports = [8080]`. Environment proxies are not used.

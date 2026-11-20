@@ -108,10 +108,10 @@ accept `--config TOML`. `--cite` and `--related-note` are repeatable. See
 
 Vault-aware CLI commands use the trusted configuration at
 `skills/obsidian-ingest/config/settings.toml` by default, independent of the current
-working directory; pass `--config` to select another file. Source commands use those
-default settings when present; clip captures require access through the originating
-vault's settings. Run `obsidian-ingest setup` to set the absolute vault root and
-explicitly choose the permitted scope interactively,
+working directory; pass `--config` to select another file. URL ingest and source
+reads work with an `[articles]`-only file, which grants no vault access. Clip captures
+require access through the originating vault's settings. Run `obsidian-ingest setup`
+to set the absolute vault root and explicitly choose the permitted scope interactively,
 or pass `--vault-root PATH` with repeatable `--allow PATH` and `--exclude PATH` and an
 optional `--draft-folder PATH`; with `--vault-root`, setup never prompts. Setup refuses
 to overwrite existing settings. CLI note paths are vault-relative; pass
@@ -314,11 +314,11 @@ then pass each returned `next_offset` (as `offset`) and `read_token` until `next
 is `null`. Skipping ahead does not advance coverage; ranged and `include_excluded`
 reads can pass an existing token through unchanged. `read_section` neither takes nor
 returns a token. Tokens work across CLI processes and MCP, and writes require one
-covering the whole retained source. A successful refresh or re-clip that replaces
-the capture invalidates earlier tokens even if the rows match. A write with an older
-token fails with `INCOMPLETE_READ`; read again from offset 0. Writes accept up to 200
-supporting `source_index` values in `cite`; unknown or excluded indices fail with
-`INVALID_ARGUMENT`, and duplicates are ignored.
+covering the whole retained source. A read token is bound to the stored capture. Any
+republication invalidates earlier tokens, even if the payload is identical. A write
+with an older token fails with `INCOMPLETE_READ`; read again from offset 0. Writes
+accept up to 200 supporting `source_index` values in `cite`; unknown or excluded
+indices fail with `INVALID_ARGUMENT`, and duplicates are ignored.
 Source indices, wording, timestamps, and order are preserved. An individual atom that
 cannot fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
 are returned as one compact JSON text result instead of duplicated text and structured
@@ -613,11 +613,12 @@ its total length must be at most 2,000,000 characters. `refresh` / `--refresh` a
 only to URL ingest. A clip shares the URL's capture for the same exclusion option:
 re-clipping replaces it unless the originating vault, note path and revision all
 match the stored clip. Every CLI/MCP operation loading a cached clip rechecks that
-the configured vault is the originating vault (identified by its resolved root)
-and can open that path. It does not recheck the note's revision; editing the note
-does not update the capture. A direct source-ID call fails with `NOTE_UNAVAILABLE`
-if the check fails. A URL ingest treats
-an inaccessible clip as a miss and tries the web; a successful acquisition replaces
+the configured vault is the originating vault (identified by its resolved root and
+that directory's device and inode) and can open that path. A missing or mismatched
+vault identity is refused. The check does not read the note or compare its revision;
+editing the note does not update the capture. A direct source-ID call fails with
+`NOTE_UNAVAILABLE` if the check fails. A URL ingest treats an inaccessible clip as
+a miss and tries the web; a successful acquisition replaces
 it, while a failure leaves it stored without returning its text. A successful URL
 refresh also replaces it. Any replacement invalidates earlier read tokens.
 The cache still stores clipped text: this check does not restrict direct access to

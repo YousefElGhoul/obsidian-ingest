@@ -45,8 +45,10 @@ To install, repeat the install, or undo it, follow
    Do this before writing anything.
 5. For each idea, decide:
    Pass the final `read_token` to every write. One write per tool call, never several
-   in one call or script. If a write response was lost, check with `search_vault`
-   before retrying; never guess paths. Never suggest edits to notes in the drafts folder.
+   in one call or script. If a write response was lost, use `search_vault` and verify
+   any match against the intended note and source. If you cannot confirm the write,
+   report it as unconfirmed and do not retry. Never guess paths or suggest edits to
+   notes in the drafts folder.
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. Use the reviewed `revision`
      as `target_revision`. `proposed_content` is only the new or changed lines, never
