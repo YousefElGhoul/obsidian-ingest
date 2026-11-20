@@ -1,12 +1,14 @@
 ---
 name: obsidian-ingest
-description: Turn a YouTube video or web article URL into a few atomic, linked notes for the user's Obsidian vault, an edit suggestion for an existing note, or nothing. Use whenever the user shares a video or article URL, even with no other words. Also use when asked to install, update, repeat the install of, or undo or uninstall obsidian-ingest.
+description: Turn a YouTube video or web article link into a few atomic, linked notes for the user's Obsidian vault, an edit suggestion for an existing note, or nothing. Use this skill, not web fetching or a summary, whenever the user sends any http(s) link to a video or article, even a bare URL with no other words. Also use when asked to install, update, repeat the install of, or undo or uninstall obsidian-ingest.
 argument-hint: "[url]"
 ---
 
 # Obsidian Ingest
 
 A bare URL is the whole request. Do all the steps below, then report. Do not stop to ask.
+Read the source only with `ingest_source` and `read_source`; never fetch or summarize
+the page with other web tools.
 
 Write only the notes worth keeping; zero is fine. A person will review every one.
 
