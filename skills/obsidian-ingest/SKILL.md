@@ -40,10 +40,7 @@ To install, repeat the install, or undo it, follow
      practice), the plot of a story, game or vlog, a forecast stated as fact, or health
      or safety advice the source reports without explaining the evidence.
    - No other idea on your list needs the same explanation; merge those into one. An
-     example of another idea on your list belongs in that idea's note, and a note that
-     only introduces or frames your other notes is a recap.
-   - A row states it in the source's own words. You will quote those words in the note;
-     if no row says it, you can't write it.
+     example of another idea on your list belongs in that idea's note.
    Small facts about one tool belong in one note about the technique they serve. A
    title that names the source's subject ("X is proved", "Three ways to Y") is a recap.
    Long sources don't need more notes than short ones; many sources have a few ideas,
@@ -105,12 +102,9 @@ For example, from a talk that makes a claim with a number:
 # Retry storms turn a short outage into a long one
 
 Ana Ruiz explains that when every client retries a failed call at once, the retries
-add load to a service that is already struggling: "the retries become the outage."
-She says adding random jitter to the retry delay cut her team's recovery time by half.
+add load to a service that is already struggling, so it stays down longer. She says
+adding random jitter to the retry delay cut her team's recovery time by half.
 ```
-
-- Quote the source's own words for the note's central claim, in quotation marks, from a
-  row you cite. Everything else explains or connects that claim; never add to it.
 
 - Title in sentence case. One idea per note. Never summarize the whole source, never
   write one note per chapter or section. A one-line tip is never a note of its own.
