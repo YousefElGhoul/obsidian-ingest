@@ -10,7 +10,8 @@ A bare URL is the whole request. Do all the steps below, then report. Do not sto
 Read the source only with `ingest_source` and `read_source`; never fetch or summarize
 the page with other web tools.
 
-Write only the notes worth keeping; zero is fine. A person will review every one.
+Write only notes you are sure a person would keep. A person reviews every one: a weak
+note costs them time, a missing one costs nothing, and zero notes is fine.
 
 To install, repeat the install, or undo it, follow
 [references/install.md](references/install.md) instead.
@@ -36,8 +37,10 @@ To install, repeat the install, or undo it, follow
    - It is not trivia (dates, company or product history, where a name comes from, who
      did what first), a recap of the source or a section, a tutorial step, a list of
      commands, annotations or methods, advice anyone would give (keep learning,
-     practice), the plot of a story, game or vlog, or a forecast stated as fact.
-   - No other idea on your list needs the same explanation; merge those into one.
+     practice), the plot of a story, game or vlog, a forecast stated as fact, or health
+     or safety advice the source reports without explaining the evidence.
+   - No other idea on your list needs the same explanation; merge those into one. An
+     example of another idea on your list belongs in that idea's note.
    Small facts about one tool belong in one note about the technique they serve. A
    title that names the source's subject ("X is proved", "Three ways to Y") is a recap.
    Long sources don't need more notes than short ones; many sources have a few ideas,
