@@ -21,7 +21,7 @@ _TOKEN = re.compile(r"rt1-(\d{1,7})-([0-9a-f]{16})")
 _CHANGED = (
     "read_token does not match this source: either it came from another source, or the "
     "source changed since you read it (a refresh or a new clip). Read it again with "
-    "read_source from offset 0"
+    "read_source from offset 0, without a read_token"
 )
 # Sized like the largest token, so pages reserve room for it before fitting segments.
 TOKEN_PLACEHOLDER = "rt1-9999999-" + "0" * 16
@@ -54,8 +54,17 @@ def token_progress(source: Source, token: str) -> int:
 
 
 def advance_token(source: Source, token: str | None, offset: int, count: int) -> str:
-    """Advance coverage when a page continues (or overlaps) what was already read."""
-    read_through = 0 if token is None else token_progress(source, token)
+    """Advance coverage when a page continues (or overlaps) what was already read.
+
+    The first page needs no token, so an unusable one there is ignored: reading from
+    offset 0 starts the count again rather than failing.
+    """
+    try:
+        read_through = 0 if token is None else token_progress(source, token)
+    except ValueError:
+        if offset != 0:
+            raise
+        read_through = 0
     # Overlap is harmless, but skipping a gap must not advance contiguous coverage.
     if offset <= read_through:
         read_through = max(read_through, offset + count)

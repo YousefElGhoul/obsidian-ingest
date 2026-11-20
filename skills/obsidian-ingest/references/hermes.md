@@ -37,6 +37,11 @@ hermes -p <profile> config set mcp_servers.obsidian-ingest.tools \
 hermes -p <profile> mcp test obsidian-ingest
 ```
 
+Check the result before reporting: the server's entry in `config.yaml` must have the
+`--cache-db` argument, the eleven-tool `include` list, `resources: false` and
+`prompts: false`, and `mcp test` must list exactly those eleven tools. Fix any
+difference first; a "registered 15 tool(s)" line means resources or prompts are still on.
+
 ## Restrict (restricted mode)
 
 All settings below live in the profile's `config.yaml`; set them with

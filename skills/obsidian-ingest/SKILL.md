@@ -21,8 +21,9 @@ To install, repeat the install, or undo it, follow
    suggests Obsidian Web Clipper, offer clipping; if the URL is rejected, explain why.
    If ingest fails, stop and report. When the user names a clipped note, find it with
    `search_vault` and call `ingest_source(note_id=...)` instead.
-2. Read the whole source in order: `read_source` with `limit` 200, passing
-   each page's `next_offset` value as `offset`, with its `read_token`, to the next call
+2. Read the whole source in order. The first call is
+   `read_source(source_id, offset=0, limit=200)` with no `read_token`. Then pass
+   each page's `next_offset` value as `offset`, with that page's `read_token`, to the next call
    until `next_offset` is `null`. Keep the last `read_token`: every write needs it, and
    writing is refused until the whole source has been read. One page per call:
    read its rows before requesting the next. Never fetch several pages in one call or
@@ -33,10 +34,13 @@ To install, repeat the install, or undo it, follow
    video game works (its mechanics, builds, farms), a lesson you draw from a game or
    story, and advice anyone would give (keep learning, find a mentor, practice, build
    soft skills). A let's-play or vlog has none, and neither does a video or article
-   made only of general career or study advice: write nothing for it. Keep only the
-   ideas most worth rereading. Small facts about one tool or API belong together in
-   one note about the technique they serve, not a note each. If two notes would share
-   most of their explanation, write one.
+   made only of general career or study advice: write nothing for it. Also not ideas:
+   trivia (dates, company history, where a name comes from, who did what first), a recap
+   of the whole source or one of its sections, and predictions or forecasts unless the
+   source argues for them and you attribute them. Keep only the ideas most worth
+   rereading; for most sources that is a few, sometimes none. Small facts about one tool or API belong together in
+   one note about the technique they serve, not a note each. Compare your list before
+   writing: if two ideas need the same background to explain, they are one note.
 4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with
@@ -54,20 +58,24 @@ To install, repeat the install, or undo it, follow
    - An existing note covers the topic → `create_edit_suggestion` for that note. Put
      every idea that belongs in it into one suggestion. Use the reviewed `revision`
      as `target_revision`. `proposed_content` is only the new or changed lines, never
-     a copy of the whole note or a summary of the source.
+     a copy of the whole note or a summary of the source. Repeat nothing the note
+     already says. An idea goes in a suggestion or a draft, never both.
    - A tip you can state in one sentence (a command, shortcut, flag or setting) →
      tips for the same tool belong together. If any search found a list note of tips
      for that tool, add every such tip from the source to its edit suggestion, including
      tips whose own search found nothing. Otherwise write nothing for them.
-   - The idea is new → `create_draft`. Pass up to five `related_notes` from step 4
+   - The idea is new → `create_draft`, for example
+     `{"source_id": "…", "read_token": "rt1-…", "contents": "# Title\n\nBody…", "cite": [12, 13]}`.
+     Pass up to five `related_notes` from step 4
      that a reader would open next, each with a one-line reason:
      `[{"note_id": "<id from search_vault>", "reason": "<what that note adds>"}]`.
      Always link the overview note of the same tool or topic if you found one (a
      `Kubernetes` note for a Kubernetes idea). Never link a note only because it
      shares a word or a broad theme; no link is fine.
    - The idea is already covered or weak → write nothing.
-6. After the write attempts, report your searches and decisions, the returned paths,
-   and any failed or unconfirmed writes separately. Never list a note you did not
+6. After the write attempts, report your searches and decisions, the returned paths
+   (count them; that is how many notes you wrote), and any failed or unconfirmed writes
+   separately. Never list a note you did not
    create. If you wrote nothing, say why.
 
 ## How a note looks
@@ -86,8 +94,8 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
   section: the tool adds the source and the related links.
 - Also pass `cite`: the `source_index` (the first value of each row) of every row the
   note uses, no others (at most 200). The tool turns them into video links or article
-  section names. Video row `start` values are seconds: `11.68` is (00:11), and `3661`
-  is (1:01:01).
+  section names. Every timestamp in the body must be the `start` of a row you cite.
+  Video row `start` values are seconds: `11.68` is (00:11), and `3661` is (1:01:01).
 - Keep a link from the source (`[text](url)` in a row) when a reader would follow it.
 - Write in the language the user writes in, even when the source is in another one.
 - Only what the source says. Attribute opinions by the person, channel or author name
@@ -106,6 +114,7 @@ example (05:12) or (1:03:56). For an article, no inline citation is needed.
 - Use only the obsidian-ingest tools. Never guess file paths. Never open, edit or move
   a note or draft with any other tool, even one you just wrote.
 - If a call is rejected, read the error and fix the arguments. Never repeat the same
-  call.
+  call. If the tools are paused or keep failing, stop and report it; never read the
+  source or write notes another way (web pages, shell, code or the package itself).
 
 Details on tools, evidence limits, setup and the CLI: [references/details.md](references/details.md).

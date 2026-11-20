@@ -105,3 +105,11 @@ def test_full_read_counts_retained_segments_not_excluded_ones(sample_source) -> 
 def test_empty_transcript_is_fully_read_by_a_zero_token(sample_source) -> None:
     empty = _with_segments(sample_source)
     require_full_read(empty, advance_token(empty, None, 0, 0))
+
+
+def test_an_unusable_token_on_the_first_page_restarts_the_count(sample_source) -> None:
+    # Weak models sometimes pass the source_id as a token on the first page; it needs none.
+    for bogus in (sample_source.metadata.source_id, "rt1-3-" + "0" * 16):
+        assert advance_token(sample_source, bogus, 0, 2) == issue_token(sample_source, 2)
+    with pytest.raises(ValueError, match="without a read_token"):
+        advance_token(sample_source, sample_source.metadata.source_id, 2, 1)
