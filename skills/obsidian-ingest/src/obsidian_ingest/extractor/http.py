@@ -41,6 +41,7 @@ _CHUNK = 64 * 1024
 _REDIRECTS = {301, 302, 303, 307, 308}
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+_DNS_SLOTS = threading.BoundedSemaphore(4)
 HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 FEED_TYPES = frozenset(
     {"application/rss+xml", "application/atom+xml", "application/xml", "text/xml"}
@@ -136,8 +137,10 @@ class _MeasuredHTTPResponse(http.client.HTTPResponse):
         readline = stream.readline
 
         def measured(size: int) -> bytes:
-            line = readline(size)
+            line = readline(min(size, MAX_HEADER_BYTES - self.header_bytes + 1))
             self.header_bytes += len(line)
+            if self.header_bytes > MAX_HEADER_BYTES:
+                raise FetchError("TOO_LARGE", f"headers are larger than {MAX_HEADER_BYTES} bytes")
             return line
 
         stream.readline = measured
@@ -214,9 +217,6 @@ class HTTPClientTransport:
             connection.sock = sock
             connection.request("GET", path, headers=headers)
             response = connection.getresponse()
-            if response.header_bytes > MAX_HEADER_BYTES:
-                response.close()
-                raise FetchError("TOO_LARGE", f"headers are larger than {MAX_HEADER_BYTES} bytes")
             return _HTTPClientResponse(connection, response, sock, shutdown_socket, timer)
         except (OSError, http.client.HTTPException, FetchError) as error:
             if timer is not None:
@@ -231,7 +231,12 @@ class HTTPClientTransport:
             if isinstance(error, TimeoutError):
                 raise FetchError("TIMEOUT", f"no response from {target.host}") from error
             if isinstance(error, http.client.LineTooLong):
-                raise FetchError("TOO_LARGE", f"headers are larger than {MAX_HEADER_BYTES} bytes")
+                raise FetchError("TOO_LARGE", str(error)) from error
+            # http.client has no dedicated exception for its header count limit.
+            if type(error) is http.client.HTTPException and re.fullmatch(
+                r"got more than \d+ headers", str(error)
+            ):
+                raise FetchError("TOO_LARGE", str(error)) from error
             raise FetchError("CONNECTION_FAILED", f"{target.host}: {error}") from error
 
 
@@ -328,10 +333,18 @@ class Fetcher:
                 result.set_result(self.resolver(target.host, target.port))
             except BaseException as error:  # noqa: BLE001 - propagate across the thread boundary
                 result.set_exception(error)
+            finally:
+                _DNS_SLOTS.release()
 
-        deadline.check()
         worker = threading.Thread(target=resolve, daemon=True)
-        worker.start()
+        if not _DNS_SLOTS.acquire(timeout=deadline.check()):
+            raise FetchError("TIMEOUT", "no DNS worker became available before the ingest deadline")
+        try:
+            deadline.check()
+            worker.start()
+        except (FetchError, RuntimeError):
+            _DNS_SLOTS.release()
+            raise
         worker.join(max(0, deadline.remaining()))
         deadline.check()
         if worker.is_alive():
@@ -367,7 +380,8 @@ class Fetcher:
         encoding = (response.headers.get("content-encoding") or "identity").strip().lower()
         if encoding not in {"identity", "gzip", "deflate", "x-gzip"}:
             raise FetchError("NOT_HTML", f"unsupported content encoding {encoding}")
-        inflater = None if encoding == "identity" else zlib.decompressobj(47)
+        gzip = encoding in {"gzip", "x-gzip"}
+        inflater = None if encoding == "identity" else zlib.decompressobj(31 if gzip else 47)
         chunks: list[bytes] = []
         size = raw = 0
         while True:
@@ -398,22 +412,31 @@ class Fetcher:
                 break
             if self.total_bytes > MAX_TOTAL_BYTES:
                 raise FetchError("TOO_LARGE", "the ingest's download budget is used up")
-            if inflater is not None:
-                try:
-                    chunk = inflater.decompress(chunk, output_limit)
-                except zlib.error as error:
-                    raise FetchError(
-                        "CONNECTION_FAILED", "the compressed body is invalid"
-                    ) from error
-            size += len(chunk)
-            self.total_decoded_bytes += len(chunk)
-            if size > MAX_BODY_BYTES:
-                raise FetchError("TOO_LARGE", f"body is larger than {MAX_BODY_BYTES} bytes")
-            if self.total_decoded_bytes > MAX_TOTAL_DECODED_BYTES:
-                raise FetchError("TOO_LARGE", "the ingest's decoded budget is used up")
-            if inflater is not None and size > MAX_COMPRESSION_RATIO * raw + _CHUNK:
-                raise FetchError("TOO_LARGE", "compressed body expands too far")
-            chunks.append(chunk)
+            while chunk:
+                deadline.check()
+                decoded, chunk = chunk, b""
+                if inflater is not None:
+                    if gzip and inflater.eof:
+                        inflater = zlib.decompressobj(31)
+                    try:
+                        decoded = inflater.decompress(decoded, output_limit)
+                    except zlib.error as error:
+                        raise FetchError(
+                            "CONNECTION_FAILED", "the compressed body is invalid"
+                        ) from error
+                    if gzip:
+                        chunk = inflater.unused_data
+                size += len(decoded)
+                self.total_decoded_bytes += len(decoded)
+                if size > MAX_BODY_BYTES:
+                    raise FetchError("TOO_LARGE", f"body is larger than {MAX_BODY_BYTES} bytes")
+                if self.total_decoded_bytes > MAX_TOTAL_DECODED_BYTES:
+                    raise FetchError("TOO_LARGE", "the ingest's decoded budget is used up")
+                if inflater is not None and size > MAX_COMPRESSION_RATIO * raw + _CHUNK:
+                    raise FetchError("TOO_LARGE", "compressed body expands too far")
+                output_limit -= len(decoded)
+                if decoded:
+                    chunks.append(decoded)
         if inflater is not None and not inflater.eof:
             raise FetchError("CONNECTION_FAILED", "the compressed body ended early")
         return b"".join(chunks), raw

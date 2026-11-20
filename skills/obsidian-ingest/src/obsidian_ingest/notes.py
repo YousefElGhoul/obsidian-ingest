@@ -1,6 +1,7 @@
 """A vault note handed to a provider as a saved source (such as a Web Clipper page)."""
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,9 +10,12 @@ class InvalidNoteSource(ValueError):
     """A saved note whose source cannot be ingested as that kind of note."""
 
 
-def vault_identity(root: Path) -> str:
-    """A short, stable identity for one vault, without exposing its path."""
-    return hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:16]
+def vault_identity(root: Path, *, root_fd: int | None = None) -> str:
+    """Identify the resolved root and its directory without exposing the path."""
+    resolved = root.resolve() if root_fd is None else root
+    stat = os.stat(resolved if root_fd is None else root_fd)
+    identity = f"{resolved}\0{stat.st_dev}\0{stat.st_ino}"
+    return hashlib.sha256(os.fsencode(identity)).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)

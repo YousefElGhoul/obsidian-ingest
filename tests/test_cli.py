@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from articles import FakeWeb, Reply, article
 
 from obsidian_ingest import cli
 from obsidian_ingest.config import load_vault_settings
@@ -15,6 +16,38 @@ from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metada
 from obsidian_ingest.vault import VaultReader
 
 URL = "https://www.youtube.com/watch?v=video-123"
+
+
+def test_article_only_settings_allow_url_ingest_and_source_reads(tmp_path, monkeypatch, cli_runner):
+    url = "https://example.com/article"
+    FakeWeb(routes={url: Reply(article())}).install(monkeypatch)
+    config = tmp_path / "settings.toml"
+    config.write_text("[articles]\nextra_ports = []\n")
+    monkeypatch.setattr(cli, "default_config_path", lambda: config)
+    db = ("--cache-db", str(tmp_path / "sources.db"))
+
+    source_id = cli_runner.ok("ingest-source", url, *db)["source_id"]
+    page = cli_runner.ok("read-source", source_id, *db)
+    assert page["segments"]
+    assert cli_runner.fail("ingest-source", "--note", "clip.md", *db)["code"] == "NOTE_UNAVAILABLE"
+    assert cli_runner.fail("search-vault", "article")["code"] == "CONFIG_ERROR"
+    error = cli_runner.fail(
+        "create-draft", source_id, "# Draft\n\nBody", "--read-token", page["read_token"], *db
+    )
+    assert error["code"] == "CONFIG_ERROR"
+
+
+@pytest.mark.parametrize("vault", ["vault = false\n", "[vault]\nallowed = ['*']\n"])
+def test_malformed_vault_settings_are_not_ignored_for_url_operations(
+    tmp_path, cli_runner, fake_extraction, vault
+):
+    config = tmp_path / "settings.toml"
+    config.write_text(vault + "[articles]\nextra_ports = []\n")
+    db = ("--cache-db", str(tmp_path / "sources.db"))
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
+    for args in (("ingest-source", URL), ("read-source", source_id)):
+        assert cli_runner.fail(*args, *db, "--config", str(config))["code"] == "CONFIG_ERROR"
+    assert fake_extraction.call_count == 1
 
 
 def test_transcript_subcommand_calls_existing_printer(monkeypatch, capsys) -> None:

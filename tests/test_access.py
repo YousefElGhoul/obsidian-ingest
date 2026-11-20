@@ -1,5 +1,9 @@
 import asyncio
+import hashlib
+from dataclasses import replace
+from pathlib import Path
 
+import pytest
 from articles import FakeWeb, Reply, article
 from mcp.client import Client
 from test_clipper import URL, clip_text
@@ -8,8 +12,10 @@ from test_mcp_server import _tool_data
 from obsidian_ingest import cli, responses, source_cache
 from obsidian_ingest.config import VaultSettings
 from obsidian_ingest.drafts import DraftWriterSettings
+from obsidian_ingest.extractor.providers.article.provider import ArticleProvider
 from obsidian_ingest.mcp_server import create_server
 from obsidian_ingest.notes import ClippedNote
+from obsidian_ingest.vault import VaultReader
 
 NOTE = "Clippings/locked.md"
 MISSING_VAULT = "ingesting a note requires trusted vault settings"
@@ -137,3 +143,80 @@ def test_a_clip_is_not_served_to_another_vault_with_the_same_path(
     error = cli_runner.fail("get-source-overview", source_id, *db, *configs[1])
     assert error["code"] == "NOTE_UNAVAILABLE"
     assert cli_runner.ok("get-source-overview", source_id, *db, *configs[0])["title"]
+
+
+def test_cached_clip_is_refused_after_vault_replacement(tmp_path, cli_runner):
+    root = tmp_path / "vault"
+    (root / NOTE).parent.mkdir(parents=True)
+    (root / NOTE).write_text(clip_text())
+    config = tmp_path / "settings.toml"
+    config.write_text(f'[vault]\nroot = "{root}"\nallowed = ["*"]\n')
+    options = ("--config", str(config), "--cache-db", str(tmp_path / "sources.db"))
+    source_id = cli_runner.ok("ingest-source", "--note", NOTE, *options)["source_id"]
+
+    root.rename(tmp_path / "old-vault")
+    (root / NOTE).parent.mkdir(parents=True)
+    (root / NOTE).write_text(clip_text())
+    assert cli_runner.fail("read-source", source_id, *options)["code"] == "NOTE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("had_vault_id", [False, True])
+def test_cached_clip_with_legacy_vault_identity_is_refused(tmp_path, monkeypatch, had_vault_id):
+    (tmp_path / NOTE).parent.mkdir()
+    (tmp_path / NOTE).write_text(clip_text())
+    cache = source_cache.SourceCache(tmp_path / "sources.db")
+    normalize = source_cache.source_from_content
+
+    def with_legacy_evidence(content):
+        source = normalize(content)
+        evidence = dict(source.acquisition.evidence)
+        evidence.pop("note_vault")
+        if had_vault_id:
+            evidence["note_vault"] = hashlib.sha256(str(tmp_path).encode()).hexdigest()[:16]
+        return replace(source, acquisition=replace(source.acquisition, evidence=evidence))
+
+    monkeypatch.setattr(source_cache, "source_from_content", with_legacy_evidence)
+    with VaultReader(VaultSettings(tmp_path, ("*",), ())) as vault:
+        ref = vault.get_path_reference(NOTE)
+        source_id = responses.ingest_note(cache, vault, ref.note_id)["source_id"]
+        with pytest.raises(responses.OperationError, match="NOTE_UNAVAILABLE"):
+            responses.load_source(cache, source_id, vault)
+
+
+def test_clip_access_does_not_scan_or_register_backing_note(tmp_path, monkeypatch):
+    (tmp_path / NOTE).parent.mkdir()
+    (tmp_path / NOTE).write_text(clip_text())
+    cache = source_cache.SourceCache(tmp_path / "sources.db")
+    with VaultReader(VaultSettings(tmp_path, ("*",), ())) as vault:
+        ref = vault.get_path_reference(NOTE)
+        source_id = responses.ingest_note(cache, vault, ref.note_id)["source_id"]
+
+        def unexpected(*args, **kwargs):
+            pytest.fail("checking clip access should only open and close the note")
+
+        monkeypatch.setattr(vault, "_scan_file", unexpected)
+        monkeypatch.setattr(vault, "_register", unexpected)
+        assert responses.load_source(cache, source_id, vault).transcript.segments
+        assert responses.ingest(cache, URL, vault=vault)["cached"]
+        (tmp_path / NOTE).unlink()
+        with pytest.raises(responses.OperationError, match="NOTE_UNAVAILABLE"):
+            responses.load_source(cache, source_id, vault)
+
+
+def test_unchanged_clip_skips_extraction(tmp_path, monkeypatch):
+    cache = source_cache.SourceCache(tmp_path / "sources.db")
+    note = ClippedNote(NOTE, "revision", clip_text(), "vault-a")
+    first = cache.ingest_note(note)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("an unchanged clip should not be extracted again")
+
+    monkeypatch.setattr(ArticleProvider, "acquire_note", unexpected)
+    second = cache.ingest_note(note)
+    assert second.cached
+    assert second.source_id == first.source_id
+
+
+def test_skill_does_not_retry_unconfirmed_writes():
+    skill = Path(cli.__file__).resolve().parents[2] / "SKILL.md"
+    assert "report it as unconfirmed and do not retry" in " ".join(skill.read_text().split())

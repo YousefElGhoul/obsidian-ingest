@@ -41,11 +41,12 @@ from obsidian_ingest.extractor.providers import (
 )
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
-from obsidian_ingest.notes import ClippedNote
+from obsidian_ingest.notes import ClippedNote, NoteRef
 from obsidian_ingest.source import Source, ingest_source, source_from_content
 
 SCHEMA_VERSION = 3
-_ROW = "source_id, provider, native_id, exclude_sponsors, payload, checksum"
+_ROW = "source_id, capture_id, provider, native_id, exclude_sponsors, payload, checksum"
+_KEY = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
 # Stable source handles identify option keys; capture IDs identify replaceable evidence.
 _SCHEMA = (
     (
@@ -303,7 +304,7 @@ class SourceCache:
                     for statement in _SCHEMA:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                connection.execute(f"SELECT capture_id, {_ROW} FROM sources LIMIT 0")
+                connection.execute(f"SELECT {_ROW} FROM sources LIMIT 0")
                 connection.execute(
                     "SELECT capture_id, format, data, sha256 FROM original_payloads LIMIT 0"
                 )
@@ -330,10 +331,12 @@ class SourceCache:
 
     def _result(self, row: tuple, *, cached: bool) -> CachedSource:
         """Check payload integrity and option-key agreement before exposing cached evidence."""
-        source_id, provider, native_id, exclude_sponsors, payload, checksum = row
+        source_id, capture_id, provider, native_id, exclude_sponsors, payload, checksum = row
         try:
             if not isinstance(source_id, str) or not source_id:
                 raise ValueError("Missing persistent source ID")
+            if not isinstance(capture_id, str) or not capture_id:
+                raise ValueError("Missing capture ID")
             if hashlib.sha256(payload.encode()).hexdigest() != checksum:
                 raise ValueError("Snapshot checksum mismatch")
             source = _decode(payload)
@@ -350,7 +353,7 @@ class SourceCache:
                 or any(item.reason not in expected_categories for item in lookup.ranges)
             ):
                 raise ValueError("Snapshot identity or filtering options do not match cache key")
-            return CachedSource(source_id, replace(source, capture=checksum), cached)
+            return CachedSource(source_id, replace(source, capture=capture_id), cached)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as error:
             raise SourceCacheError(
                 f"Invalid source cache entry {source_id}: {error}; "
@@ -398,7 +401,7 @@ class SourceCache:
         *,
         exclude_sponsors: bool = True,
         refresh: bool = False,
-        note_readable: Callable[[str], bool] | None = None,
+        note_readable: Callable[[NoteRef], bool] | None = None,
     ) -> CachedSource:
         """Reuse the current capture, or acquire one; refresh replaces it only on success.
 
@@ -412,10 +415,10 @@ class SourceCache:
         key = (provider.name.value, native_id, int(exclude_sponsors))
 
         def reusable(source: Source) -> bool:
-            path = required_note(source)
-            return path is None or (note_readable is not None and note_readable(path))
+            note = required_note(source)
+            return note is None or (note_readable is not None and note_readable(note))
 
-        row = self._read("provider = ? AND native_id = ? AND exclude_sponsors = ?", key)
+        row = self._read(_KEY, key)
         if row is not None and not refresh:
             current = self._result(row, cached=True)
             if reusable(current.source):
@@ -436,13 +439,18 @@ class SourceCache:
             raise TypeError("exclude_sponsors must be a boolean")
         provider = resolve_note(note.text)
         key = (provider.name.value, provider.note_identity(note), int(exclude_sponsors))
+
+        def reusable(source: Source) -> bool:
+            return provider.capture_matches_note(source, note)
+
+        row = self._read(_KEY, key)
+        if row is not None:
+            current = self._result(row, cached=True)
+            if reusable(current.source):
+                return current
+
         content = provider.acquire_note(note, exclude_sponsors=exclude_sponsors)
-        return self._publish(
-            key,
-            source_from_content(content),
-            replace=True,
-            reuse=lambda source: provider.capture_matches_note(source, note),
-        )
+        return self._publish(key, source_from_content(content), replace=True, reuse=reusable)
 
     def _publish(
         self,
@@ -453,19 +461,18 @@ class SourceCache:
         reuse: Callable[[Source], bool] | None = None,
     ) -> CachedSource:
         """Store a validated capture under its key, keeping the persistent source_id."""
-        predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
         original = _original_for_storage(source)
         payload = _encode(source)
         checksum = hashlib.sha256(payload.encode()).hexdigest()
         new_id = uuid4().hex
-        result = self._result((new_id, *key, payload, checksum), cached=False)
         capture_id = uuid4().hex
+        result = self._result((new_id, capture_id, *key, payload, checksum), cached=False)
         try:
             with closing(self._connect()) as connection, connection:
                 # Deletion and replacement commit together; any write failure rolls both back.
                 connection.execute("BEGIN IMMEDIATE")
                 existing = connection.execute(
-                    f"SELECT {_ROW} FROM sources WHERE {predicate}", key
+                    f"SELECT {_ROW} FROM sources WHERE {_KEY}", key
                 ).fetchone()
                 if existing is not None and (reuse is not None or not replace):
                     current = self._result(existing, cached=True)

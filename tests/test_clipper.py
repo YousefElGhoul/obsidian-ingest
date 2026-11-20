@@ -101,6 +101,37 @@ def test_clipper_keeps_only_http_link_and_image_destinations() -> None:
     ]
 
 
+def test_clipper_filters_reference_definitions_and_preserves_code() -> None:
+    atoms, _ = markdown_atoms(
+        "[Read][Good] ![Chart][LOCAL] [shortcut] [collapsed][] `[Read][Good]`\n\n"
+        '[good]: <https://example.com/a(b)> "Title"\n'
+        "[local]: <file:///local/chart.png>\n"
+        "[SHORTCUT]: obsidian://open\n"
+        "[collapsed]:\n  relative/path\n\n"
+        "~~~\n[example]: file:///literal\n~~~"
+    )
+    assert [atom.text for atom in atoms] == [
+        '[Read](https://example.com/a%28b%29 "Title") Chart shortcut collapsed `[Read][Good]`',
+        "```\n[example]: file:///literal\n```",
+    ]
+
+
+def test_clipper_escapes_markers_in_flattened_quote_and_list_rows() -> None:
+    atoms, _ = markdown_atoms("> # Not a heading\n\n- ==not highlighted==")
+    assert [atom.text for atom in atoms] == [r"\# Not a heading", r"\==not highlighted=="]
+
+
+def test_clipper_strips_unsafe_definitions_in_quotes_and_with_multiline_titles() -> None:
+    atoms, _ = markdown_atoms(
+        "[quote][local] [title][multi]\n\n"
+        "> [local]: file:///local/chart.png\n\n"
+        '[multi]: file:///local/chart.png "Long\n'
+        'title"\n\n'
+        "Keep this."
+    )
+    assert [atom.text for atom in atoms] == ["quote title", "Keep this."]
+
+
 def test_clipper_preserves_heading_hashes_and_disambiguates_full_paths() -> None:
     long = "x" * 550
     atoms, sections = markdown_atoms(
@@ -111,8 +142,8 @@ def test_clipper_preserves_heading_hashes_and_disambiguates_full_paths() -> None
         ("C#", 0),
         ("C# › Results (UK)", 1),
         ("C# › Results (UK) (2)", 2),
-        ("x" * 500, 3),
-        ("x" * 496 + " (2)", 4),
+        ("x" * 499 + "…", 3),
+        ("x" * 495 + "… (2)", 4),
     ]
     assert [atom.section for atom in atoms] == [path for path, _ in sections]
 
@@ -127,7 +158,6 @@ def test_frontmatter_reads_indentless_author_list() -> None:
 @pytest.mark.parametrize(
     ("begin", "end", "kind"),
     [
-        ("```\n", "\n```", "code"),
         ("> ", "", "quote"),
         ("- ", "", "list_item"),
         ("| ", " |", "table_row"),

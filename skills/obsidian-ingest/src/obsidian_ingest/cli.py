@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from obsidian_ingest import responses
-from obsidian_ingest.config import default_config_path, load_vault_settings
+from obsidian_ingest.config import (
+    default_config_path,
+    load_optional_vault_settings,
+    load_vault_settings,
+)
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.transcript import format_timestamp
 from obsidian_ingest.responses import OperationError
@@ -153,6 +157,17 @@ def _vault(path: Path | None) -> VaultReader:
         raise _missing_config(selected)
     try:
         return VaultReader(load_vault_settings(selected))
+    except (TypeError, ValueError) as error:
+        raise OperationError("CONFIG_ERROR", str(error)) from error
+
+
+def _source_vault(path: Path) -> VaultReader | None:
+    """Open vault scope if configured; an article-only file grants none."""
+    if not path.is_file():
+        return None
+    try:
+        settings = load_optional_vault_settings(path)
+        return VaultReader(settings) if settings is not None else None
     except (TypeError, ValueError) as error:
         raise OperationError("CONFIG_ERROR", str(error)) from error
 
@@ -445,11 +460,12 @@ def _run_tool_command(args) -> Any:
             raise OperationError("INVALID_ARGUMENT", "pass exactly one of a URL or --note")
         if args.note is not None and args.refresh:
             raise OperationError("INVALID_ARGUMENT", "--refresh applies only to URLs")
-        _configure_providers(config_path)
         if args.verbose:
             logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
-    with _vault(config_path) if config_path.is_file() else nullcontext() as vault:
+    writing = args.command in {"create-draft", "create-edit-suggestion"}
+    with (_vault(config_path) if writing else _source_vault(config_path)) or nullcontext() as vault:
         if args.command == "ingest-source":
+            _configure_providers(config_path)
             if args.note is not None:
                 return responses.ingest_note(
                     _cache(args),
@@ -465,9 +481,8 @@ def _run_tool_command(args) -> Any:
                 refresh=args.refresh,
             )
         source = responses.load_source(_cache(args), args.source_id, vault)
-        if args.command in {"create-draft", "create-edit-suggestion"}:
-            if vault is None:
-                raise _missing_config(config_path)
+        if writing:
+            assert vault is not None
             return _run_write_command(args, source, vault)
         return _run_source_command(args, source)
 

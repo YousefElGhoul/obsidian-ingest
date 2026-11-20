@@ -170,6 +170,33 @@ def test_attribution_neutralizes_obsidian_markers_and_encodes_url(
     assert "- URL: https://example.com/a%28b%29%3Cc%3E%5Bd%5D%7Ce%20f?encoded=%20\n" in rendered
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://[2606:4700::1111]/a", "https://[2606:4700::1111]/a"),
+        ("https://example.com/a%%?q=%%#%%", "https://example.com/a%25%25?q=%25%25#%25%25"),
+        ("https://example.com/a%%20", "https://example.com/a%25%20"),
+    ],
+)
+def test_attribution_url_preserves_authority_and_escapes_obsidian_comments(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata, url: str, expected: str
+) -> None:
+    from dataclasses import replace
+    from urllib.parse import urlsplit
+
+    rendered = create_draft(
+        settings, contents="# A note", source=replace(source_metadata, original_url=url)
+    ).path.read_text()
+    destination = rendered.split("- URL: ", 1)[1].splitlines()[0]
+    assert urlsplit(destination) == urlsplit(expected)
+
+
+def test_draft_accepts_code_reused_from_a_longer_fence(settings, source_metadata) -> None:
+    body = "# Draft\n\n````markdown\n```\n## Source\n````"
+    result = create_draft(settings, contents=body, source=source_metadata)
+    assert result.path.read_text().startswith(body + "\n\n## Source")
+
+
 def test_custom_relative_draft_folder_and_unicode_content(
     settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:

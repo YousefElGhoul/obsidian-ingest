@@ -25,7 +25,7 @@ from obsidian_ingest.extractor.providers import (
 )
 from obsidian_ingest.extractor.transcript import TranscriptSegment
 from obsidian_ingest.images import ImageInfo, identify_image
-from obsidian_ingest.notes import ClippedNote, InvalidNoteSource, NoteRef, vault_identity
+from obsidian_ingest.notes import ClippedNote, InvalidNoteSource, NoteRef
 from obsidian_ingest.reading import (
     TOKEN_PLACEHOLDER,
     advance_token,
@@ -169,7 +169,7 @@ def ingest(
             url,
             exclude_sponsors=exclude_sponsors,
             refresh=refresh,
-            note_readable=lambda path: _note_readable(vault, path),
+            note_readable=lambda note: _note_readable(vault, note),
         )
     except SourceCacheError:
         # Mapped verbatim to SOURCE_CACHE_ERROR; messages carry reset instructions.
@@ -205,7 +205,7 @@ def ingest_note(
         raise OperationError("INVALID_ARGUMENT", "exclude_sponsors must be a boolean")
     path, revision, text = vault.read_whole(note_id, max_characters=MAX_NOTE_CHARACTERS)
     resolve_note(text)  # Unsupported notes are invalid requests, not acquisition failures.
-    note = ClippedNote(path, revision, text, vault_identity(vault.settings.root))
+    note = ClippedNote(path, revision, text, vault.vault_id)
     try:
         result = cache.ingest_note(note, exclude_sponsors=exclude_sponsors)
     except SourceCacheError:
@@ -223,13 +223,7 @@ def ingest_note(
 
 def _note_readable(vault: VaultReader | None, note: NoteRef) -> bool:
     """Whether this session's vault is the clip's vault and can still open the note."""
-    if vault is None or vault_identity(vault.settings.root) != note.vault_id:
-        return False
-    try:
-        vault.get_path_reference(note.path)
-    except NoteUnavailable:
-        return False
-    return True
+    return vault is not None and vault.vault_id == note.vault_id and vault.can_open(note.path)
 
 
 def load_source(cache: SourceCache, source_id: str, vault: VaultReader | None = None) -> Source:

@@ -45,6 +45,26 @@ def test_refresh_with_identical_rows_invalidates_read_token(tmp_path, extraction
         token_progress(refreshed.source, token)
 
 
+def test_republishing_identical_payload_invalidates_read_token(tmp_path, extraction, monkeypatch):
+    cache = SourceCache(tmp_path / "sources.db")
+    acquired = ingest_source(URL)
+    assert acquired.acquisition is not None
+    monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: acquired)
+    first = cache.ingest(URL)
+    token = issue_token(first.source, 2)
+    assert token_progress(cache.get(first.source_id), token) == 2
+    before = _rows(cache.path, "SELECT capture_id, payload, checksum FROM sources")
+
+    refreshed = cache.ingest(URL, refresh=True)
+    after = _rows(cache.path, "SELECT capture_id, payload, checksum FROM sources")
+    assert refreshed.source_id == first.source_id
+    assert after[0][0] != before[0][0]
+    assert after[0][1:] == before[0][1:]
+    assert token_progress(cache.get(first.source_id), issue_token(refreshed.source, 2)) == 2
+    with pytest.raises(ValueError, match="source changed"):
+        token_progress(cache.get(first.source_id), token)
+
+
 def test_cache_round_trips_using_provider_codec(monkeypatch, sample_source):
     details = sample_source.metadata.provider_details
 

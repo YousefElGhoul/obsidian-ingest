@@ -76,20 +76,31 @@ def load_article_settings(path: Path) -> ArticleSettings:
         raise ValueError(f"Cannot load trusted configuration: {error}") from error
 
 
+_VAULT_CONFIG_SHAPE = "Configuration must contain a [vault] table and optionally [articles]"
+
+
 def load_vault_settings(path: Path) -> VaultSettings:
-    """Load the strict trusted `[vault]` section from a TOML configuration file."""
+    """Load a required trusted `[vault]` section."""
+    settings = load_optional_vault_settings(path)
+    if settings is None:
+        raise ValueError(_VAULT_CONFIG_SHAPE)
+    return settings
+
+
+def load_optional_vault_settings(path: Path) -> VaultSettings | None:
+    """Allow an absent `[vault]` section, but never ignore a malformed one."""
     try:
         with path.open("rb") as file:
             data = tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"Cannot load trusted configuration: {error}") from error
-    if (
-        "vault" not in data
-        or set(data) - {"vault", "articles"}
-        or not isinstance(data["vault"], dict)
+    if set(data) - {"vault", "articles"} or (
+        "vault" in data and not isinstance(data["vault"], dict)
     ):
-        raise ValueError("Configuration must contain a [vault] table and optionally [articles]")
+        raise ValueError(_VAULT_CONFIG_SHAPE)
     article_settings(data)
+    if "vault" not in data:
+        return None
     section = data["vault"]
     allowed_keys = {"root", "allowed", "excluded", "draft_folder"}
     if set(section) - allowed_keys:

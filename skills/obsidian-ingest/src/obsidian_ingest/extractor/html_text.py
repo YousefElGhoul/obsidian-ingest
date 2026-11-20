@@ -18,7 +18,7 @@ import json
 import re
 import unicodedata
 import warnings
-from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -27,7 +27,8 @@ from lxml import etree, html
 from obsidian_ingest.extractor.quality import instruction_like
 
 SECTION_SEPARATOR = " › "
-MAX_ATOM_BYTES = 8_000
+MAX_ATOM_BYTES = 7_000
+MAX_SECTION_BYTES = 1_500
 MAX_SECTION_CHARS = 500
 LAYOUT_CELL_WORDS = 150
 CONTINUED = "(continued) "
@@ -59,6 +60,8 @@ _INLINE_MARKS = {"#b": "**", "#i": "*", "#s": "~~"}
 _LITERAL_MARKS = re.compile(r"([\\`*_\[\]<>|]|%(?=%)|(?<=%)%)")
 _DESTINATION_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<> "})
 _SENTENCE_END = re.compile(r"[.!?؟。！？](?=\s)")
+_ROW_MARKER = re.compile(r"(?m)^([ \t]*)(#|={2,})")
+_FENCE = re.compile(r"^(`{3,})([^`\r\n]*)$|^(~{3,})(.*)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,14 +103,13 @@ class SectionPaths:
     def add(self, level: int, label: str) -> str:
         while self._headings and self._headings[-1][0] >= level:
             self._headings.pop()
-        full_path = (self.current + SECTION_SEPARATOR if self.current else "") + label
-        base = full_path[:MAX_SECTION_CHARS]
+        parent = self.current
+        base = _section_path(parent, label)
         count = self._counts.get(base, 0) + 1
         path = base
         while count > 1 or path in self._used:
             count = max(count, 2)
-            suffix = f" ({count})"
-            path = base[: MAX_SECTION_CHARS - len(suffix)] + suffix
+            path = _section_path(parent, label, f" ({count})")
             if path not in self._used:
                 break
             count += 1
@@ -115,6 +117,24 @@ class SectionPaths:
         self._used.add(path)
         self._headings.append((level, path))
         return path
+
+
+def _section_path(parent: str | None, leaf: str, suffix: str = "") -> str:
+    def fits(path: str) -> bool:
+        return len(path) <= MAX_SECTION_CHARS and _envelope_text_size(path) <= MAX_SECTION_BYTES
+
+    tail = leaf + suffix
+    if not fits(tail):
+        end = _fitting_end(leaf, 0, lambda part: fits(part + "…" + suffix), MAX_SECTION_CHARS)
+        return leaf[:end] + "…" + suffix
+    if parent:
+        if fits(parent + SECTION_SEPARATOR + tail):
+            return parent + SECTION_SEPARATOR + tail
+        ellipsis = "…" + SECTION_SEPARATOR + tail
+        if fits(ellipsis):
+            end = _fitting_end(parent, 0, lambda part: fits(part + ellipsis), MAX_SECTION_CHARS)
+            return parent[:end].rstrip() + ellipsis
+    return tail
 
 
 def clean_text(text: str) -> str:
@@ -135,7 +155,7 @@ def parse(markup: str) -> etree._Element:
 
 def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dict:
     """Remove explicitly hidden content and page chrome; return recovered hints."""
-    captions: dict[str, deque[str | None]] = defaultdict(deque)
+    captions: dict[str, tuple[str, str]] = {}
     code_languages: dict[str, str] = {}
     for node in list(document.iter(etree.Comment, etree.ProcessingInstruction)):
         _drop(node)
@@ -166,12 +186,27 @@ def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dic
         ):
             _drop(element)
             result.removed_chrome += 1
+    image_urls = {
+        url for image in document.iter("img") if (url := _safe_url(image.get("src"), base_url))
+    }
+    occurrence = 0
     for figure in document.iter("figure"):
         image = next(figure.iter("img"), None)
         caption = next(figure.iter("figcaption"), None)
-        if image is not None and (url := _safe_url(image.get("src"), base_url)):
-            text = _line(caption.text_content()) if caption is not None else ""
-            captions[url].append(text or None)
+        if (
+            image is not None
+            and caption is not None
+            and (url := _safe_url(image.get("src"), base_url))
+            and url not in captions
+            and (text := _line(caption.text_content()))
+        ):
+            while True:
+                occurrence += 1
+                marker = f"{url.split('#', 1)[0]}#oi-caption-{occurrence}"
+                if marker not in image_urls:
+                    break
+            image.set("src", marker)
+            captions[marker] = (url, text)
     for code in document.iter("code"):
         match = re.search(r"(?:language|lang)-([A-Za-z0-9_+-]+)", code.get("class", ""))
         if match and code.getparent() is not None and code.getparent().tag == "pre":
@@ -215,52 +250,8 @@ def _literal(text: str | None) -> str:
     return _LITERAL_MARKS.sub(r"\\\1", text or "")
 
 
-def _inline(element: etree._Element, base_url: str, result: Extraction) -> str:
-    """Render an element's mixed content as one line of Markdown."""
-    parts = [_literal(element.text)]
-    for child in element:
-        parts.extend((_inline_child(child, base_url, result), _literal(child.tail)))
-    return "".join(parts)
-
-
-def _inline_child(child: etree._Element, base_url: str, result: Extraction) -> str:
-    tag = child.tag
-    rend = child.get("rend", "")
-    if tag == "code" or (tag == "hi" and rend == "#t"):
-        code = "".join(child.itertext())
-        marker = "`" * (max(map(len, re.findall(r"`+", code)), default=0) + 1)
-        pad = " " if code.startswith("`") or code.endswith("`") else ""
-        return f"{marker}{pad}{code}{pad}{marker}" if code.strip() else code
-    if tag == "lb":
-        return "\n"
-    if tag == "graphic":
-        return _image(child, base_url, result) or ""
-    inner = _inline(child, base_url, result)
-    if tag == "ref":
-        target = _safe_url(child.get("target"), base_url)
-        if target and inner.strip():
-            result.links += 1
-            result.link_words += len(inner.split())
-            return f"[{inner}]({escape_destination(target)})"
-    elif tag == "hi":
-        if rend in {"#sub", "#sup"}:
-            return f"<{rend[1:]}>{inner}</{rend[1:]}>"
-        if (mark := _INLINE_MARKS.get(rend)) and inner.strip():
-            return f"{mark}{inner}{mark}"
-    elif tag in _BLOCKS:
-        return f"\n\n{inner}\n\n"
-    return inner
-
-
-def _image(element: etree._Element, base_url: str, result: Extraction) -> str | None:
-    src = _safe_url(element.get("src"), base_url)
-    if src is None or _SPACER.search(urlsplit(src).path):
-        return None
-    result.images += 1
-    alt = _line(element.get("alt") or "")
-    if instruction_like([alt]):
-        alt = ""
-    return f"![{_literal(alt)}]({escape_destination(src)})"
+def escape_row_markers(text: str) -> str:
+    return _ROW_MARKER.sub(lambda match: match[1] + re.sub(r"#|={1,2}", r"\\\g<0>", match[2]), text)
 
 
 def _line(text: str) -> str:
@@ -278,16 +269,9 @@ def split_atom(text: str) -> list[str]:
     start = 0
     prefix = ""
     while True:
-        # Every character needs at least one byte, in addition to the JSON quotes.
-        end = min(len(text), start + MAX_ATOM_BYTES - len(prefix) - 2)
-        if not _atom_fits(prefix + text[start:end]):
-            low = start
-            while low < end:
-                middle = (low + end + 1) // 2
-                if _atom_fits(prefix + text[start:middle]):
-                    low = middle
-                else:
-                    end = middle - 1
+        end = _fitting_end(
+            text, start, lambda part, prefix=prefix: _atom_fits(prefix + part), MAX_ATOM_BYTES
+        )
         if end == len(text):
             parts.append(prefix + text[start:end])
             return parts
@@ -307,7 +291,60 @@ def split_atom(text: str) -> list[str]:
 
 
 def _atom_fits(text: str) -> bool:
-    return len(json.dumps(text, ensure_ascii=False).encode()) <= MAX_ATOM_BYTES
+    return _envelope_text_size(text) <= MAX_ATOM_BYTES
+
+
+def _envelope_text_size(text: str) -> int:
+    # The page JSON is itself a string inside the MCP text-content envelope.
+    return len(json.dumps(json.dumps(text, ensure_ascii=False), ensure_ascii=False).encode())
+
+
+def _fitting_end(text: str, start: int, fits: Callable[[str], bool], limit: int) -> int:
+    end = min(len(text), start + limit)
+    if fits(text[start:end]):
+        return end
+    low = start
+    while low < end:
+        middle = (low + end + 1) // 2
+        if fits(text[start:middle]):
+            low = middle
+        else:
+            end = middle - 1
+    return end
+
+
+def _backtick_run(text: str) -> int:
+    return max((len(match[0]) for match in re.finditer(r"`+", text)), default=0)
+
+
+def open_fence(line: str) -> tuple[str, str] | None:
+    if match := _FENCE.fullmatch(line):
+        return (match[1], match[2]) if match[1] else (match[3], match[4])
+    return None
+
+
+def closes_fence(line: str, marker: str) -> bool:
+    stripped = line.rstrip(" \t\r\n")
+    return stripped.startswith(marker) and not stripped.strip(marker[0])
+
+
+def code_atoms(code: str, language: str) -> list[str]:
+    language = language[:64]  # An untrusted info string must leave room for code.
+
+    def fenced(part: str) -> str:
+        marker = "`" * max(3, _backtick_run(part) + 1)
+        return f"{marker}{language}\n{part}\n{marker}"
+
+    parts: list[str] = []
+    start = 0
+    while True:
+        end = _fitting_end(code, start, lambda part: _atom_fits(fenced(part)), MAX_ATOM_BYTES)
+        if end < len(code) and (newline := code.rfind("\n", start, end)) >= start:
+            end = newline + 1
+        parts.append(fenced(code[start:end]))
+        if end == len(code):
+            return parts
+        start = end
 
 
 class _Walker:
@@ -324,8 +361,54 @@ class _Walker:
         if not text.strip():
             return
         self.result.words += len(text.split())
-        for part in split_atom(text):
+        for part in split_atom(escape_row_markers(text)):
             self.result.atoms.append(Atom(part, kind, self.headings.current))
+
+    def inline(self, element: etree._Element) -> str:
+        parts = [_literal(element.text)]
+        for child in element:
+            parts.extend((self.inline_child(child), _literal(child.tail)))
+        return "".join(parts)
+
+    def inline_child(self, child: etree._Element) -> str:
+        tag = child.tag
+        rend = child.get("rend", "")
+        if tag == "code" or (tag == "hi" and rend == "#t"):
+            code = "".join(child.itertext())
+            marker = "`" * (_backtick_run(code) + 1)
+            pad = " " if code.startswith("`") or code.endswith("`") else ""
+            return f"{marker}{pad}{code}{pad}{marker}" if code.strip() else code
+        if tag == "lb":
+            return "\n"
+        if tag == "graphic":
+            image, caption = self.image(child)
+            return f"{image}\n\n{caption}\n\n" if caption else image
+        inner = self.inline(child)
+        if tag == "ref":
+            target = _safe_url(child.get("target"), self.base_url)
+            if target and inner.strip():
+                self.result.links += 1
+                self.result.link_words += len(inner.split())
+                return f"[{inner}]({escape_destination(target)})"
+        elif tag == "hi":
+            if rend in {"#sub", "#sup"}:
+                return f"<{rend[1:]}>{inner}</{rend[1:]}>"
+            if (mark := _INLINE_MARKS.get(rend)) and inner.strip():
+                return f"{mark}{inner}{mark}"
+        elif tag in _BLOCKS:
+            return f"\n\n{inner}\n\n"
+        return inner
+
+    def image(self, element: etree._Element) -> tuple[str, str]:
+        src = _safe_url(element.get("src"), self.base_url)
+        if src is None or _SPACER.search(urlsplit(src).path):
+            return "", ""
+        src, caption = self.hints["captions"].get(src, (src, ""))
+        self.result.images += 1
+        alt = _line(element.get("alt") or "")
+        if instruction_like([alt]):
+            alt = ""
+        return f"![{_literal(alt)}]({escape_destination(src)})", _literal(caption)
 
     def heading(self, element: etree._Element) -> None:
         level = int((element.get("rend") or "h2").lstrip("h") or 2)
@@ -344,26 +427,26 @@ class _Walker:
             if tag == "head":
                 self.heading(child)
             elif tag == "p":
-                for paragraph in _paragraphs(_inline(child, self.base_url, self.result)):
+                for paragraph in _paragraphs(self.inline(child)):
                     self.emit(paragraph, "paragraph")
             elif tag == "quote":
-                self.emit(_line(_inline(child, self.base_url, self.result)), "quote")
+                self.emit(_line(self.inline(child)), "quote")
             elif tag == "list":
                 self.list(child, 0)
             elif tag == "code":
                 code = clean_text("".join(child.itertext())).strip("\n")
                 language = self.hints["code_languages"].get(_code_key(code), "")
-                self.emit(f"```{language}\n{code}\n```", "code")
+                self.result.words += len(code.split())
+                self.result.atoms.extend(
+                    Atom(part, "code", self.headings.current) for part in code_atoms(code, language)
+                )
             elif tag == "table":
                 self.table(child)
             elif tag == "graphic":
-                image = _image(child, self.base_url, self.result)
+                image, caption = self.image(child)
                 if image:
                     self.emit(image, "image")
-                    absolute = _safe_url(child.get("src"), self.base_url)
-                    captions = self.hints["captions"].get(absolute)
-                    if captions and (caption := captions.popleft()):
-                        self.emit(_literal(caption), "caption")
+                    self.emit(caption, "caption")
             else:
                 self.walk(child)
 
@@ -380,16 +463,13 @@ class _Walker:
                     parts.clear()
                     suffix = " (continued)"
                 else:
-                    parts.append(_inline_child(child, self.base_url, self.result))
+                    parts.append(self.inline_child(child))
                 parts.append(_literal(child.tail))
             if text := _line("".join(parts)):
                 self.emit(indent + text + suffix, "list_item")
 
     def table(self, element: etree._Element) -> None:
-        raw_rows = [
-            [_inline(cell, self.base_url, self.result) for cell in row.iter("cell")]
-            for row in element.iter("row")
-        ]
+        raw_rows = [[self.inline(cell) for cell in row.iter("cell")] for row in element.iter("row")]
         # A cell holding prose (an essay laid out with tables) is text, not tabular data.
         if any(len(cell.split()) > LAYOUT_CELL_WORDS for row in raw_rows for cell in row):
             for row in raw_rows:

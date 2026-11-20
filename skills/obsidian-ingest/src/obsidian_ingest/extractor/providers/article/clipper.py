@@ -14,7 +14,11 @@ from obsidian_ingest.extractor.html_text import (
     Atom,
     SectionPaths,
     clean_text,
+    closes_fence,
+    code_atoms,
     escape_destination,
+    escape_row_markers,
+    open_fence,
     split_atom,
 )
 from obsidian_ingest.notes import ClippedNote  # noqa: F401  (re-exported for providers)
@@ -24,7 +28,6 @@ _FIELDS = {"title", "source", "url", "author", "authors", "published", "created"
            "language", "description", "site"}  # fmt: skip
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+)$")
 _CLOSING_HASHES = re.compile(r"[ \t]+#+$")
-_FENCE = re.compile(r"^(```+|~~~+)\s*([\w+-]*)")
 _LIST = re.compile(r"^(\s*)([-*+]|\d+[.)])[ \t]+(.*)$")
 _IMAGE_LINE = re.compile(r"^!\[(?:\\.|[^\]\\])*\]\([^)]*\)$")
 _WIKILINK = re.compile(r"^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$")
@@ -32,6 +35,11 @@ _MARKDOWN_INLINE = re.compile(r"\\.|`+|!?\[|\]")
 _LINK_OPEN = re.compile(r"\([ \t]*")
 _BARE_DESTINATION = re.compile(r"\\.|[()]|\s")
 _LINK_END = re.compile(r"""(?:[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\([^()]*\)))?[ \t]*\)""")
+_REFERENCE_LABEL = r"(?:\\.|[^\[\]\\])*"
+_REFERENCE_USE = re.compile(rf"\[({_REFERENCE_LABEL})\]")
+_REFERENCE_DEFINITION = re.compile(rf"^ {{0,3}}\[({_REFERENCE_LABEL})\]:[ \t]*(.*)$")
+_QUOTE_PREFIX = re.compile(r"^(?: {0,3}>[ \t]?)+")
+_TITLE_CLOSER = {'"': '"', "'": "'", "(": ")"}
 
 
 def _scalar(value: str) -> str:
@@ -78,7 +86,7 @@ def split_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str]:
     return fields, "\n".join(lines[end + 1 :])
 
 
-def _link_destination(text: str, start: int) -> tuple[str, int, int] | None:
+def _destination_token(text: str, start: int) -> tuple[str, int] | None:
     if text.startswith("<", start):
         end = text.find(">", start + 1)
         if end < 0:
@@ -96,12 +104,95 @@ def _link_destination(text: str, start: int) -> tuple[str, int, int] | None:
         if depth:
             return None
         url = text[start:end]
-    closing = _LINK_END.match(text, end)
-    return (url, end, closing.end()) if closing else None
+    return url, end
 
 
-def _safe_links(text: str) -> str:
-    """Rewrite inline links and images, leaving code spans untouched."""
+def _link_destination(text: str, start: int) -> tuple[str, int, int] | None:
+    if (destination := _destination_token(text, start)) and (
+        closing := _LINK_END.match(text, destination[1])
+    ):
+        return destination[0], destination[1], closing.end()
+    return None
+
+
+def _reference_key(label: str) -> str:
+    return " ".join(label.split()).casefold()
+
+
+def _allowed_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except ValueError:
+        return False
+
+
+def _reference_line(line: str) -> str:
+    # Quotes and list items are flattened into rows, so check their contents too.
+    line = _QUOTE_PREFIX.sub("", line)
+    return item[3] if (item := _LIST.match(line)) else line
+
+
+def _reference_title(lines: list[str], end: int, raw: str) -> tuple[int, str]:
+    title = raw.strip()
+    next_line = end + 1
+    if not title and next_line < len(lines):
+        title = _reference_line(lines[next_line]).strip()
+        next_line += 1
+    closer = _TITLE_CLOSER.get(title[:1])
+    if closer is None:
+        return end, ""
+    parts = [title]
+    while (len(parts) == len(title) == 1) or not parts[-1].endswith(closer):
+        if next_line >= len(lines):
+            return end, ""
+        line = _reference_line(lines[next_line]).strip()
+        if not line or _REFERENCE_DEFINITION.fullmatch(line) or open_fence(line):
+            return end, ""
+        parts.append(line)
+        next_line += 1
+    title = " " + " ".join(parts)
+    return (next_line - 1, title) if _LINK_END.fullmatch(title + ")") else (end, "")
+
+
+def _references(lines: list[str]) -> dict[str, str | None]:
+    """Remove reference definitions outside code; resolve their uses within each row."""
+    references: dict[str, str | None] = {}
+    marker = ""
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if marker:
+            if closes_fence(stripped, marker):
+                marker = ""
+        elif fence := open_fence(stripped):
+            marker = fence[0]
+        elif (match := _REFERENCE_DEFINITION.fullmatch(_reference_line(lines[index]))) and (
+            key := _reference_key(match[1])
+        ):
+            end = index
+            raw = match[2].rstrip()
+            if not raw and index + 1 < len(lines):
+                raw = _reference_line(lines[index + 1]).strip()
+                end += bool(raw)
+            if raw and (destination := _destination_token(raw, 0)):
+                url, tail = destination
+                if tail == len(raw) or raw[tail].isspace():
+                    last, title = _reference_title(lines, end, raw[tail:])
+                    if raw[tail:] and not title:
+                        index += 1
+                        continue
+                    references.setdefault(
+                        key, escape_destination(url) + title if _allowed_url(url) else None
+                    )
+                    lines[index : last + 1] = [""] * (last - index + 1)
+                    index = last
+        index += 1
+    return references
+
+
+def _safe_links(text: str, references: dict[str, str | None]) -> str:
+    """Rewrite inline and reference links and images, leaving code spans untouched."""
     parts: list[str] = []
     labels: list[tuple[int, str]] = []
     start = cursor = 0
@@ -121,20 +212,27 @@ def _safe_links(text: str) -> str:
         if token != "]" or not labels:
             continue
         label_start, opening = labels.pop()
-        if not (link := _LINK_OPEN.match(text, cursor)) or not (
+        label = "".join(parts[label_start + 1 :]) + text[start : match.start()]
+        if (link := _LINK_OPEN.match(text, cursor)) and (
             destination := _link_destination(text, link.end())
         ):
-            continue
-        url, tail, cursor = destination
-        label = "".join(parts[label_start + 1 :]) + text[start : match.start()]
-        try:
-            parsed = urlsplit(url)
-            allowed = parsed.scheme in {"http", "https"} and parsed.hostname
-        except ValueError:
-            allowed = False
+            url, tail, cursor = destination
+            target = (
+                escape_destination(url) + text[tail : cursor - 1] if _allowed_url(url) else None
+            )
+        else:
+            reference = _REFERENCE_USE.match(text, cursor)
+            key = _reference_key((reference[1] if reference else "") or label)
+            if key not in references:
+                if reference:
+                    cursor = reference.end()
+                continue
+            target = references[key]
+            if reference:
+                cursor = reference.end()
         del parts[label_start:]
-        if allowed:
-            label = f"{opening}{label}]({escape_destination(url)}{text[tail:cursor]}"
+        if target:
+            label = f"{opening}{label}]({target})"
         parts.append(label)
         start = cursor
     parts.append(text[start:])
@@ -147,38 +245,45 @@ def markdown_atoms(body: str) -> tuple[list[Atom], list[tuple[str, int]]]:
     sections: list[tuple[str, int]] = []
     headings = SectionPaths()
     paragraph: list[str] = []
+    lines = clean_text(body).splitlines()
+    references = _references(lines)
 
     def emit(text: str, kind: str) -> None:
         # Leading spaces carry list nesting; everything else is trimmed.
         text = text.rstrip() if kind == "list_item" else text.strip()
         if text.strip():
-            atoms.extend(Atom(part, kind, headings.current) for part in split_atom(text))
+            parts = split_atom(escape_row_markers(text))
+            atoms.extend(Atom(part, kind, headings.current) for part in parts)
 
     def flush() -> None:
         if paragraph:
-            text = _safe_links(" ".join(" ".join(line.split()) for line in paragraph))
+            text = _safe_links(" ".join(" ".join(line.split()) for line in paragraph), references)
             emit(text, "image" if _IMAGE_LINE.fullmatch(text) else "paragraph")
             paragraph.clear()
 
-    lines = clean_text(body).splitlines()
     index = 0
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
-        fence = _FENCE.match(stripped)
-        if fence:
+        if fence := open_fence(stripped):
             flush()
-            marker, language = fence.group(1), fence.group(2)
+            marker, info = fence
+            language = re.match(r"[\w+-]+", info.lstrip())
             code = []
             index += 1
-            while index < len(lines) and not lines[index].strip().startswith(marker):
+            while index < len(lines) and not closes_fence(lines[index].strip(), marker):
                 code.append(lines[index])
                 index += 1
-            emit(f"```{language}\n" + "\n".join(code) + "\n```", "code")
+            atoms.extend(
+                Atom(part, "code", headings.current)
+                for part in code_atoms("\n".join(code), language[0] if language else "")
+            )
         elif heading := _HEADING.match(stripped):
             flush()
             level = len(heading.group(1))
-            text = _safe_links(" ".join(_CLOSING_HASHES.sub("", heading.group(2)).split()))
+            text = _safe_links(
+                " ".join(_CLOSING_HASHES.sub("", heading.group(2)).split()), references
+            )
             if text:
                 sections.append((headings.add(level, text), len(atoms)))
         elif not stripped:
@@ -189,7 +294,7 @@ def markdown_atoms(body: str) -> tuple[list[Atom], list[tuple[str, int]]]:
             while index + 1 < len(lines) and lines[index + 1].strip().startswith(">"):
                 index += 1
                 quote.append(lines[index].strip().lstrip("> ").strip())
-            emit(_safe_links(" ".join(part for part in quote if part)), "quote")
+            emit(_safe_links(" ".join(part for part in quote if part), references), "quote")
         elif stripped.startswith("|"):
             flush()
             rows = [stripped]
@@ -205,11 +310,11 @@ def markdown_atoms(body: str) -> tuple[list[Atom], list[tuple[str, int]]]:
                     if len(header) == len(row)
                     else " | ".join(row)
                 )
-                emit(_safe_links(text), "table_row")
+                emit(_safe_links(text, references), "table_row")
         elif item := _LIST.match(line):
             flush()
             depth = len(item.group(1).expandtabs(4)) // 2
-            emit(("  " * depth) + _safe_links(item.group(3)), "list_item")
+            emit(("  " * depth) + _safe_links(item.group(3), references), "list_item")
         else:
             paragraph.append(stripped)
         index += 1

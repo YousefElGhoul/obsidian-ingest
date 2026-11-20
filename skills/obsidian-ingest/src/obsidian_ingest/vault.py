@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import NoReturn, Self
 
 from obsidian_ingest.config import VaultSettings
+from obsidian_ingest.notes import vault_identity
 
 # Bound agent-facing pages by both content size and serialized transport size.
 MAX_SEARCH_LIMIT = 20
@@ -120,6 +121,7 @@ class VaultReader:
         # CLI path references: their revisions come from earlier processes.
         self._path_note_ids: set[str] = set()
         try:
+            self.vault_id = vault_identity(self.root, root_fd=self._root_fd)
             self._validate_settings()
         except BaseException:
             os.close(self._root_fd)
@@ -528,6 +530,16 @@ class VaultReader:
             "INVALID_ARGUMENT: this revision does not belong to this note_id; pass the "
             "revision returned with the same note_id, or omit it on a first read"
         )
+
+    def can_open(self, path: str) -> bool:
+        """Check scoped note access without reading the content or issuing a handle."""
+        if not isinstance(path, str) or not path.endswith(".md"):
+            return False
+        try:
+            os.close(self._open_relative(path))
+        except NoteUnavailable:
+            return False
+        return True
 
     def get_path_reference(self, path: str, revision: str | None = None) -> NoteReference:
         """Issue a process-local reference for a trusted vault-relative CLI path."""

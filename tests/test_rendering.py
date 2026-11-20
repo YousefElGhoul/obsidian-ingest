@@ -1,4 +1,4 @@
-import json
+import re
 from dataclasses import replace
 
 import pytest
@@ -50,6 +50,10 @@ def _render(xml: str, markup: str = "<html></html>") -> Extraction:
     return result
 
 
+def _envelope_text_size(text: str) -> int:
+    return len(responses.compact_json(responses.compact_json(text)).encode())
+
+
 @pytest.mark.parametrize("text", ["x" * 28_000, "عربية" * 5_600], ids=["ascii", "arabic"])
 def test_long_clipped_paragraph_can_be_read_in_full(text: str) -> None:
     atoms, _ = markdown_atoms(text)
@@ -61,7 +65,7 @@ def test_long_clipped_paragraph_can_be_read_in_full(text: str) -> None:
         rows.extend(page["segments"])
         offset, token = page["next_offset"], page["read_token"]
     assert [row[0] for row in rows] == list(range(len(atoms)))
-    assert all(len(json.dumps(row[-1], ensure_ascii=False).encode()) <= 8_000 for row in rows)
+    assert all(_envelope_text_size(row[-1]) <= 7_000 for row in rows)
     assert "".join(row[-1].removeprefix("(continued) ") for row in rows) == text
 
 
@@ -69,9 +73,29 @@ def test_html_atoms_count_json_escapes_and_utf8_bytes() -> None:
     text = 'ع"\\' * 4_500
     result = _render(f"<p>{text}</p>")
     assert len(result.atoms) > 1
-    assert all(
-        len(json.dumps(atom.text, ensure_ascii=False).encode()) <= 8_000 for atom in result.atoms
+    assert all(_envelope_text_size(atom.text) <= 7_000 for atom in result.atoms)
+
+
+def test_escape_heavy_rows_page_in_full_with_a_token() -> None:
+    label = '\\"' * 1_000
+    text = '\\"\x01' * 4_000
+    atoms, _ = markdown_atoms(f"## {label}\n\n{text}")
+    source = _source(
+        tuple(TranscriptSegment(a.text, kind=a.kind, section=a.section) for a in atoms)
     )
+    rows = []
+    offset, token = 0, None
+    while offset is not None:
+        page = responses.source_page(source, offset=offset, limit=1, read_token=token)
+        assert page["read_token"]
+        assert len(page["segments"]) == 1
+        assert responses.fits_envelope(page, responses.MAX_PAGE_ENVELOPE_BYTES)
+        rows.extend(page["segments"])
+        offset, token = page["next_offset"], page["read_token"]
+    assert [row[0] for row in rows] == list(range(len(atoms)))
+    assert all(_envelope_text_size(row[1]) <= 1_500 for row in rows)
+    assert all(_envelope_text_size(row[-1]) <= 7_000 for row in rows)
+    assert "".join(row[-1].removeprefix("(continued) ") for row in rows) == text
 
 
 def test_atom_splitting_prefers_line_then_sentence_and_preserves_whitespace() -> None:
@@ -86,7 +110,7 @@ def test_atom_splitting_prefers_line_then_sentence_and_preserves_whitespace() ->
 
 
 def test_hard_split_does_not_remove_the_escape_from_literal_markdown() -> None:
-    result = _render("<p>" + "x" * 7_996 + "[link](javascript:…)</p>")
+    result = _render("<p>" + "x" * 6_993 + "[link](javascript:…)</p>")
     assert result.atoms[1].text.startswith(r"(continued) \[")
 
 
@@ -103,6 +127,30 @@ def test_html_literal_markdown_stays_inert_but_generated_formatting_survives() -
         ),
         r"![a\]b](https://example.com/image%28a%29%20%3Cb%3E)",
     ]
+
+
+def test_html_literal_heading_and_highlight_markers_are_escaped() -> None:
+    result = _render("<p>  # Not a heading<lb/><lb/>==not highlighted==</p>")
+    assert [atom.text for atom in result.atoms] == [r"\# Not a heading", r"\==not highlighted=="]
+
+
+@pytest.mark.parametrize("repeated", [1, 2_000])
+def test_code_rows_keep_fences_and_reconstruct_the_original(repeated: int) -> None:
+    code = ('first "\\\n```\n  rest\n' * repeated).removesuffix("\n")
+    html_code = _render(f"<code>{code}</code>").atoms
+    clip_code, _ = markdown_atoms(f"~~~py\n{code}\n~~~")
+    for atoms, language in ((html_code, ""), (clip_code, "py")):
+        assert (len(atoms) > 1) == (repeated > 1)
+        pieces = []
+        for atom in atoms:
+            opening, _, rest = atom.text.partition("\n")
+            payload, _, closing = rest.rpartition("\n")
+            assert atom.kind == "code"
+            assert opening == closing + language
+            assert len(closing) > max(map(len, re.findall("`+", payload)), default=0)
+            assert _envelope_text_size(atom.text) <= 7_000
+            pieces.append(payload)
+        assert "".join(pieces) == code
 
 
 @pytest.mark.parametrize(
@@ -131,13 +179,55 @@ def test_nested_list_keeps_parent_text_in_mixed_content_order() -> None:
     ]
 
 
-def test_repeated_image_url_consumes_each_figures_caption_in_order() -> None:
-    result = _render(
-        '<graphic src="/image"/><graphic src="/image"/>',
-        '<figure><img src="/image"><figcaption>One</figcaption></figure>'
-        '<figure><img src="/image"><figcaption>Two</figcaption></figure>',
+def test_caption_follows_its_figure_when_other_occurrences_share_the_url() -> None:
+    markup = (
+        '<img src="/image#original" alt="standalone">'
+        '<p>Inline <img src="/image#original" alt="inline"> text</p>'
+        '<figure><img src="/image#original" alt="figure one"><figcaption>One</figcaption></figure>'
+        '<figure><img src="/image#original" alt="figure two"><figcaption>Two</figcaption></figure>'
     )
-    assert [atom.text for atom in result.atoms if atom.kind == "caption"] == ["One", "Two"]
+    result = Extraction()
+    document = parse(markup)
+    hints = sanitize(document, URL, result)
+    images = list(document.iter("img"))
+    main = etree.Element("main")
+    etree.SubElement(main, "graphic", **dict(images[0].attrib))
+    paragraph = etree.SubElement(main, "p")
+    etree.SubElement(paragraph, "graphic", **dict(images[1].attrib))
+    etree.SubElement(main, "graphic", **dict(images[3].attrib))
+    _Walker(URL, hints, result).walk(main)
+    assert [(a.kind, a.text) for a in result.atoms] == [
+        ("image", "![standalone](https://example.com/image#original)"),
+        ("paragraph", "![inline](https://example.com/image#original)"),
+        ("image", "![figure two](https://example.com/image#original)"),
+        ("caption", "Two"),
+    ]
+
+
+def test_extraction_preserves_figure_marker_without_exposing_it_in_rows() -> None:
+    prose = "This is a detailed paragraph of article text. " * 40
+    result = extract_html(
+        f"<article><h1>Title</h1><p>{prose}</p>"
+        '<img src="/image.png" alt="standalone">'
+        f'<p>Inline <img src="/image.png" alt="inline"> {prose}</p>'
+        '<figure><img src="/image.png" alt="figure"><figcaption>Correct caption</figcaption></figure>'
+        f"<p>{prose}</p></article>",
+        URL,
+    )
+    rows = [(a.kind, a.text) for a in result.atoms if a.kind in {"image", "caption"}]
+    assert rows == [
+        ("image", "![standalone](https://example.com/image.png)"),
+        ("image", "![figure](https://example.com/image.png)"),
+        ("caption", "Correct caption"),
+    ]
+    assert any("![inline](https://example.com/image.png)" in a.text for a in result.atoms)
+
+
+def test_long_parent_yields_space_to_the_leaf() -> None:
+    result = _render(
+        f'<head rend="h2">{"parent" * 200}</head><head rend="h3">Leaf label</head><p>Body</p>'
+    )
+    assert result.atoms[0].section.endswith("… › Leaf label")
 
 
 def test_html_heading_paths_use_full_labels_and_remain_unique() -> None:

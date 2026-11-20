@@ -10,8 +10,9 @@ import stat
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
+from obsidian_ingest.extractor.html_text import closes_fence, open_fence
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.providers import Citation
 
@@ -34,7 +35,38 @@ _RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "
 # needs none of them, so stripping them does not damage Arabic or Hebrew.
 _BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
 _MAX_METADATA_CHARS = 300
-_URL_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<>[]| "})
+_URL_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<>[]| \\"})
+_AUTHORITY_ESCAPES = {key: value for key, value in _URL_ESCAPES.items() if chr(key) not in "[]"}
+
+
+def _attribution_url(url: str) -> str:
+    def escape(component: str, translation: dict[int, str] = _URL_ESCAPES) -> str:
+        return re.sub(r"%(?![0-9a-fA-F]{2})", "%25", component).translate(translation)
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return escape(url)
+    return urlunsplit(
+        (
+            parts.scheme,
+            escape(parts.netloc, _AUTHORITY_ESCAPES),
+            escape(parts.path),
+            escape(parts.query),
+            escape(parts.fragment),
+        )
+    )
+
+
+def _fence_on_line(line: str, marker: str) -> tuple[bool, str]:
+    stripped = line.lstrip(" ")
+    if len(line) - len(stripped) > 3:
+        return False, marker
+    if marker:
+        return (True, "") if closes_fence(stripped, marker) else (False, marker)
+    if fence := open_fence(stripped.rstrip("\r\n")):
+        return True, fence[0]
+    return False, ""
 
 
 def _inert(value: str, limit: int = _MAX_METADATA_CHARS) -> str:
@@ -129,14 +161,11 @@ def _strip_trailing_source_section(contents: str) -> str:
     A Source section followed by further headings is still rejected by validation.
     """
     lines = contents.splitlines(keepends=True)
-    in_fence = False
+    marker = ""
     start = None
     for index, line in enumerate(lines):
-        stripped = line.lstrip(" ")
-        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
-            in_fence = not in_fence
-            continue
-        heading = None if in_fence else _ATX_HEADING.match(line.rstrip("\r\n"))
+        is_fence, marker = _fence_on_line(line, marker)
+        heading = None if is_fence or marker else _ATX_HEADING.match(line.rstrip("\r\n"))
         if heading:
             text = re.sub(r"[ \t]+#+[ \t]*$", "", heading.group(2) or "").strip().casefold()
             start = index if text in _PROVENANCE_HEADINGS else None
@@ -209,7 +238,7 @@ def _render_draft(
         rendered_body = f"{leading_link}\n\n{rendered_body}"
 
     lines = ["## Source", "", f"- Source: {_inert(source.title or source.source_id)}"]
-    lines.append(f"- URL: {single_line(source.original_url).translate(_URL_ESCAPES)}")
+    lines.append(f"- URL: {_attribution_url(single_line(source.original_url))}")
     if attribution is None:
         attribution = (("Creator", source.creator_name),) if source.creator_name else ()
     for label, value in attribution:
@@ -249,21 +278,12 @@ def _unquote_heading(line: str) -> str:
 def _validate_body(contents: str) -> None:
     """Allow at most one ATX H1 and reject writer-generated Source/Provenance/Related Notes headings."""
     lines = contents.splitlines()
-    in_fence = False
     fence_marker = ""
     h1_count = 0
     for index, line in enumerate(lines):
-        stripped = line.lstrip(" ")
-        if len(line) - len(stripped) <= 3 and stripped.startswith(("```", "~~~")):
-            marker = stripped[:3]
-            if not in_fence:
-                in_fence = True
-                fence_marker = marker
-            elif marker == fence_marker:
-                in_fence = False
-            continue
+        is_fence, fence_marker = _fence_on_line(line, fence_marker)
         # Heading-like text inside code is content, not document structure.
-        if in_fence or line.startswith(("    ", "\t")):
+        if is_fence or fence_marker or line.startswith(("    ", "\t")):
             continue
         unquoted = _unquote_heading(line)
         quoted_heading = _ATX_HEADING.match(unquoted)

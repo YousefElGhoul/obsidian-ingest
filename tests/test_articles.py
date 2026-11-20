@@ -5,7 +5,9 @@ import socketserver
 import threading
 import time
 import zlib
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from articles import FakeWeb, Reply, article, gzipped, json_ld, page, words
@@ -209,6 +211,49 @@ def test_truncated_gzip_is_refused() -> None:
         _fetch(web)
 
 
+@pytest.mark.parametrize("encoding", ["gzip", "x-gzip"])
+@pytest.mark.parametrize("chunk", [1, len(gzipped("first")), 65536])
+def test_gzip_reads_all_members(encoding: str, chunk: int) -> None:
+    body = gzipped("first") + gzipped("") + gzipped(" second")
+    web = FakeWeb(routes={URL: Reply(body, headers={"content-encoding": encoding}, chunk=chunk)})
+    result = _fetch(web)
+    assert (result.text, result.bytes_read) == ("first second", len(body))
+
+
+@pytest.mark.parametrize(
+    ("suffix", "reason"),
+    [
+        (gzipped("second")[:-8], "ended early"),
+        (b"not a gzip member", "is invalid"),
+        (zlib.compress(b"not a gzip member"), "is invalid"),
+    ],
+)
+def test_gzip_rejects_an_invalid_tail(suffix: bytes, reason: str) -> None:
+    body = gzipped("first") + suffix
+    web = FakeWeb(routes={URL: Reply(body, headers={"content-encoding": "gzip"})})
+    with pytest.raises(FetchError, match=f"CONNECTION_FAILED: the compressed body {reason}"):
+        _fetch(web)
+
+
+@pytest.mark.parametrize(
+    ("budget", "limit", "reason"),
+    [
+        ("MAX_BODY_BYTES", 8, "body is larger"),
+        ("MAX_TOTAL_DECODED_BYTES", 8, "decoded budget"),
+        ("MAX_COMPRESSION_RATIO", 0, "compressed body expands too far"),
+    ],
+)
+def test_gzip_members_share_decoding_budgets(
+    monkeypatch: pytest.MonkeyPatch, budget: str, limit: int, reason: str
+) -> None:
+    monkeypatch.setattr(http, budget, limit)
+    text = "a" * (http._CHUNK // 2 + 1) if budget == "MAX_COMPRESSION_RATIO" else "abcde"
+    body = gzipped(text) + gzipped(text)
+    web = FakeWeb(routes={URL: Reply(body, headers={"content-encoding": "gzip"})})
+    with pytest.raises(FetchError, match=f"TOO_LARGE: .*{reason}"):
+        _fetch(web)
+
+
 def test_failed_download_counts_toward_the_raw_budget(monkeypatch) -> None:
     monkeypatch.setattr(http, "MAX_BODY_BYTES", 8)
     monkeypatch.setattr(http, "MAX_TOTAL_BYTES", 12)
@@ -276,6 +321,64 @@ def test_dns_cannot_block_past_the_deadline() -> None:
         assert not web.requests
     finally:
         release.set()
+
+
+def test_stuck_dns_resolutions_have_a_process_wide_limit() -> None:
+    release = threading.Event()
+    workers: list[threading.Thread] = []
+    web = FakeWeb(routes={URL: Reply(article())})
+
+    def resolve(host: str, port: int) -> list[str]:
+        workers.append(threading.current_thread())
+        release.wait()
+        return ["93.184.216.34"]
+
+    try:
+        for attempt in range(7):
+            start = time.monotonic()
+            with pytest.raises(FetchError, match="TIMEOUT"):
+                Fetcher(resolver=resolve, transport=web).fetch(URL, Deadline(0.05))
+            if attempt >= 4:
+                assert time.monotonic() - start >= 0.04
+        assert len(workers) == 4
+        assert not web.requests
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join()
+    assert _fetch(web).status == 200
+
+
+@pytest.mark.parametrize("limit", ["aggregate", "count", "line"])
+def test_response_header_limits_stop_reads(monkeypatch: pytest.MonkeyPatch, limit: str) -> None:
+    status = b"HTTP/1.1 200 OK\r\n"
+    if limit == "aggregate":
+        headers = (b"X-Example: " + b"a" * 4096 + b"\r\n") * 20
+    elif limit == "count":
+        headers = b"X-Example: ok\r\n" * 105
+    else:
+        monkeypatch.setattr(http.http.client, "_MAXLINE", 1024)
+        headers = b"X-Example: " + b"a" * 2048 + b"\r\n"
+    stream = BytesIO(status + headers + b"\r\n")
+    reads: list[tuple[int, int, int]] = []
+    readline = stream.readline
+
+    def track(size: int) -> bytes:
+        start = stream.tell()
+        line = readline(size)
+        reads.append((start, size, len(line)))
+        return line
+
+    stream.readline = track
+    sock = Mock()
+    sock.makefile.return_value = stream
+    monkeypatch.setattr(http.socket, "socket", Mock(return_value=sock))
+    transport = http.HTTPClientTransport()
+    with pytest.raises(FetchError, match="TOO_LARGE"):
+        transport.open(check_url("http://example.com/"), "93.184.216.34", {}, 5)
+    if limit == "aggregate":
+        assert all(size <= http.MAX_HEADER_BYTES - used + 1 for used, size, _ in reads)
+        assert sum(length for _, _, length in reads) == http.MAX_HEADER_BYTES + 1
 
 
 @pytest.mark.parametrize("mode", ["headers", "close-delimited", "aggregate"])

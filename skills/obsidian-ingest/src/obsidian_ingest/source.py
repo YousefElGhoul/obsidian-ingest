@@ -23,6 +23,7 @@ class Source:
 
     ``original_caption`` carries the raw response from a fresh acquisition to the cache;
     it is not loaded on cache reads and does not take part in equality.
+    ``capture`` is the stored publication ID, not a content checksum.
     """
 
     metadata: SourceMetadata
