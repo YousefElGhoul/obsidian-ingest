@@ -30,7 +30,8 @@ To install, repeat the install, or undo it, follow
    loop, because long output gets cut and you would miss parts of the source.
 3. List the ideas worth keeping. Keep an idea only if all four hold:
    - It is a technique, mechanism, tradeoff, gotcha or mental model that the source
-     explains, not one it only mentions or links to.
+     explains in its own rows. If the source only names it or links to a page or video
+     about it, you have not read the explanation: skip it.
    - You can finish "someone would look this up when …" with a concrete situation.
    - It is not trivia (dates, company or product history, where a name comes from, who
      did what first), a recap of the source or a section, a tutorial step, a list of
@@ -49,8 +50,10 @@ To install, repeat the install, or undo it, follow
    `how`, `use`, `code` or `video` that match everything. `limit` is at most 20. Then
    `read_vault_note` for the closest matches, passing `revision` on continued reads.
    Do this before writing anything.
-5. For each idea, decide as below. Before each write, check the note against its cited
-   rows: delete every sentence they don't support; rewrite every opinion, number,
+5. Before the first write, give each idea one destination from the list below. Before
+   each write, read the title and the last sentence on their own: if either sounds like
+   a guarantee, a rule or a current fact, restore the source's condition or date. Then
+   check the note against its cited rows: delete every sentence they don't support; rewrite every opinion, number,
    comparison or forecast as the source's ("Ana Ruiz says …", "In 2019 the author
    expected …"); and make sure no other note or suggestion you wrote already says it.
    Pass the final `read_token` to every write. One write per tool call, never several
