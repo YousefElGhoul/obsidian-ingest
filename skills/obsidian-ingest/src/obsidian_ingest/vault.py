@@ -552,6 +552,21 @@ class VaultReader:
         os.close(fd)
         return reference
 
+    def read_whole(self, note_id: str, *, max_characters: int) -> tuple[str, str, str]:
+        """Return (path, revision, text) of one accessible note, refusing oversized notes."""
+        reference = self._references.get(note_id) if isinstance(note_id, str) else None
+        if reference is None:
+            raise NoteUnavailable
+        text, total, revision = self._read_range(reference.path, 0, max_characters)
+        if revision != reference.revision:
+            raise NoteChanged
+        if total > max_characters:
+            raise ValueError(
+                f"INVALID_ARGUMENT: the note has {total} characters; at most "
+                f"{max_characters} can be ingested"
+            )
+        return reference.path, revision, text
+
     def _read_range(self, relative: str, offset: int, selected_limit: int) -> tuple[str, int, str]:
         """Return a character slice, total length, and revision; reject inconsistent reads."""
         fd = self._open_relative(relative)

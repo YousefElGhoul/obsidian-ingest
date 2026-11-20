@@ -8,6 +8,7 @@ that still cannot be read fails with a stable reason and a hint to clip it inste
 """
 
 import hashlib
+import ipaddress
 import logging
 import re
 from collections.abc import Callable
@@ -23,7 +24,13 @@ from obsidian_ingest.extractor import Provider, SourceKind
 from obsidian_ingest.extractor.acquisition import Acquisition, CaptionFormat, OriginalCaption
 from obsidian_ingest.extractor.exclusions import CATEGORIES, find_exclusions
 from obsidian_ingest.extractor.html_text import Extraction, extract_html, parse
-from obsidian_ingest.extractor.http import Deadline, Fetcher, FetchError, FetchResult
+from obsidian_ingest.extractor.http import (
+    Deadline,
+    Fetcher,
+    FetchError,
+    FetchResult,
+    blocked_address,
+)
 from obsidian_ingest.extractor.metadata import (
     Chapter,
     ExclusionLookup,
@@ -36,7 +43,7 @@ from obsidian_ingest.extractor.providers import (
     ProviderContent,
     UnsupportedOperation,
 )
-from obsidian_ingest.extractor.providers.article import fallbacks
+from obsidian_ingest.extractor.providers.article import clipper, fallbacks
 from obsidian_ingest.extractor.providers.article.metadata import (
     PageMetadata,
     extract_metadata,
@@ -158,6 +165,56 @@ def _http_evidence(page: FetchResult) -> dict[str, Any]:
     }
 
 
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _note_url(fields: dict) -> str | None:
+    """The clipped page's URL from frontmatter, when it is an http(s) URL."""
+    value = fields.get("source") or fields.get("url")
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, str) and urlsplit(value).scheme.lower() in {"http", "https"}:
+        return value
+    return None
+
+
+def _clip_metadata(fields: dict, canonical: str) -> PageMetadata:
+    """Metadata from Web Clipper frontmatter, with the same field rules as pages."""
+    meta = PageMetadata(canonical_url=canonical)
+
+    def text(name: str) -> str | None:
+        value = fields.get(name)
+        value = value[0] if isinstance(value, list) and value else value
+        return value[:500] or None if isinstance(value, str) else None
+
+    authors = fields.get("author") or fields.get("authors")
+    authors = authors if isinstance(authors, list) else [authors] if authors else []
+    meta.title = text("title")
+    meta.authors = tuple(a[:200] for a in authors if isinstance(a, str) and a)[:20]
+    meta.published = parse_date(text("published"))
+    language = text("lang") or text("language")
+    meta.language = (
+        language
+        if language and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", language)
+        else None
+    )
+    meta.site_name = text("site")
+    meta.description = text("description")
+    meta.provenance = {
+        name: "web-clipper"
+        for name, value in (("title", meta.title), ("authors", meta.authors),
+                            ("published", meta.published), ("language", meta.language),
+                            ("site_name", meta.site_name), ("canonical_url", canonical))
+        if value
+    }  # fmt: skip
+    return meta
+
+
 @dataclass(frozen=True, slots=True)
 class ArticleProvider:
     """Web articles: guarded fetch, extraction, fallbacks and section citations."""
@@ -257,19 +314,74 @@ class ArticleProvider:
                 "LOW_QUALITY": "the page text is mostly navigation or repeated blocks",
             }[best.quality.reason]
             raise FetchError(best.quality.reason, f"{detail}; {CLIP_HINT}")
-        return self._content(url, checked.identity_key, page, meta, best, attempts, deadline,
-                             exclude_sponsors)  # fmt: skip
+        return self._content(
+            url,
+            checked.identity_key,
+            meta,
+            best,
+            OriginalCaption(CaptionFormat.HTML, page.body),
+            exclude_sponsors,
+            final_url=page.final_url,
+            evidence={
+                "attempts": attempts,
+                "http": _http_evidence(page),
+                "deadline_used_seconds": deadline.used(),
+            },
+        )
+
+    def accepts_note(self, text: str) -> bool:
+        fields, _ = clipper.split_frontmatter(text)
+        return isinstance(_note_url(fields), str)
+
+    def note_identity(self, note: clipper.ClippedNote) -> str:
+        fields, _ = clipper.split_frontmatter(note.text)
+        return self.identity(_note_url(fields))
+
+    def acquire_note(self, note: clipper.ClippedNote, *, exclude_sponsors: bool) -> ProviderContent:
+        """Build a capture from a Web Clipper note; the note itself is never modified."""
+        if len(note.text) > clipper.MAX_NOTE_CHARACTERS:
+            raise ValueError("INVALID_ARGUMENT: the note is too long to ingest")
+        fields, body = clipper.split_frontmatter(note.text)
+        url = _note_url(fields)
+        checked = check_url(url, make_fetcher().allowed_ports)
+        if _is_ip_literal(checked.host) and blocked_address(checked.host):
+            raise URLRejected("URL_REJECTED: the clip's source is a private or local address")
+        atoms, sections = clipper.markdown_atoms(body)
+        extraction = Extraction(atoms=atoms, sections=sections)
+        for atom in atoms:
+            extraction.words += len(atom.text.split())
+            for label in re.findall(r"(?<!!)\[([^\]]*)\]\(https?://", atom.text):
+                extraction.links += 1
+                extraction.link_words += len(label.split())
+            extraction.images += len(re.findall(r"!\[[^\]]*\]\(https?://", atom.text))
+        meta = _clip_metadata(fields, checked.fetch_url)
+        candidate = _candidate("web_clipper", extraction, declared_words=None)
+        if candidate.quality.failed:
+            raise FetchError(
+                candidate.quality.reason, "the clipped note has no readable article text"
+            )
+        return self._content(
+            url,
+            checked.identity_key,
+            meta,
+            candidate,
+            OriginalCaption(CaptionFormat.MARKDOWN, note.text.encode("utf-8")),
+            exclude_sponsors,
+            final_url=checked.fetch_url,
+            evidence={"note_path": note.path, "note_revision": note.revision},
+        )
 
     def _content(
         self,
         url: str,
         identity_key: str,
-        page: FetchResult,
         meta: PageMetadata,
         best: _Candidate,
-        attempts: list[dict[str, Any]],
-        deadline: Deadline,
+        original: OriginalCaption,
         exclude_sponsors: bool,
+        *,
+        final_url: str,
+        evidence: dict[str, Any],
     ) -> ProviderContent:
         import trafilatura
 
@@ -286,7 +398,7 @@ class ArticleProvider:
             categories=categories,
             retrieved_at=acquired_at if categories else None,
         )
-        canonical = page.final_url
+        canonical = final_url
         if meta.canonical_url:
             try:
                 canonical = check_url(meta.canonical_url).fetch_url
@@ -313,7 +425,7 @@ class ArticleProvider:
                 authors=meta.authors,
                 modified_at=meta.modified,
                 site_name=meta.site_name,
-                final_url=page.final_url,
+                final_url=final_url,
                 identity_key=identity_key,
                 word_count=meta.word_count,
             ),
@@ -329,10 +441,9 @@ class ArticleProvider:
             ),
             SourceKind.TEXT,
         )
-        original = OriginalCaption(CaptionFormat.HTML, page.body)
         evidence = {
             "method": best.method,
-            "attempts": attempts,
+            **evidence,
             "quality": {
                 "status": best.quality.status,
                 "words": best.quality.words,
@@ -346,8 +457,6 @@ class ArticleProvider:
                 "chrome_elements": extraction.removed_chrome,
             },
             "kept": {"links": extraction.links, "images": extraction.images},
-            "http": _http_evidence(page),
-            "deadline_used_seconds": deadline.used(),
             "metadata_provenance": dict(meta.provenance),
             "metadata_conflicts": {key: list(value) for key, value in meta.conflicts.items()},
             "original_payload_format": original.format.value,

@@ -156,9 +156,12 @@ def _vault(path: Path | None):
 def _tool_parsers(subparsers) -> None:
     """Register the CLI counterparts of shared MCP operations without duplicating logic."""
     parser = subparsers.add_parser(
-        "ingest-source", help="Ingest a URL and return a persistent source ID"
+        "ingest-source", help="Ingest a URL, or a Web Clipper note, and return a source ID"
     )
-    parser.add_argument("url")
+    parser.add_argument("url", nargs="?")
+    parser.add_argument(
+        "--note", help="Vault-relative path of a page saved with Obsidian Web Clipper"
+    )
     parser.add_argument("--include-sponsors", action="store_true")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--cache-db", type=Path)
@@ -406,6 +409,18 @@ def _run_tool_command(args) -> Any:
         _configure_providers(args.config or default_config_path())
         if args.verbose:
             logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
+        if (args.url is None) == (args.note is None):
+            raise OperationError("INVALID_ARGUMENT", "pass exactly one of a URL or --note")
+        if args.note is not None:
+            if args.refresh:
+                raise OperationError("INVALID_ARGUMENT", "--refresh applies only to URLs")
+            with _vault(args.config) as vault:
+                return responses.ingest_note(
+                    _cache(args),
+                    vault,
+                    _path_handle(vault, args.note, "note"),
+                    exclude_sponsors=not args.include_sponsors,
+                )
         return responses.ingest(
             _cache(args), args.url, exclude_sponsors=not args.include_sponsors, refresh=args.refresh
         )

@@ -169,6 +169,18 @@ def configure(options: dict[str, Any]) -> None:
             configure_provider(options)
 
 
+def resolve_note(text: str) -> SourceProvider:
+    """Return the provider that can ingest a saved note (such as a web clip), or raise."""
+    for provider in registry():
+        accepts = getattr(provider, "accepts_note", None)
+        if accepts is not None and accepts(text):
+            return provider
+    raise ValueError(
+        "INVALID_ARGUMENT: this note is not a supported saved source; a Web Clipper note "
+        "needs a source URL in its frontmatter"
+    )
+
+
 def resolve_url(url: str) -> SourceProvider:
     """Return the provider for a URL (supported or not), or raise ValueError."""
     if isinstance(url, str):

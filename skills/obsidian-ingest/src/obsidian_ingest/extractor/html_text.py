@@ -240,8 +240,9 @@ class _Walker:
         return SECTION_SEPARATOR.join(text for _, text in self.headings) or None
 
     def emit(self, text: str, kind: str) -> None:
-        text = text.strip()
-        if not text:
+        # Leading spaces carry list nesting; everything else is trimmed.
+        text = text.rstrip() if kind == "list_item" else text.strip()
+        if not text.strip():
             return
         self.result.words += len(text.split())
         for part in _split(text):

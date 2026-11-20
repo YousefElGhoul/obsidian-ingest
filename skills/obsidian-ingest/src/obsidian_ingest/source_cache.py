@@ -32,10 +32,10 @@ from obsidian_ingest.extractor.metadata import (
     NativeFormat,
     SourceMetadata,
 )
-from obsidian_ingest.extractor.providers import get_provider, supported_provider
+from obsidian_ingest.extractor.providers import get_provider, resolve_note, supported_provider
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
-from obsidian_ingest.source import Source, ingest_source
+from obsidian_ingest.source import Source, ingest_source, source_from_content
 
 SCHEMA_VERSION = 3
 _ROW = "source_id, provider, native_id, exclude_sponsors, payload, checksum"
@@ -401,6 +401,38 @@ class SourceCache:
 
         # Build and validate the complete new capture before touching the database.
         source = ingest_source(url, exclude_sponsors=exclude_sponsors)
+        return self._publish(key, source, replace=refresh)
+
+    def ingest_note(self, note: object, *, exclude_sponsors: bool = True) -> CachedSource:
+        """Ingest a saved note (a web clip) into the same capture key as its source URL.
+
+        The clip is an explicit user choice, so it replaces whatever capture the key holds
+        (a web capture, or a clip of an older revision); an unchanged clip is reused.
+        Replacing the capture invalidates read tokens issued for the previous one.
+        """
+        if not isinstance(exclude_sponsors, bool):
+            raise TypeError("exclude_sponsors must be a boolean")
+        provider = resolve_note(note.text)
+        key = (provider.name.value, provider.note_identity(note), int(exclude_sponsors))
+        row = self._read("provider = ? AND native_id = ? AND exclude_sponsors = ?", key)
+        if row is not None:
+            current = self._result(row, cached=True)
+            acquisition = current.source.acquisition
+            evidence = acquisition.evidence if acquisition is not None else None
+            if (
+                evidence
+                and evidence.get("method") == "web_clipper"
+                and evidence.get("note_path") == note.path
+                and evidence.get("note_revision") == note.revision
+            ):
+                return current
+        content = provider.acquire_note(note, exclude_sponsors=exclude_sponsors)
+        return self._publish(key, source_from_content(content), replace=True)
+
+    def _publish(self, key: tuple, source: Source, *, replace: bool) -> CachedSource:
+        """Store a validated capture under its key, keeping the persistent source_id."""
+        predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
+        refresh = replace
         original = _original_for_storage(source)
         payload = _encode(source)
         checksum = hashlib.sha256(payload.encode()).hexdigest()

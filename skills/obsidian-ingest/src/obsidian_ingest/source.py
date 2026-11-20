@@ -12,7 +12,7 @@ from obsidian_ingest.extractor.metadata import (
     SourceMetadata,
     categorize_content,
 )
-from obsidian_ingest.extractor.providers import supported_provider
+from obsidian_ingest.extractor.providers import ProviderContent, supported_provider
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import FilteredTranscript, filter_source_transcript
 
@@ -55,6 +55,11 @@ def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
     if not isinstance(exclude_sponsors, bool):
         raise TypeError("exclude_sponsors must be a boolean")
     content = supported_provider(url).acquire(url, exclude_sponsors=exclude_sponsors)
+    return source_from_content(content)
+
+
+def source_from_content(content: ProviderContent) -> Source:
+    """Assemble a validated Source, with its filtered view, from one provider capture."""
     filtered = filter_source_transcript(content.metadata, content.transcript, content.exclusions)
     return Source(
         content.metadata,
