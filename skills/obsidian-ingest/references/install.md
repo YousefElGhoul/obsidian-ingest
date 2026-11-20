@@ -69,7 +69,7 @@ skill-installer): it copies the skill without a plan and skips these steps. The 
   `config/settings.toml` and `.venv` kept inside it: back up the settings first and
   run setup again afterwards.
 - **Upgrading from v0.1.x:** Include the cache and tool changes in your approval
-  plan. This version requires SQLite schema 3: select a fresh cache or get approval
+  plan. This version requires SQLite schema 4: select a fresh cache or get approval
   to reset the old one, then re-ingest sources. Old source IDs do not carry over.
   In host allowlists, replace `list_chapters`, `read_transcript` and `read_chapter`
   with `list_sections`, `read_source` and `read_section`, respectively.

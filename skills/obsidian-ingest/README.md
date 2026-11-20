@@ -34,7 +34,7 @@ the settings elsewhere. The server refuses to guess a vault or broaden permissio
 For MCP, configure the host to launch `mcp/server.py` using `uv run --no-dev` from this
 directory or absolute paths, as described in the install steps.
 
-**Upgrading from v0.1.x:** Use a fresh SQLite schema 3 cache or approve resetting the
+**Upgrading from v0.1.x:** Use a fresh SQLite schema 4 cache or approve resetting the
 old one. Update host allowlists for the renamed tools and re-ingest sources; see
 [the upgrade steps](references/install.md#2-decide-where-the-skill-will-live).
 

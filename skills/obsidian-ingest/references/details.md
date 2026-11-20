@@ -55,7 +55,10 @@ authorizes permission changes.
   Mention generated or translated captions, a material gap, or a `degraded` article as
   uncertainty when it matters for a note.
 - Reading every row doesn't prove complete or accurate coverage. The cache is
-  disposable; a `source_id` survives refresh.
+  disposable; a `source_id` survives refresh. Variants of a page naming the same
+  same-site canonical URL share one capture. A `refresh=true` ingest reports
+  `refreshed`: `not_modified` keeps the capture and earlier read tokens; `replaced`
+  invalidates them. `diagnostics.same_content_as` lists captures with identical text.
 - Article URL acquisition errors look like `INGEST_FAILED: Could not ingest source:
   <REASON>: …` (CLI JSON separates the code and message). Initial URL validation can
   instead return `INVALID_ARGUMENT`. `URL_REJECTED` and `ADDRESS_BLOCKED` are policy
@@ -82,7 +85,8 @@ authorizes permission changes.
   Each page lists its `fields` once. A video row is `[source_index, start, duration,
   text]`; an article row is `[source_index, section, kind, text]`, where `section` is
   the heading path and `kind` is `paragraph`, `list_item`, `quote`, `code`,
-  `table_row`, `image` or `caption`. `start`/`end` ranges apply only to videos; read
+  `table_row`, `image`, `caption`, `math` (`$$…$$`) or `footnote` (`[n] …`, in a
+  `Footnotes` section); inline formulas are `$…$`. `start`/`end` ranges apply only to videos; read
   an article section with `read_section`.
 - `get_thumbnail(source_id)` is optional, for vision-capable models: it fetches the
   video's 480x360 thumbnail on demand (MCP returns the image plus `{mime_type, width,

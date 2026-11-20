@@ -127,7 +127,8 @@ validation, limits, and write behavior; their syntax and note identifiers differ
 ### Reuse source acquisition, not a generated answer
 
 A local SQLite cache reuses acquired source metadata, captions and article text across
-sessions; tracking parameters such as `utm_*` don't create a second copy.
+sessions; tracking parameters and AMP or mobile versions of a page don't create a
+second copy, and refreshing a page its server reports unchanged keeps its capture.
 Vision-capable agents can optionally fetch a thumbnail on demand; it is not video
 inspection, and thumbnails are not retained in the SQLite cache.
 
@@ -206,7 +207,7 @@ creates private `config/settings.toml` settings. It registers the tools where ne
 checks that a fresh session loads the skill, and reports the paths, changes, and undo
 steps. Setup refuses to overwrite existing settings.
 
-**Upgrading from v0.1.x:** Use a fresh SQLite schema 3 cache or approve resetting
+**Upgrading from v0.1.x:** Use a fresh SQLite schema 4 cache or approve resetting
 the old one, then re-ingest your sources. Old source IDs do not carry over. In host
 allowlists, replace `list_chapters`, `read_transcript` and `read_chapter` with
 `list_sections`, `read_source` and `read_section`, respectively.

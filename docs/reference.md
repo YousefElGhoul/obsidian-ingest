@@ -242,7 +242,9 @@ absolute. It is outside the repository and vault. Use
 outside both the repository and vault.
 
 `ingest_source(url, exclude_sponsors=True, refresh=False)` returns `source_id`, `cached`,
-and `overview`. A hit makes zero yt-dlp calls and no caption or SponsorBlock requests.
+and `overview`, plus `refreshed` (`replaced` or `not_modified`) when `refresh=True`.
+`overview.diagnostics.same_content_as` (also in `get_source_overview`) lists other
+captures whose text is identical; they are reported, never merged. A hit makes zero yt-dlp calls and no caption or SponsorBlock requests.
 YouTube watch, short-link, shorts, live, and embed URLs share the video-ID cache key.
 The stored original URL remains the URL used for extraction, even when a hit uses a
 different URL form. Sponsor filtering enabled and disabled have separate snapshots and
@@ -265,11 +267,14 @@ automatic expiration and no history. Pass `refresh=True` to `ingest_source` (CLI
 `--refresh`) to re-acquire an entry, including a previous failed SponsorBlock lookup.
 The new capture is fully built first; then one transaction replaces the old capture
 and everything keyed to it, keeping the existing `source_id`. A failed refresh reports
-the failure and leaves the previous capture intact. Failed acquisition does not create
+the failure and leaves the previous capture intact. An article refresh is conditional:
+the stored `ETag`/`Last-Modified` are sent back, and a 304 keeps the capture unchanged,
+with its `acquired_at` and earlier read tokens, and reports `refreshed: not_modified`.
+Failed acquisition does not create
 an entry. Unknown IDs produce `SOURCE_NOT_FOUND`; corrupt entries produce errors rather
 than incomplete data, and refresh can replace a bad entry.
 
-The cache requires SQLite schema version 3 (`user_version`). Incompatible caches are
+The cache requires SQLite schema version 4 (`user_version`). Incompatible caches are
 rejected with `SOURCE_CACHE_ERROR`, never migrated or deleted automatically; the MCP
 server still starts and vault tools keep working. When upgrading from v0.1.x, start
 with a fresh cache (or approve resetting the old one), then re-ingest sources.
@@ -534,8 +539,11 @@ Any http(s) URL that no other provider claims is an article. Rows are
 `[source_index, section, kind, text]`: `section` is the heading path (`A › B`), and
 `kind` is `paragraph`, `list_item` (indented by nesting), `quote`, `code` (fenced, with
 the language when the page gives it), `table_row` (`Header: value; …`), `image`
-(`![alt](url)`, not downloaded) or `caption`. Text is Markdown with absolute http(s)
-links; other link schemes become plain text. `list_sections` returns heading paths
+(`![alt](url)`, not downloaded), `caption`, `math` (a display formula, `$$…$$`) or
+`footnote` (`[n] …`, in a `Footnotes` section). Text is Markdown with absolute http(s)
+links; other link schemes become plain text. MathML, KaTeX and MathJax formulas become
+Obsidian math (`$…$` inline); Markdown inside a formula stays inside the math.
+Headings are section paths, not rows. `list_sections` returns heading paths
 with `first_index` and `row_count`; `start`/`end` reads apply only to videos.
 
 **Fetching.** URLs are validated before any network access: http(s) only, no user
@@ -543,7 +551,8 @@ name or password, at most 2,048 characters, ports 80 and 443 (plus trusted
 `extra_ports`), and no numeric-host tricks (`2130706433`, `0x7f.1`, `127.1`). Three
 forms are kept apart: the original URL (shown in drafts), the fetch URL (IDNA host,
 percent-encoded, no fragment, query kept as given), and the identity key (for the cache:
-tracking parameters such as `utm_*`, `fbclid` and `gclid` removed, query sorted). Every
+tracking parameters such as `utm_*`, `fbclid` and `gclid` removed, query sorted; `ref`
+is kept because it often selects content, such as a branch or tab). Every
 address a host resolves to must be public by default (see trusted settings below).
 The connection is pinned to a checked address, with TLS hostname verification.
 Each fetch follows at most five checked redirects (no HTTPS-to-HTTP downgrade) and
@@ -589,7 +598,12 @@ is tried once one rates `ok`.
 **Metadata.** Title, authors, published and modified dates, canonical URL, language,
 site name, description and word count come from JSON-LD, then trafilatura, then
 OpenGraph and `meta` tags, then `<title>`. `evidence.metadata_provenance` names each
-field's source. `canonical_url` falls back to the final URL; when language is unknown,
+field's source. A canonical URL on the same site as the final page (the same host, or
+one a subdomain of the other) owns the capture: the requested URL becomes its alias,
+so AMP, mobile and tracking variants share one capture and `source_id`. A capture is
+reused only for the URL it was fetched from or the URL it is stored under, so a page
+naming another page as canonical never stands in for it. Canonical URLs on other
+sites are ignored for identity. `canonical_url` falls back to the final URL; when language is unknown,
 metadata `language` is `null` and `diagnostics.evidence.language` is `und`. Drafts
 add `Author`/`Authors`, `Site`, `Published` and `Language` when known, and cite up to
 eight unique `Relevant sections` as escaped plain text.

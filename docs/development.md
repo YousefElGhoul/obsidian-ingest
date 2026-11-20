@@ -68,7 +68,10 @@ compared. Each report is keyed by `url` and
 contains the available tool schemas, arguments and responses, overview, exclusions,
 all retained transcript pages, and a read of the first creator chapter when available.
 Transcript/chapter page references point into the recorded `calls` array, where each
-response is stored once. This can produce large reports for long videos. The evaluator
+response is stored once. A successful report also has an `evidence_summary` (method and
+attempts, quality and warnings, words, sections, exclusions, language, metadata
+provenance, encoding, bytes and `same_content_as`), and the console line names the
+article method and quality. This can produce large reports for long videos. The evaluator
 does **not** call the draft writer or any model. It reuses cached sources or extracts
 live YouTube data on a cache miss; this is not part of pytest.
 
