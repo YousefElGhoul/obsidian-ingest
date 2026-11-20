@@ -202,21 +202,26 @@ def _sections(extraction: Extraction) -> tuple[Chapter, ...]:
     return tuple(chapters)
 
 
+_SAME_RESPONSE_METHODS = frozenset({"extract", "json-ld", "embedded-json"})
+
+
 def _validators(previous: "Source | None", url: str) -> dict[str, str] | None:
     """The validators of a previous web capture of this same URL, for a conditional GET."""
     if previous is None or previous.acquisition is None:
         return None
     evidence = previous.acquisition.evidence or {}
     details = previous.metadata.provider_details
+    # Only text taken from the page's own response can be revalidated with its
+    # validators; AMP and feed text came from other resources.
     if (
-        evidence.get("method") == "web_clipper"
+        evidence.get("method") not in _SAME_RESPONSE_METHODS
         or not isinstance(details, ArticleDetails)
         or details.requested_key != check_url(url, make_fetcher().allowed_ports).identity_key
     ):
         return None
     http = evidence.get("http") or {}
     found = {key: http[key] for key in ("etag", "last_modified") if isinstance(http.get(key), str)}
-    return found or None
+    return found | {"url": details.final_url} if found else None
 
 
 def _http_evidence(page: FetchResult) -> dict[str, Any]:

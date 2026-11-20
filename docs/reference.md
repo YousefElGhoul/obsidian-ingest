@@ -242,9 +242,12 @@ absolute. It is outside the repository and vault. Use
 outside both the repository and vault.
 
 `ingest_source(url, exclude_sponsors=True, refresh=False)` returns `source_id`, `cached`,
-and `overview`, plus `refreshed` (`replaced` or `not_modified`) when `refresh=True`.
+and `overview`, plus `refreshed` when `refresh=True`: `replaced`, `not_modified`, or
+`kept` when a variant URL is refreshed but its capture was fetched from the canonical
+URL (refresh that URL to replace it).
 `overview.diagnostics.same_content_as` (also in `get_source_overview`) lists other
-captures whose text is identical; they are reported, never merged. A hit makes zero yt-dlp calls and no caption or SponsorBlock requests.
+captures whose text is identical and that this session could open (clips from another
+vault are left out); they are reported, never merged. A hit makes zero yt-dlp calls and no caption or SponsorBlock requests.
 YouTube watch, short-link, shorts, live, and embed URLs share the video-ID cache key.
 The stored original URL remains the URL used for extraction, even when a hit uses a
 different URL form. Sponsor filtering enabled and disabled have separate snapshots and
@@ -268,7 +271,9 @@ automatic expiration and no history. Pass `refresh=True` to `ingest_source` (CLI
 The new capture is fully built first; then one transaction replaces the old capture
 and everything keyed to it, keeping the existing `source_id`. A failed refresh reports
 the failure and leaves the previous capture intact. An article refresh is conditional:
-the stored `ETag`/`Last-Modified` are sent back, and a 304 keeps the capture unchanged,
+the stored `ETag`/`Last-Modified` are sent back, only to the URL that returned them and
+only for text extracted from that page's own response (not AMP or feed text), and a
+304 keeps the capture unchanged,
 with its `acquired_at` and earlier read tokens, and reports `refreshed: not_modified`.
 Failed acquisition does not create
 an entry. Unknown IDs produce `SOURCE_NOT_FOUND`; corrupt entries produce errors rather
@@ -543,6 +548,8 @@ the language when the page gives it), `table_row` (`Header: value; …`), `image
 `footnote` (`[n] …`, in a `Footnotes` section). Text is Markdown with absolute http(s)
 links; other link schemes become plain text. MathML, KaTeX and MathJax formulas become
 Obsidian math (`$…$` inline); Markdown inside a formula stays inside the math.
+Hidden formulas are dropped, and formulas over 2,000 characters, or in a row that must
+be split, are written as escaped text.
 Headings are section paths, not rows. `list_sections` returns heading paths
 with `first_index` and `row_count`; `start`/`end` reads apply only to videos.
 

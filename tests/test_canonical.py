@@ -177,3 +177,88 @@ def test_unsafe_validators_are_not_stored_or_sent(monkeypatch, cli_runner, db) -
     assert first["overview"]["diagnostics"]["evidence"]["http"]["etag"] is None
     cli_runner.ok("ingest-source", PAGE, "--refresh", *db)
     assert "If-None-Match" not in web.sent_headers[1]
+
+
+# --- Review round: canonical protection, validator binding, private duplicates -----------
+
+
+def test_refreshing_a_variant_keeps_the_canonical_pages_capture(monkeypatch, cli_runner, db):
+    FakeWeb(
+        routes={CANONICAL: Reply(story("Story")), AMP: Reply(story("Story (AMP)", text="amp"))}
+    ).install(monkeypatch)
+    genuine = cli_runner.ok("ingest-source", CANONICAL, *db)
+    variant = cli_runner.ok("ingest-source", AMP, "--refresh", *db)
+    assert variant["refreshed"] == "kept" and variant["source_id"] == genuine["source_id"]
+    rows = cli_runner.ok("read-source", genuine["source_id"], *db)["segments"]
+    assert all("amp" not in row[-1] for row in rows)
+    assert cli_runner.ok("get-source-overview", genuine["source_id"], *db)["title"] == "Story"
+
+
+def test_validators_go_only_to_the_url_that_issued_them(monkeypatch, cli_runner, db) -> None:
+    final, moved = "https://example.com/essay-final", "https://example.com/essay-moved"
+    web = FakeWeb(
+        routes={
+            PAGE: Reply(status=302, headers={"location": final}),
+            final: Reply(essay(), headers={"ETag": '"v1"'}),
+        }
+    ).install(monkeypatch)
+    cli_runner.ok("ingest-source", PAGE, *db)
+    web.routes[final] = Reply(status=304)
+    assert cli_runner.ok("ingest-source", PAGE, "--refresh", *db)["refreshed"] == "not_modified"
+    assert "If-None-Match" not in web.sent_headers[2]  # The redirecting URL.
+    assert web.sent_headers[3]["If-None-Match"] == '"v1"'  # The URL that issued it.
+    # When the redirect leads elsewhere, that resource never sees the old validator.
+    web.routes[PAGE] = Reply(status=302, headers={"location": moved})
+    web.routes[moved] = Reply(status=304)
+    error = cli_runner.fail("ingest-source", PAGE, "--refresh", *db)
+    assert "HTTP_304" in error["message"]
+    assert "If-None-Match" not in web.sent_headers[-1]
+
+
+def test_fallback_text_is_never_revalidated_with_the_page_validators() -> None:
+    from types import SimpleNamespace
+
+    from obsidian_ingest.extractor.providers.article import provider
+
+    details = provider.ArticleDetails((), None, None, PAGE, PAGE, None, PAGE)
+    for method, expected in (("extract", True), ("amp", False), ("feed", False)):
+        source = SimpleNamespace(
+            metadata=SimpleNamespace(provider_details=details),
+            acquisition=SimpleNamespace(evidence={"method": method, "http": {"etag": '"v1"'}}),
+        )
+        found = provider._validators(source, PAGE)
+        assert (found == {"etag": '"v1"', "url": PAGE}) is expected, method
+
+
+def test_same_content_hides_clips_from_unreadable_vaults(tmp_path, cli_runner, db) -> None:
+    from test_clipper import clip_text
+
+    source = "https://example.com/posts/locked?utm_source=clipper"
+    notes = {
+        ("a", "one.md"): "https://example.com/one",
+        ("a", "three.md"): "https://example.com/three",
+        ("b", "two.md"): "https://example.com/two",
+    }
+    configs = {}
+    for name in ("a", "b"):
+        (tmp_path / name / "Clippings").mkdir(parents=True)
+        config = tmp_path / f"{name}.toml"
+        config.write_text(f'[vault]\nroot = "{tmp_path / name}"\nallowed = ["*"]\n')
+        configs[name] = ("--config", str(config))
+    ids = {}
+    for (name, note), url in notes.items():
+        (tmp_path / name / "Clippings" / note).write_text(clip_text(**{source: url}))
+        result = cli_runner.ok("ingest-source", "--note", f"Clippings/{note}", *db, *configs[name])
+        ids[note] = result["source_id"]
+    # Vault A sees its own identical clip, never vault B's.
+    overview = cli_runner.ok("get-source-overview", ids["one.md"], *db, *configs["a"])
+    assert overview["diagnostics"]["same_content_as"] == [ids["three.md"]]
+    overview = cli_runner.ok("get-source-overview", ids["two.md"], *db, *configs["b"])
+    assert overview["diagnostics"]["same_content_as"] == []
+
+
+def test_a_malformed_ingest_request_is_refused_before_settings_load(tmp_path, cli_runner) -> None:
+    config = tmp_path / "broken.toml"
+    config.write_text("not toml [")
+    error = cli_runner.fail("ingest-source", PAGE, "--note", "x.md", "--config", str(config))
+    assert error["code"] == "INVALID_ARGUMENT"

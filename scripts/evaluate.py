@@ -183,16 +183,17 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
             }
         else:
             report["chapter_probe"] = {"skipped": "No creator chapters were provided"}
-        report["evidence_summary"] = evidence_summary(report)
         report["status"] = "success"
     except Exception as error:  # noqa: BLE001 - record a per-video tool failure and continue.
         report["error"] = f"{type(error).__name__}: {error}"
+    if report.get("overview") or report.get("ingest_overview"):
+        report["evidence_summary"] = evidence_summary(report)
     return report
 
 
 def evidence_summary(report: dict[str, Any]) -> dict[str, Any]:
     """A compact view of how a source was acquired, for comparing runs at a glance."""
-    overview = report.get("overview") or {}
+    overview = report.get("overview") or report.get("ingest_overview") or {}
     diagnostics = overview.get("diagnostics") or {}
     evidence = diagnostics.get("evidence") or {}
     quality = evidence.get("quality") or {}
@@ -211,7 +212,7 @@ def evidence_summary(report: dict[str, Any]) -> dict[str, Any]:
         "sections": overview.get("section_count"),
         "segments": report.get("transcript_segment_count"),
         "excluded_segments": exclusions.get("excluded_segments"),
-        "language": overview.get("language"),
+        "language": evidence.get("language") or overview.get("language"),
         "metadata_provenance": evidence.get("metadata_provenance"),
         "encoding": http.get("encoding"),
         "bytes": http.get("bytes"),

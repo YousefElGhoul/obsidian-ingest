@@ -455,7 +455,12 @@ class SourceCache:
             )
         except NotModified:
             assert previous is not None
-            return replace(previous, not_modified=True)
+            # Another ingest may have replaced the capture while this one was fetching.
+            row = self._read(_KEY, key)
+            current = self._result(row, cached=True) if row is not None else None
+            if current is not None and current.source.capture == previous.source.capture:
+                return replace(current, not_modified=True)
+            source = ingest_source(url, exclude_sponsors=exclude_sponsors)
         return self._publish(
             source,
             exclude_sponsors,
@@ -563,9 +568,22 @@ class SourceCache:
                 existing = connection.execute(
                     f"SELECT {_ROW} FROM sources WHERE {_KEY}", key
                 ).fetchone()
-                if existing is not None and (reuse is not None or not replace):
-                    current = self._result(existing, cached=True)
-                    if reuse is None or reuse(current.source, stored):
+                try:
+                    current = self._result(existing, cached=True) if existing else None
+                except SourceCacheError:
+                    if not replace:
+                        raise
+                    current = None  # A refresh replaces an unreadable entry.
+                if current is not None:
+                    # A capture fetched from its own canonical URL is replaced only by a
+                    # refresh of that URL, never by a page that names it canonical.
+                    protected = stored != requested and (
+                        get_provider(provider).fetched_identity(current.source) == stored
+                    )
+                    if protected or (
+                        (reuse is not None or not replace)
+                        and (reuse is None or reuse(current.source, stored))
+                    ):
                         return current
                 source_id = existing[0] if existing is not None else new_id
                 if existing is not None:

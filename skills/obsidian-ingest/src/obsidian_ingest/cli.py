@@ -446,6 +446,9 @@ def _run_tool_command(args) -> Any:
             )
 
     config_path = args.config or default_config_path()
+    if args.command == "ingest-source":
+        # Refuse a malformed request before opening the vault or the cache.
+        responses.check_ingest_request(args.url, args.note, args.refresh, _INGEST_NAMES)
     if args.command == "ingest-source" and args.verbose:
         logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
     writing = args.command in {"create-draft", "create-edit-suggestion"}
@@ -459,22 +462,25 @@ def _run_tool_command(args) -> Any:
                 args.note,
                 exclude_sponsors=not args.include_sponsors,
                 refresh=args.refresh,
-                names=("a URL", "--note", "--refresh"),
+                names=_INGEST_NAMES,
                 note_handle=lambda note: _path_handle(vault, note, "note") if vault else note,
             )
         source = responses.load_source(_cache(args), args.source_id, vault)
         if writing:
             assert vault is not None
             return _run_write_command(args, source, vault)
-        return _run_source_command(args, source)
+        return _run_source_command(args, source, vault)
 
 
-def _run_source_command(args, source: Source) -> Any:
+_INGEST_NAMES = ("a URL", "--note", "--refresh")
+
+
+def _run_source_command(args, source: Source, vault: VaultReader | None) -> Any:
     """Navigate a capture once its access has been checked."""
     if args.command == "get-thumbnail":
         return _save_thumbnail(responses.thumbnail(source), source.metadata.source_id)
     if args.command == "get-source-overview":
-        return responses.overview(_cache(args), args.source_id, source)
+        return responses.overview(_cache(args), args.source_id, source, vault)
     if args.command == "list-sections":
         return responses.sections(source)
     if args.command == "list-exclusions":

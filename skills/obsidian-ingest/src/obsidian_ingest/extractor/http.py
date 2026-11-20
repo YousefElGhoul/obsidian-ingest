@@ -472,13 +472,15 @@ class Fetcher:
     ) -> FetchResult:
         """GET a URL with every check; raise FetchError (or URLRejected) on refusal.
 
-        ``validators`` (``etag``, ``last_modified``) make the request conditional; only
-        then is a 304 answer accepted, returned with an empty body.
+        ``validators`` (``etag``, ``last_modified`` and the ``url`` that returned them)
+        make the request to that exact URL conditional, on whichever hop reaches it;
+        only such a request accepts a 304 answer, returned with an empty body.
         """
-        conditional = {
+        validators = validators or {}
+        conditional_headers = {
             header: value
             for header, key in (("If-None-Match", "etag"), ("If-Modified-Since", "last_modified"))
-            if (value := validator((validators or {}).get(key)))
+            if (value := validator(validators.get(key)))
         }
         current = check_url(url, self.allowed_ports)
         redirect_hosts: list[str] = []
@@ -487,6 +489,7 @@ class Fetcher:
             deadline.check()
             if allow_hop is not None and not allow_hop(current):
                 raise FetchError("URL_REJECTED", "the fallback points to another site")
+            conditional = conditional_headers if current.fetch_url == validators.get("url") else {}
             headers = {
                 "User-Agent": self.user_agent,
                 "Accept": ", ".join(sorted(accept)) + ";q=1.0, */*;q=0.1",

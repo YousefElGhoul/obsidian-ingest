@@ -58,7 +58,11 @@ class SourceProvider(Protocol):
         ...
 
     def identity(self, url: str) -> str:
-        """Return the stable cache identity for a URL, or raise ValueError."""
+        """Return the stable cache identity for a URL, or raise ValueError.
+
+        A capture is stored under its ``metadata.source_id``, which is this identity
+        unless the source names another one (such as a page's canonical URL).
+        """
         ...
 
     def acquire(

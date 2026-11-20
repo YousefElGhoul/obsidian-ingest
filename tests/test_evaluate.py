@@ -472,5 +472,9 @@ def test_evidence_summary_condenses_article_diagnostics() -> None:
         "bytes": 4096,
         "same_content_as": ["abc"],
     }
+    # Evidence language wins, so an unknown article language reads `und`, not null.
+    report["overview"]["diagnostics"]["evidence"]["language"] = "und"
+    report["overview"]["language"] = None
+    assert evidence_summary(report)["language"] == "und"
     # Videos have no text evidence; the summary still records what is known.
     assert evidence_summary({"overview": {}})["method"] is None

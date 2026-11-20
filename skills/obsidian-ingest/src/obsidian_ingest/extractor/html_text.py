@@ -57,16 +57,24 @@ _IMAGE_ONLY = re.compile(r"(\s*!\[(?:\\.|[^\]\\])*\]\([^)]*\)\s*)+")
 _SPACER = re.compile(r"(spacer|1x1|pixel|blank|trans(parent)?(_1x1)?)\.(gif|png)$", re.IGNORECASE)
 _BLOCKS = {"p", "head", "list", "item", "quote", "table", "row"}
 _INLINE_MARKS = {"#b": "**", "#i": "*", "#s": "~~"}
-_MATH = re.compile(r"\\\((.+?)\\\)|\\\[(.+?)\\\]", re.DOTALL)
-_DISPLAY_MATH = re.compile(r"\$\$[^$]+\$\$")
+MAX_TEX_CHARS = 2_000
+# Bounded, so an unmatched opener rescans at most MAX_TEX_CHARS characters.
+_MATH = re.compile(
+    rf"\\\((.{{1,{MAX_TEX_CHARS}}}?)\\\)|\\\[(.{{1,{MAX_TEX_CHARS}}}?)\\\]", re.DOTALL
+)
+# Rendered formulas are held between private-use markers until the row is final, so a
+# formula is never split across rows; page text cannot contain the markers.
+_MATH_OPEN, _MATH_CLOSE = "\ue000", "\ue001"
+_MARKED_MATH = re.compile(f"{_MATH_OPEN}(\\$\\$?)([^{_MATH_CLOSE}]*){_MATH_CLOSE}")
+_DISPLAY_MATH = re.compile(f"{_MATH_OPEN}\\$\\$[^{_MATH_CLOSE}]*{_MATH_CLOSE}")
 _TEX = "application/x-tex"
 _MATHJAX_SCRIPT = re.compile(r"math/tex(;\s*mode=display)?$", re.IGNORECASE)
 FOOTNOTES = "Footnotes"
+_FOOTNOTE_SECTION = re.compile(rf"{FOOTNOTES}( \(\d+\))?")
 _FOOTNOTE_CONTAINERS = (
     "//*[@role='doc-endnotes'] | //*[contains(concat(' ', normalize-space(@class), ' '),"
     " ' footnotes ')] | //*[contains(concat(' ', normalize-space(@class), ' '), ' reflist ')]"
     " | //ol[contains(concat(' ', normalize-space(@class), ' '), ' references ')]"
-    " | //aside[@role='doc-footnote']"
 )
 _LITERAL_MARKS = re.compile(r"([\\`*_\[\]<>|]|%(?=%)|(?<=%)%)")
 _DESTINATION_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<> "})
@@ -221,6 +229,15 @@ def _replace_with_text(element: etree._Element, text: str, *, block: bool) -> No
     _drop(element)
 
 
+def _hidden(element: etree._Element) -> bool:
+    """Explicitly hidden by attribute or inline style (stylesheets are not evaluated)."""
+    return bool(
+        element.get("hidden") is not None
+        or element.get("aria-hidden", "").lower() == "true"
+        or _HIDDEN_STYLE.search(element.get("style", ""))
+    )
+
+
 def _tex(element: etree._Element) -> str:
     """The TeX source of a MathML element: its TeX annotation, alt text, or plain text."""
     for annotation in element.iter("annotation"):
@@ -235,8 +252,13 @@ def mark_math(document: etree._Element) -> None:
     KaTeX and MathJax also render a visual copy beside the MathML; the whole rendering
     is replaced, so the formula appears once.
     """
+
+    def visible(element: etree._Element) -> bool:
+        return not any(_hidden(node) for node in (element, *element.iterancestors()))
+
     for script in list(document.iter("script")):
-        if match := _MATHJAX_SCRIPT.match((script.get("type") or "").strip()):
+        match = _MATHJAX_SCRIPT.match((script.get("type") or "").strip())
+        if match and visible(script):
             display = bool(match[1])
             tex = script.text or ""
             _replace_with_text(script, f"\\[{tex}\\]" if display else f"\\({tex}\\)", block=display)
@@ -244,8 +266,13 @@ def mark_math(document: etree._Element) -> None:
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' katex ')"
         " or local-name() = 'mjx-container'] | //math"
     )
+    outer = set(renderings)
     for element in renderings:
-        if element.getparent() is None or any(a in renderings for a in element.iterancestors()):
+        if (
+            element.getparent() is None
+            or any(a in outer for a in element.iterancestors())
+            or not visible(element)
+        ):
             continue
         math = element if element.tag == "math" else next(element.iter("math"), None)
         if math is None:
@@ -265,8 +292,9 @@ def mark_math(document: etree._Element) -> None:
 def mark_footnotes(document: etree._Element) -> None:
     """Head each footnote list with a `Footnotes` heading, numbering its notes `[n]`."""
     containers = document.xpath(_FOOTNOTE_CONTAINERS)
+    found = set(containers)
     for container in containers:
-        if any(a in containers for a in container.iterancestors()):
+        if any(a in found for a in container.iterancestors()):
             continue
         for heading in list(container.iter("h1", "h2", "h3", "h4", "h5", "h6")):
             _drop(heading)
@@ -308,12 +336,7 @@ def sanitize(document: etree._Element, base_url: str, result: ExtractionBuilder)
             element is not document and element.getparent() is None
         ):
             continue
-        hidden = (
-            element.get("hidden") is not None
-            or element.get("aria-hidden", "").lower() == "true"
-            or _HIDDEN_STYLE.search(element.get("style", ""))
-        )
-        if hidden:
+        if _hidden(element):
             result.removed_hidden += 1
             if element is document:
                 document.clear()
@@ -390,6 +413,7 @@ def _literal(text: str | None) -> str:
     """Escape page text as Markdown, rendering marked TeX (``\\(…\\)``, ``\\[…\\]``) as math."""
     if not text:
         return ""
+    text = text.replace(_MATH_OPEN, "").replace(_MATH_CLOSE, "")
     parts: list[str] = []
     position = 0
     for match in _MATH.finditer(text):
@@ -399,10 +423,23 @@ def _literal(text: str | None) -> str:
             continue
         parts.append(_LITERAL_MARKS.sub(r"\\\1", text[position : match.start()]))
         delimiter = "$" if match[1] is not None else "$$"
-        parts.append(f"{delimiter}{tex}{delimiter}")
+        parts.append(f"{_MATH_OPEN}{delimiter}{tex}{_MATH_CLOSE}")
         position = match.end()
     parts.append(_LITERAL_MARKS.sub(r"\\\1", text[position:]))
     return "".join(parts)
+
+
+def _finish_math(text: str) -> str:
+    """Write marked formulas as Obsidian math, or, when the row will be split, as
+    escaped text, so no part holds half a formula with live Markdown inside."""
+    if _atom_fits(_MARKED_MATH.sub(lambda m: m[1] + m[2] + m[1], text)):
+        return _MARKED_MATH.sub(lambda m: m[1] + m[2] + m[1], text)
+
+    def literal(match: re.Match) -> str:
+        opener, closer = ("\\[", "\\]") if match[1] == "$$" else ("\\(", "\\)")
+        return _LITERAL_MARKS.sub(r"\\\1", opener + match[2] + closer)
+
+    return _MARKED_MATH.sub(literal, text)
 
 
 def escape_row_markers(text: str) -> str:
@@ -516,12 +553,15 @@ class _Walker:
         if not text.strip():
             return
         section = self.headings.current or ""
-        if kind in {"paragraph", "list_item"} and section.split(SECTION_SEPARATOR)[-1] == FOOTNOTES:
+        if kind in {"paragraph", "list_item"} and _FOOTNOTE_SECTION.fullmatch(
+            section.split(SECTION_SEPARATOR)[-1]
+        ):
             kind, text = "footnote", text.strip()
         elif kind == "paragraph" and _DISPLAY_MATH.fullmatch(text):
             kind = "math"
+        text = _finish_math(escape_row_markers(text))
         self.result.words += len(text.split())
-        for part in split_atom(escape_row_markers(text)):
+        for part in split_atom(text):
             self.result.atoms.append(Atom(part, kind, self.headings.current))
 
     def inline(self, element: etree._Element) -> str:
@@ -672,6 +712,11 @@ def extract_html(markup: str, base_url: str) -> Extraction:
     document = parse(markup)
     mark_math(document)
     mark_footnotes(document)
+    # trafilatura resolves `#fragment` links against the site root, not the page.
+    for link in document.iter("a"):
+        href = (link.get("href") or "").strip()
+        if href.startswith("#"):
+            link.set("href", urljoin(base_url, href))
     hints = sanitize(document, base_url, result)
     cleaned = html.tostring(document, encoding="unicode")
     with warnings.catch_warnings():

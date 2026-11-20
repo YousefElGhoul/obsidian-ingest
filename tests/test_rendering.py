@@ -380,3 +380,47 @@ def test_footnotes_get_their_own_section_and_markers(notes: str) -> None:
     assert [section for _, section, _ in footnotes] == ["Footnotes", "Footnotes"]
     assert footnotes[0][2].startswith("\\[1\\]") and "First note." in footnotes[0][2]
     assert footnotes[1][2].startswith("\\[2\\]") and "Second note." in footnotes[1][2]
+
+
+def test_fragment_links_keep_the_page_path() -> None:
+    from articles import words
+
+    rows = _math_page(
+        f"<p>A claim with context. {words(30, 'claim')}.<sup><a href='#fn1'>[1]</a></sup> "
+        "See the <a href='#intro'>introduction above</a> for more.</p>"
+    )
+    assert "(https://example.com/post#fn1)" in rows[0][2]
+    assert "[introduction above](https://example.com/post#intro)" in rows[0][2]
+
+
+def test_hidden_math_stays_hidden() -> None:
+    rows = _math_page(
+        "<p>Shown <span hidden><math alttext='secret'><mi>s</mi></math></span> text "
+        "<math alttext='x' style='display:none'><mi>x</mi></math> end.</p>"
+        "<div aria-hidden='true'><math display='block' alttext='hidden'></math></div>"
+    )
+    assert all("secret" not in text and "hidden" not in text for *_, text in rows)
+
+
+def test_a_split_row_writes_its_formulas_as_escaped_text() -> None:
+    from articles import words
+
+    long_text = (words(900, "longword") + ". ") * 2
+    rows = _math_page(f"<p>{long_text} Then <math alttext='a [x](javascript:y) b'></math>.</p>")
+    assert len(rows) > 1
+    joined = "".join(text for *_, text in rows)
+    assert "$" not in joined
+    # Shown as the literal text \(a [x](javascript:y) b\), with every mark escaped.
+    assert "\\\\(a \\[x\\](javascript:y) b\\\\)" in joined
+
+
+def test_page_text_cannot_forge_math_markers() -> None:
+    rows = _math_page("<p>Text $[x](javascript:y) more.</p>")
+    assert rows == [("paragraph", None, "Text $\\[x\\](javascript:y) more.")]
+
+
+def test_a_second_footnote_list_keeps_the_footnote_kind() -> None:
+    notes = "<section class='footnotes'><ol><li>One.</li></ol></section>"
+    rows = _math_page(f"<p>Body text.</p>{notes}<h2>More</h2><p>Later text.</p>{notes}")
+    footnotes = [(section, text) for kind, section, text in rows if kind == "footnote"]
+    assert footnotes == [("Footnotes", "\\[1\\] One."), ("Footnotes (2)", "\\[1\\] One.")]

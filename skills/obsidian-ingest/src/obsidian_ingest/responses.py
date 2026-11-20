@@ -147,9 +147,25 @@ def source_overview(
     }
 
 
-def overview(cache: SourceCache, source_id: str, source: Source) -> dict[str, Any]:
+def overview(
+    cache: SourceCache, source_id: str, source: Source, vault: VaultReader | None = None
+) -> dict[str, Any]:
     """The overview of a loaded source, with any captures sharing its exact text."""
-    return source_overview(source, same_content=cache.same_content(source_id))
+    return source_overview(source, same_content=_same_content(cache, source_id, vault))
+
+
+def _same_content(cache: SourceCache, source_id: str, vault: VaultReader | None) -> tuple[str, ...]:
+    """Captures with identical text that this session could open; clips from a vault
+    it cannot read are left out, so even their handles stay private."""
+    visible = []
+    for other in cache.same_content(source_id):
+        try:
+            note = required_note(cache.get(other))
+        except (KeyError, SourceCacheError):
+            continue
+        if note is None or _note_readable(vault, note):
+            visible.append(other)
+    return tuple(visible)
 
 
 def _validate_ingest_request(url: object, exclude_sponsors: object, refresh: object) -> None:
@@ -191,12 +207,17 @@ def ingest(
         "source_id": result.source_id,
         "cached": result.cached,
         "overview": source_overview(
-            result.source, cached=result.cached, same_content=cache.same_content(result.source_id)
+            result.source,
+            cached=result.cached,
+            same_content=_same_content(cache, result.source_id, vault),
         ),
     }
     if refresh:
         # An unchanged source keeps its capture, so earlier read tokens stay valid.
-        response["refreshed"] = "not_modified" if result.not_modified else "replaced"
+        # A capture fetched from the canonical URL is kept when a variant is refreshed.
+        response["refreshed"] = (
+            "not_modified" if result.not_modified else "kept" if result.cached else "replaced"
+        )
     return response
 
 
@@ -234,9 +255,25 @@ def ingest_note(
         "source_id": result.source_id,
         "cached": result.cached,
         "overview": source_overview(
-            result.source, cached=result.cached, same_content=cache.same_content(result.source_id)
+            result.source,
+            cached=result.cached,
+            same_content=_same_content(cache, result.source_id, vault),
         ),
     }
+
+
+def check_ingest_request(
+    url: str | None, note: str | None, refresh: bool, names: tuple[str, str, str]
+) -> None:
+    """Refuse a request naming both or neither of a URL and a note, or refreshing a note.
+
+    ``names`` holds how the transport spells the url, note and refresh arguments.
+    """
+    url_name, note_name, refresh_name = names
+    if (url is None) == (note is None):
+        raise OperationError("INVALID_ARGUMENT", f"pass exactly one of {url_name} or {note_name}")
+    if note is not None and refresh:
+        raise OperationError("INVALID_ARGUMENT", f"{refresh_name} applies only to {url_name}")
 
 
 def ingest_request(
@@ -256,12 +293,8 @@ def ingest_request(
     both transports share one rule with their own wording; ``note_handle`` turns the
     transport's note reference into a note ID once the request is valid.
     """
-    url_name, note_name, refresh_name = names
-    if (url is None) == (note is None):
-        raise OperationError("INVALID_ARGUMENT", f"pass exactly one of {url_name} or {note_name}")
+    check_ingest_request(url, note, refresh, names)
     if note is not None:
-        if refresh:
-            raise OperationError("INVALID_ARGUMENT", f"{refresh_name} applies only to {url_name}")
         return ingest_note(cache, vault, note_handle(note), exclude_sponsors=exclude_sponsors)
     return ingest(cache, url, vault=vault, exclude_sponsors=exclude_sponsors, refresh=refresh)
 

@@ -58,7 +58,9 @@ authorizes permission changes.
   disposable; a `source_id` survives refresh. Variants of a page naming the same
   same-site canonical URL share one capture. A `refresh=true` ingest reports
   `refreshed`: `not_modified` keeps the capture and earlier read tokens; `replaced`
-  invalidates them. `diagnostics.same_content_as` lists captures with identical text.
+  invalidates them; `kept` means the capture belongs to the canonical URL, which only
+  a refresh of that URL replaces. Tracking parameters are ignored for identity, but
+  `ref` is kept because it often selects content. `diagnostics.same_content_as` lists captures with identical text.
 - Article URL acquisition errors look like `INGEST_FAILED: Could not ingest source:
   <REASON>: …` (CLI JSON separates the code and message). Initial URL validation can
   instead return `INVALID_ARGUMENT`. `URL_REJECTED` and `ADDRESS_BLOCKED` are policy
