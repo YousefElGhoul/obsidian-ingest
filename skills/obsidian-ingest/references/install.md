@@ -119,7 +119,7 @@ args:    run --no-dev --project <skill> python <skill>/mcp/server.py
 ```
 
 Allow exactly these eleven tools: `ingest_source`, `get_source_overview`,
-`list_chapters`, `list_exclusions`, `read_transcript`, `read_chapter`, `get_thumbnail`,
+`list_sections`, `list_exclusions`, `read_source`, `read_section`, `get_thumbnail`,
 `create_draft`, `search_vault`, `read_vault_note`, `create_edit_suggestion`. Disable
 MCP resources and prompts. If the server reports a different tool list, use what it
 reports and tell the user. In trusted CLI-only mode, registration is optional: use

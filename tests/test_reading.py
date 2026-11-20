@@ -80,7 +80,7 @@ def test_tampered_or_foreign_tokens_are_rejected(sample_source) -> None:
         (other_source, token),
         (changed_text, token),
     ):
-        with pytest.raises(ValueError, match="does not belong to this source"):
+        with pytest.raises(ValueError, match="does not match this source"):
             token_progress(source, candidate)
 
 
@@ -98,7 +98,7 @@ def test_partial_read_names_where_to_continue(sample_source) -> None:
 def test_full_read_counts_retained_segments_not_excluded_ones(sample_source) -> None:
     # Three of the four atoms are retained; the sponsor atom need not be read.
     require_full_read(sample_source, issue_token(sample_source, 3))
-    with pytest.raises(ValueError, match="does not belong"):
+    with pytest.raises(ValueError, match="does not match this source"):
         require_full_read(sample_source, "rt1-3-" + "0" * 16)
 
 

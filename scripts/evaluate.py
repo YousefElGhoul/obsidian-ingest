@@ -157,7 +157,7 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
             session, calls, "get_source_overview", {"source_id": source_id}
         )
         report["chapters"] = await _call_tool(
-            session, calls, "list_chapters", {"source_id": source_id}
+            session, calls, "list_sections", {"source_id": source_id}
         )
         report["exclusions"] = await _call_tool(
             session, calls, "list_exclusions", {"source_id": source_id}
@@ -165,19 +165,19 @@ async def evaluate_source(session, url: str, tool_schemas: list[dict]) -> dict[s
         (
             report["transcript_page_call_indices"],
             report["transcript_segment_count"],
-        ) = await _read_all_pages(session, calls, "read_transcript", {"source_id": source_id})
+        ) = await _read_all_pages(session, calls, "read_source", {"source_id": source_id})
         chapters = report["chapters"]
         if chapters:
             # One chapter probes the scoped read surface; the full transcript is already recorded.
-            first_chapter_index = chapters[0]["index"]
+            first_section_index = chapters[0]["index"]
             call_indices, segment_count = await _read_all_pages(
                 session,
                 calls,
-                "read_chapter",
-                {"source_id": source_id, "chapter_index": first_chapter_index},
+                "read_section",
+                {"source_id": source_id, "section_index": first_section_index},
             )
             report["chapter_probe"] = {
-                "chapter_index": first_chapter_index,
+                "section_index": first_section_index,
                 "call_indices": call_indices,
                 "segment_count": segment_count,
             }

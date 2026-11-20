@@ -104,7 +104,7 @@ def filter_source_transcript(
     metadata: SourceMetadata, transcript: Transcript, lookup: ExclusionLookup
 ) -> FilteredTranscript:
     """Validate source identity/lookup consistency and build its retained view."""
-    if metadata.source_id != transcript.video_id:
+    if metadata.source_id != transcript.source_id:
         raise ValueError("Metadata and transcript source identities do not match")
     if lookup.status == ExclusionStatus.DISABLED and lookup.ranges:
         raise ValueError("Disabled exclusion lookup cannot contain ranges")

@@ -113,7 +113,7 @@ def test_miss_hit_equivalent_urls_and_complete_round_trip(tmp_path, extraction):
     lookup.assert_not_called()
     with closing(sqlite3.connect(database)) as connection:
         payload = json.loads(connection.execute("SELECT payload FROM sources").fetchone()[0])
-        caption_rows = connection.execute("SELECT format, data FROM caption_payloads").fetchall()
+        caption_rows = connection.execute("SELECT format, data FROM original_payloads").fetchall()
     assert payload["acquisition"]["extractor"] == "yt-dlp"
     assert payload["acquisition"]["extractor_version"]
     assert datetime.fromisoformat(payload["acquisition"]["acquired_at"]).tzinfo is not None
@@ -206,7 +206,7 @@ def test_refresh_replaces_capture_and_cascades_derived_rows(tmp_path, extraction
     (new_capture,) = _rows(cache.path, "SELECT capture_id FROM sources")[0]
     assert new_capture != old_capture
     assert _rows(cache.path, "SELECT count(*) FROM sources") == [(1,)]
-    assert _rows(cache.path, "SELECT capture_id, format FROM caption_payloads") == [
+    assert _rows(cache.path, "SELECT capture_id, format FROM original_payloads") == [
         (new_capture, "vtt")
     ]
     assert _rows(cache.path, "SELECT * FROM derived") == []
@@ -221,7 +221,7 @@ def test_failed_refresh_keeps_previous_capture_and_payload(tmp_path, extraction,
     first = cache.ingest(URL)
     before = (
         _rows(cache.path, "SELECT * FROM sources"),
-        _rows(cache.path, "SELECT * FROM caption_payloads"),
+        _rows(cache.path, "SELECT * FROM original_payloads"),
     )
     if failure == "extraction":
         ydl.extract_info.side_effect = RuntimeError("Network down")
@@ -239,7 +239,7 @@ def test_failed_refresh_keeps_previous_capture_and_payload(tmp_path, extraction,
         cache.ingest(URL, refresh=True)
     after = (
         _rows(cache.path, "SELECT * FROM sources"),
-        _rows(cache.path, "SELECT * FROM caption_payloads"),
+        _rows(cache.path, "SELECT * FROM original_payloads"),
     )
     assert after == before
     assert cache.get(first.source_id) == first.source
@@ -293,7 +293,7 @@ def test_corrupt_original_payload_fails_explicitly(tmp_path, extraction):
     cache = SourceCache(tmp_path / "sources.db")
     first = cache.ingest(URL)
     with closing(sqlite3.connect(cache.path)) as connection, connection:
-        connection.execute("UPDATE caption_payloads SET data = ?", (b"tampered",))
+        connection.execute("UPDATE original_payloads SET data = ?", (b"tampered",))
     with pytest.raises(SourceCacheError, match="Invalid original caption.*refresh=True"):
         cache.original_caption(first.source_id)
 
@@ -333,11 +333,11 @@ _CORRUPTIONS = {
     "json": None,
     "missing": _delete_segments,
     "version": _set("version", 99),
-    "version-type": _set("version", 2.0),
+    "version-type": _set("version", 3.0),
     "type": _set("transcript", "segments", 0, "text", 123),
     "category": _set("exclusion_lookup", "ranges", 0, "reason", "intro"),
     "timing": _set("transcript", "segments", 0, "start", -1),
-    "identity": _set("transcript", "video_id", "another-video"),
+    "identity": _set("transcript", "source_id", "another-video"),
     "empty-identity": _set("metadata", "source_id", ""),
     "metadata-text": _set("metadata", "title", 5),
     "tags": _set("metadata", "tags", [1]),
@@ -410,7 +410,7 @@ def test_unreadable_cache_tables_are_cache_errors(tmp_path, extraction):
     cache = SourceCache(tmp_path / "sources.db")
     first = cache.ingest(URL)
     with closing(sqlite3.connect(cache.path)) as connection, connection:
-        connection.execute("DROP TABLE caption_payloads")
+        connection.execute("DROP TABLE original_payloads")
     with pytest.raises(SourceCacheError, match="Cannot read source cache"):
         cache.original_caption(first.source_id)
     with closing(sqlite3.connect(cache.path)) as connection, connection:
@@ -426,7 +426,7 @@ def test_failed_cache_write_rolls_back_the_whole_capture(tmp_path, extraction):
     # The replacement fails on its second statement; the delete and insert must not stick.
     with closing(sqlite3.connect(cache.path)) as connection, connection:
         connection.execute(
-            "CREATE TRIGGER reject_payload BEFORE INSERT ON caption_payloads "
+            "CREATE TRIGGER reject_payload BEFORE INSERT ON original_payloads "
             "BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END"
         )
     with pytest.raises(SourceCacheError, match="Cannot write source cache.*simulated"):

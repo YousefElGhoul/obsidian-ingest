@@ -17,7 +17,7 @@ from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
-from obsidian_ingest.extractor import Provider, detect_provider
+from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.acquisition import (
     Acquisition,
     CaptionFormat,
@@ -31,14 +31,13 @@ from obsidian_ingest.extractor.metadata import (
     ExclusionStatus,
     NativeFormat,
     SourceMetadata,
-    YouTubeMetadata,
 )
-from obsidian_ingest.extractor.providers.youtube import extract_video_id
+from obsidian_ingest.extractor.providers import get_provider, supported_provider
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
 from obsidian_ingest.source import Source, ingest_source
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _ROW = "source_id, provider, native_id, exclude_sponsors, payload, checksum"
 # Stable source handles identify option keys; capture IDs identify replaceable evidence.
 _SCHEMA = (
@@ -48,9 +47,9 @@ _SCHEMA = (
         "payload TEXT NOT NULL, checksum TEXT NOT NULL, "
         "UNIQUE(provider, native_id, exclude_sponsors))"
     ),
-    # The selected original caption response, separate from normalized atoms.
+    # The original acquired response (captions, page HTML), separate from normalized atoms.
     (
-        "CREATE TABLE caption_payloads (capture_id TEXT PRIMARY KEY "
+        "CREATE TABLE original_payloads (capture_id TEXT PRIMARY KEY "
         "REFERENCES sources(capture_id) ON DELETE CASCADE, format TEXT NOT NULL, "
         "data BLOB NOT NULL, sha256 TEXT NOT NULL)"
     ),
@@ -158,7 +157,9 @@ def _decode(payload: str) -> Source:
     metadata_data["tags"] = tuple(metadata_data["tags"])
     metadata_data["chapters"] = tuple(Chapter(**chapter) for chapter in metadata_data["chapters"])
     details = metadata_data["provider_details"]
-    metadata_data["provider_details"] = YouTubeMetadata(**details) if details is not None else None
+    metadata_data["provider_details"] = get_provider(metadata_data["provider"]).decode_details(
+        details
+    )
     metadata = SourceMetadata(**metadata_data)
     transcript_data = dict(data["transcript"])
     transcript_data["segments"] = tuple(
@@ -178,7 +179,7 @@ def _decode(payload: str) -> Source:
         metadata.source_id,
         metadata.original_url,
         metadata.canonical_url,
-        transcript.video_id,
+        transcript.source_id,
         transcript.language,
         transcript.language_code,
         lookup.provenance,
@@ -212,19 +213,6 @@ def _decode(payload: str) -> Source:
         or duration < 0
     ):
         raise ValueError("Invalid source duration")
-    if details is not None:
-        if any(
-            details[key] is not None and not isinstance(details[key], str)
-            for key in ("channel_handle", "playlist_id", "playlist_title", "live_status")
-        ):
-            raise ValueError("Invalid YouTube metadata text")
-        if not isinstance(details["is_short"], bool) or (
-            details["was_live"] is not None and not isinstance(details["was_live"], bool)
-        ):
-            raise ValueError("Invalid YouTube flags")
-        index = details["playlist_index"]
-        if index is not None and (isinstance(index, bool) or not isinstance(index, int)):
-            raise ValueError("Invalid playlist index")
     source = Source(
         metadata,
         transcript,
@@ -289,7 +277,7 @@ class SourceCache:
                     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 connection.execute(f"SELECT capture_id, {_ROW} FROM sources LIMIT 0")
                 connection.execute(
-                    "SELECT capture_id, format, data, sha256 FROM caption_payloads LIMIT 0"
+                    "SELECT capture_id, format, data, sha256 FROM original_payloads LIMIT 0"
                 )
         except (OSError, sqlite3.Error) as error:
             raise SourceCacheError(
@@ -321,7 +309,9 @@ class SourceCache:
             if hashlib.sha256(payload.encode()).hexdigest() != checksum:
                 raise ValueError("Snapshot checksum mismatch")
             source = _decode(payload)
-            expected_categories = ("sponsor",) if exclude_sponsors else ()
+            expected_categories = get_provider(provider).exclusion_categories(
+                bool(exclude_sponsors)
+            )
             lookup = source.exclusion_lookup
             if (
                 source.metadata.provider.value != provider
@@ -351,8 +341,8 @@ class SourceCache:
         try:
             with closing(self._connect()) as connection:
                 row = connection.execute(
-                    "SELECT sources.source_id, caption_payloads.format, caption_payloads.data, "
-                    "caption_payloads.sha256 FROM sources LEFT JOIN caption_payloads "
+                    "SELECT sources.source_id, original_payloads.format, original_payloads.data, "
+                    "original_payloads.sha256 FROM sources LEFT JOIN original_payloads "
                     "USING (capture_id) WHERE sources.source_id = ?",
                     (source_id,),
                 ).fetchone()
@@ -383,12 +373,10 @@ class SourceCache:
         """
         if not isinstance(exclude_sponsors, bool) or not isinstance(refresh, bool):
             raise TypeError("exclude_sponsors and refresh must be booleans")
-        provider = detect_provider(url)
-        if provider != Provider.YOUTUBE:
-            raise ValueError(f"Source ingestion is not supported for provider: {provider}")
-        native_id = extract_video_id(url)
-        # URL aliases share a capture; sponsor filtering is part of acquisition identity.
-        key = (provider.value, native_id, int(exclude_sponsors))
+        provider = supported_provider(url)
+        native_id = provider.identity(url)
+        # URL aliases share a capture; exclusion filtering is part of acquisition identity.
+        key = (provider.name.value, native_id, int(exclude_sponsors))
         predicate = "provider = ? AND native_id = ? AND exclude_sponsors = ?"
         row = self._read(predicate, key)
         if row is not None and not refresh:
@@ -423,7 +411,7 @@ class SourceCache:
                 )
                 if original is not None:
                     connection.execute(
-                        "INSERT INTO caption_payloads VALUES (?, ?, ?, ?)",
+                        "INSERT INTO original_payloads VALUES (?, ?, ?, ?)",
                         (capture_id, original.format.value, original.data, original.sha256),
                     )
         except sqlite3.Error as error:

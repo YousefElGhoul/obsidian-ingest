@@ -9,13 +9,10 @@ import secrets
 import stat
 import unicodedata
 from dataclasses import dataclass
-from math import isfinite
 from pathlib import Path
-from urllib.parse import urlencode
 
-from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import SourceMetadata
-from obsidian_ingest.extractor.transcript import format_timestamp
+from obsidian_ingest.extractor.providers import Citation
 
 _WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -32,6 +29,24 @@ _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$")
 _SETEXT_HEADING = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 _MAX_STEM_BYTES = 120  # Leave filename space for collision suffixes and the extension.
 _RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "related notes"}
+# Bidi embedding/override/isolate controls can visually reorder text; natural RTL text
+# needs none of them, so stripping them does not damage Arabic or Hebrew.
+_BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
+_MAX_METADATA_CHARS = 300
+
+
+def _inert(value: str) -> str:
+    """Render untrusted source metadata as one line of literal text.
+
+    Titles and creator names come from the source, so they must not inject wikilinks,
+    links, tags, tables, code or HTML into the generated Source section.
+    """
+    text = _BIDI_CONTROLS.sub("", value)
+    text = "".join(" " if unicodedata.category(char) == "Cc" else char for char in text)
+    text = " ".join(text.split())
+    if len(text) > _MAX_METADATA_CHARS:
+        text = text[: _MAX_METADATA_CHARS - 1].rstrip() + "…"
+    return re.sub(r"([\\`\[\]<>|#])", r"\\\1", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +149,7 @@ def _strip_trailing_source_section(contents: str) -> str:
 def _render_draft(
     contents: str,
     source: SourceMetadata,
-    timestamps: tuple[float, ...],
+    citation: Citation | None = None,
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
 ) -> bytes:
@@ -177,13 +192,8 @@ def _render_draft(
         # Reasons are untrusted prose, not permission to inject Markdown structure.
         safe_reason = re.sub(r"([\\`*_{}\[\]()<>|])", r"\\\1", reason.strip())
         related_lines.append(f"- {link}: {safe_reason}")
-    if not isinstance(timestamps, tuple):
-        raise TypeError("timestamps must be a tuple of seconds")
-    for timestamp in timestamps:
-        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
-            raise TypeError("timestamps must be numbers of seconds")
-        if not isfinite(timestamp) or timestamp < 0:
-            raise ValueError("timestamps must be finite and nonnegative")
+    if citation is not None and not isinstance(citation, Citation):
+        raise TypeError("citation must be a Citation")
 
     def single_line(value: str) -> str:
         return value.replace("\r", " ").replace("\n", " ")
@@ -195,42 +205,15 @@ def _render_draft(
     if leading_link is not None:
         rendered_body = f"{leading_link}\n\n{rendered_body}"
 
-    lines = ["## Source", "", f"- Source: {single_line(source.title or source.source_id)}"]
+    lines = ["## Source", "", f"- Source: {_inert(source.title or source.source_id)}"]
     lines.append(f"- URL: {single_line(source.original_url)}")
     if source.creator_name:
-        lines.append(f"- Creator: {single_line(source.creator_name)}")
-    if timestamps:
-        formatted = []
-        for timestamp in _distinct_moments(timestamps):
-            if source.provider == Provider.YOUTUBE:
-                seconds = int(timestamp)
-                url = "https://www.youtube.com/watch?" + urlencode(
-                    {"v": source.source_id, "t": f"{seconds}s"}
-                )
-                formatted.append(f"[{format_timestamp(seconds)}]({url})")
-            else:
-                formatted.append(f"{timestamp:g}s")
-        values = ", ".join(formatted)
-        lines.append(f"- Relevant timestamps: {values}")
+        lines.append(f"- Creator: {_inert(source.creator_name)}")
+    if citation is not None:
+        # Provider-rendered from validated atoms, so its Markdown links are intended.
+        lines.append(f"- {single_line(citation.label)}: {single_line(citation.value)}")
     separator = "" if not rendered_body else "\n" if rendered_body.endswith("\n") else "\n\n"
     return f"{rendered_body}{separator}{'\n'.join(lines)}\n".encode()
-
-
-TIMESTAMP_GAP_SECONDS = 30
-MAX_LISTED_TIMESTAMPS = 8
-
-
-def _distinct_moments(timestamps: tuple[float, ...]) -> tuple[float, ...]:
-    """List distinct moments: weak models often cite every caption line of one passage.
-
-    Keeps the earliest of timestamps closer than TIMESTAMP_GAP_SECONDS, in time order,
-    up to MAX_LISTED_TIMESTAMPS. Inline timestamps in the body are left untouched.
-    """
-    kept: list[float] = []
-    for timestamp in sorted(timestamps):
-        if not kept or timestamp - kept[-1] >= TIMESTAMP_GAP_SECONDS:
-            kept.append(timestamp)
-    return tuple(kept[:MAX_LISTED_TIMESTAMPS])
 
 
 def _validate_note_link_path(path: str) -> None:
@@ -443,7 +426,7 @@ def create_draft(
     contents: str,
     source: SourceMetadata,
     filename: str | None = None,
-    timestamps: tuple[float, ...] = (),
+    citation: Citation | None = None,
     related_notes: tuple[tuple[str, str], ...] = (),
     leading_link: str | None = None,
 ) -> DraftResult:
@@ -464,7 +447,7 @@ def create_draft(
     if isinstance(contents, str):
         contents = _strip_trailing_source_section(contents)
     parts = _draft_folder_parts(settings.draft_folder)
-    payload = _render_draft(contents, source, timestamps, related_notes, leading_link)
+    payload = _render_draft(contents, source, citation, related_notes, leading_link)
     _require_writer_capabilities()
 
     vault_path = Path(settings.vault_path)

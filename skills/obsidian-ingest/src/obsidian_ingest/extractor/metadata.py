@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from obsidian_ingest.extractor import ContentCategory, Provider, detect_provider
+from obsidian_ingest.extractor import ContentCategory, Provider
 
 
 class NativeFormat(StrEnum):
@@ -54,19 +54,6 @@ class Chapter:
 
 
 @dataclass(frozen=True, slots=True)
-class YouTubeMetadata:
-    """Keep normalized YouTube-only context separate from common source fields."""
-
-    channel_handle: str | None
-    playlist_id: str | None
-    playlist_title: str | None
-    playlist_index: int | None
-    is_short: bool
-    live_status: str | None
-    was_live: bool | None
-
-
-@dataclass(frozen=True, slots=True)
 class SourceMetadata:
     """Carry source identity, attribution, and navigation context into curation."""
 
@@ -92,7 +79,8 @@ class SourceMetadata:
     chapters: tuple[Chapter, ...]
     native_format: NativeFormat
 
-    provider_details: YouTubeMetadata | None = None
+    # A provider-owned frozen dataclass; the shared model never inspects its fields.
+    provider_details: object | None = None
 
 
 def categorize_content(metadata: SourceMetadata) -> ContentCategory | None:
@@ -108,13 +96,3 @@ def categorize_content(metadata: SourceMetadata) -> ContentCategory | None:
     if duration <= 3000:
         return ContentCategory.LONG_FORM
     return ContentCategory.EXTENDED
-
-
-def fetch_metadata(url: str) -> SourceMetadata:
-    """Dispatch metadata acquisition, raising ValueError for providers without an extractor."""
-    provider = detect_provider(url)
-    if provider == Provider.YOUTUBE:
-        from obsidian_ingest.extractor.providers.youtube import get_youtube_metadata
-
-        return get_youtube_metadata(url)
-    raise ValueError(f"Metadata extraction is not supported for provider: {provider}")

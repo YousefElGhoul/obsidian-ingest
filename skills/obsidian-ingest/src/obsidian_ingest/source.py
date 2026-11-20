@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from math import isfinite
 
 from obsidian_ingest.diagnostics import TimingObservations, observe_timing
-from obsidian_ingest.extractor import ContentCategory, Provider, detect_provider
+from obsidian_ingest.extractor import ContentCategory
 from obsidian_ingest.extractor.acquisition import Acquisition, OriginalCaption
 from obsidian_ingest.extractor.metadata import (
     Chapter,
@@ -12,6 +12,7 @@ from obsidian_ingest.extractor.metadata import (
     SourceMetadata,
     categorize_content,
 )
+from obsidian_ingest.extractor.providers import supported_provider
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 from obsidian_ingest.filtering import FilteredTranscript, filter_source_transcript
 
@@ -50,27 +51,19 @@ class SourceOverview:
 
 
 def ingest_source(url: str, *, exclude_sponsors: bool = True) -> Source:
-    """Fetch one normalized source; sponsor filtering is best-effort and on by default."""
+    """Fetch one normalized source; exclusion filtering is best-effort and on by default."""
     if not isinstance(exclude_sponsors, bool):
         raise TypeError("exclude_sponsors must be a boolean")
-    provider = detect_provider(url)
-    if provider == Provider.YOUTUBE:
-        from obsidian_ingest.extractor.providers.youtube import get_youtube_content
-
-        categories = ("sponsor",) if exclude_sponsors else ()
-        content = get_youtube_content(url, categories)
-        filtered = filter_source_transcript(
-            content.metadata, content.transcript, content.exclusions
-        )
-        return Source(
-            content.metadata,
-            content.transcript,
-            content.exclusions,
-            filtered,
-            content.acquisition,
-            content.original_caption,
-        )
-    raise ValueError(f"Source ingestion is not supported for provider: {provider}")
+    content = supported_provider(url).acquire(url, exclude_sponsors=exclude_sponsors)
+    filtered = filter_source_transcript(content.metadata, content.transcript, content.exclusions)
+    return Source(
+        content.metadata,
+        content.transcript,
+        content.exclusions,
+        filtered,
+        content.acquisition,
+        content.original,
+    )
 
 
 def get_source_overview(source: Source) -> SourceOverview:
@@ -167,7 +160,7 @@ def read_chapter_entries(
         raise TypeError("chapter_index must be an integer")
     chapters = list_chapters(source)
     if not 0 <= chapter_index < len(chapters):
-        raise IndexError(f"chapter_index {chapter_index} out of range for {len(chapters)} chapters")
+        raise IndexError(f"section_index {chapter_index} out of range for {len(chapters)} sections")
     chapter = chapters[chapter_index]
     return read_transcript_entries(
         source,

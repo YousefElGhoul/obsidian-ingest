@@ -140,7 +140,7 @@ def test_large_transcript_filter_has_complete_ordered_source_coverage() -> None:
 def test_identity_lookup_and_chapter_validation(metadata: SourceMetadata) -> None:
     completed = lookup()
     with pytest.raises(ValueError, match="source identities do not match"):
-        filter_source_transcript(metadata, replace(transcript(), video_id="other"), completed)
+        filter_source_transcript(metadata, replace(transcript(), source_id="other"), completed)
     disabled_with_ranges = replace(
         lookup(ExcludedRange(0, 1, "sponsor", "SponsorBlock")), status=ExclusionStatus.DISABLED
     )

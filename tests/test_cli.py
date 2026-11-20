@@ -12,7 +12,6 @@ import pytest
 from obsidian_ingest import cli
 from obsidian_ingest.config import load_vault_settings
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
-from obsidian_ingest.responses import parse_timestamps
 from obsidian_ingest.vault import VaultReader
 
 URL = "https://www.youtube.com/watch?v=video-123"
@@ -284,10 +283,6 @@ def test_cli_create_draft_and_edit_suggestion_preserve_canonical_note(
     monkeypatch.setattr(cli, "_cache", lambda _: SimpleNamespace(get=lambda _: source))
     # This fake source has no transcript; full-read enforcement is tested elsewhere.
     monkeypatch.setattr("obsidian_ingest.responses.require_full_read", lambda *_: None)
-    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
-    monkeypatch.setattr(
-        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
-    )
 
     created = cli_runner.ok(
         "create-draft",
@@ -332,7 +327,7 @@ def _read_token(cli_runner, source_id: str, *db: str) -> str:
     offset = 0
     while True:
         extra = ("--read-token", token) if token else ()
-        page = cli_runner.ok("read-transcript", source_id, "--offset", str(offset), *extra, *db)
+        page = cli_runner.ok("read-source", source_id, "--offset", str(offset), *extra, *db)
         token = page["read_token"]
         if page["next_offset"] is None:
             return token
@@ -363,7 +358,7 @@ def test_cli_source_operations_reuse_persistent_cache(tmp_path, fake_extraction,
     db = ("--cache-db", str(tmp_path / "cache.db"))
     first = cli_runner.ok("ingest-source", URL, *db)
     assert first["cached"] is False
-    assert first["overview"]["sponsor_filtering"]["excluded_segments"] == 1
+    assert first["overview"]["exclusions"]["excluded_segments"] == 1
     again = cli_runner.ok("ingest-source", "https://youtu.be/video-123", *db)
     assert (again["source_id"], again["cached"]) == (first["source_id"], True)
     assert fake_extraction.call_count == 1
@@ -376,24 +371,30 @@ def test_cli_source_operations_reuse_persistent_cache(tmp_path, fake_extraction,
     assert overview["diagnostics"]["acquisition"]["reused_from_cache"] is None
     first["overview"]["diagnostics"]["acquisition"]["reused_from_cache"] = None
     assert overview == first["overview"]
-    assert cli_runner.ok("list-chapters", source_id, *db) == [
-        {"index": 0, "title": "Main idea", "start": 0.0, "end": 20.0}
+    assert cli_runner.ok("list-sections", source_id, *db) == [
+        {
+            "index": 0,
+            "title": "Main idea",
+            "path": "Main idea",
+            "first_index": 0,
+            "row_count": 3,
+            "start": 0.0,
+            "end": 20.0,
+        }
     ]
     assert cli_runner.ok("list-exclusions", source_id, *db)[0]["source_indices"] == [3]
 
     texts = []
     offset = 0
     while offset is not None:
-        page = cli_runner.ok(
-            "read-transcript", source_id, "--offset", str(offset), "--limit", "2", *db
-        )
+        page = cli_runner.ok("read-source", source_id, "--offset", str(offset), "--limit", "2", *db)
         texts.extend(segment[3] for segment in page["segments"])
         offset = page["next_offset"]
     assert texts == ["First atom", "Second atom at same time", "Third atom"]
-    raw = cli_runner.ok("read-transcript", source_id, "--include-excluded", *db)
+    raw = cli_runner.ok("read-source", source_id, "--include-excluded", *db)
     assert raw["fields"] == ["source_index", "start", "duration", "text"]
     assert raw["segments"][-1] == [3, 2, 1, "Sponsor atom"]
-    chapter = cli_runner.ok("read-chapter", source_id, "0", "--offset", "1", *db)
+    chapter = cli_runner.ok("read-section", source_id, "0", "--offset", "1", *db)
     assert [segment[3] for segment in chapter["segments"]] == [
         "Second atom at same time",
         "Third atom",
@@ -409,23 +410,23 @@ def test_cli_source_errors_use_shared_codes(tmp_path, fake_extraction, cli_runne
     source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
     cases = [
         (("get-source-overview", "missing"), "SOURCE_NOT_FOUND", "Unknown source_id"),
-        (("read-transcript", source_id, "--limit", "0"), "INVALID_ARGUMENT", "limit must be"),
-        (("read-transcript", source_id, "--offset", "-1"), "INVALID_ARGUMENT", "offset must"),
+        (("read-source", source_id, "--limit", "0"), "INVALID_ARGUMENT", "limit must be"),
+        (("read-source", source_id, "--offset", "-1"), "INVALID_ARGUMENT", "offset must"),
         (
-            ("read-transcript", source_id, "--start", "10", "--end", "1"),
+            ("read-source", source_id, "--start", "10", "--end", "1"),
             "INVALID_ARGUMENT",
             "end must not precede start",
         ),
-        (("read-chapter", source_id, "4"), "INVALID_ARGUMENT", "chapter_index 4 out of range"),
+        (("read-section", source_id, "4"), "INVALID_ARGUMENT", "section_index 4 out of range"),
     ]
     for args, code, message in cases:
         error = cli_runner.fail(*args, *db)
         assert error["code"] == code
         assert message in error["message"]
 
-    error = cli_runner.fail("read-transcript", source_id, "--offset", "x", *db, exit_code=2)
+    error = cli_runner.fail("read-source", source_id, "--offset", "x", *db, exit_code=2)
     assert error["code"] == "INVALID_ARGUMENT"
-    error = cli_runner.fail("list-chapters", source_id, "extra", *db, exit_code=2)
+    error = cli_runner.fail("list-sections", source_id, "extra", *db, exit_code=2)
     assert error["code"] == "INVALID_ARGUMENT"
     fake_extraction.side_effect = RuntimeError("network down")
     error = cli_runner.fail("ingest-source", URL, "--include-sponsors", *db)
@@ -577,19 +578,19 @@ def test_writes_require_a_read_token_covering_the_whole_transcript(
     source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
     draft = ("create-draft", source_id, "# Idea\n\nBody.", *config, *db)
 
-    first = cli_runner.ok("read-transcript", source_id, "--limit", "1", *db)
+    first = cli_runner.ok("read-source", source_id, "--limit", "1", *db)
     assert first["read_token"].startswith("rt1-1-")
     error = cli_runner.fail(*draft, "--read-token", first["read_token"])
     assert error["code"] == "INCOMPLETE_READ" and "offset 1" in error["message"]
 
     # Skipping ahead serves the page but does not advance the token.
     skipped = cli_runner.ok(
-        "read-transcript", source_id, "--offset", "2", "--read-token", first["read_token"], *db
+        "read-source", source_id, "--offset", "2", "--read-token", first["read_token"], *db
     )
     assert skipped["read_token"] == first["read_token"]
     # A time-range read passes the token through unchanged.
     ranged = cli_runner.ok(
-        "read-transcript",
+        "read-source",
         source_id,
         "--start",
         "0",
@@ -603,14 +604,16 @@ def test_writes_require_a_read_token_covering_the_whole_transcript(
 
     forged = first["read_token"][:-1] + ("0" if first["read_token"][-1] != "0" else "1")
     error = cli_runner.fail(*draft, "--read-token", forged)
-    assert error["code"] == "INVALID_ARGUMENT" and "read_token" in error["message"]
+    assert error["code"] == "INCOMPLETE_READ" and "source changed" in error["message"]
     assert not (vault / "00 Inbox/AI Drafts").exists() or not any(
         (vault / "00 Inbox/AI Drafts").iterdir()
     )
 
     token = _read_token(cli_runner, source_id, *db)
-    late = cli_runner.fail(*draft, "--read-token", token, "--timestamp", "11:40")
-    assert late["code"] == "INVALID_ARGUMENT" and "past the end" in late["message"]
+    unknown = cli_runner.fail(*draft, "--read-token", token, "--cite", "99")
+    assert unknown["code"] == "INVALID_ARGUMENT" and "rows 0 to 3" in unknown["message"]
+    excluded = cli_runner.fail(*draft, "--read-token", token, "--cite", "3")
+    assert excluded["code"] == "INVALID_ARGUMENT" and "excluded" in excluded["message"]
     assert Path(cli_runner.ok(*draft, "--read-token", token)["path"]).exists()
 
 
@@ -619,10 +622,6 @@ def test_cli_publication_is_create_only_with_verified_links(
 ):
     vault = _vault_fixture(tmp_path)
     target = vault / "Notes/Fixture 1.md"
-    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
-    monkeypatch.setattr(
-        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
-    )
     config = ("--config", str(_config(tmp_path, vault)))
     db = ("--cache-db", str(tmp_path / "cache.db"))
     source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
@@ -637,10 +636,12 @@ def test_cli_publication_is_create_only_with_verified_links(
         "create-draft",
         source_id,
         "# Retry budget\n\nBody.",
-        "--timestamp",
-        "1",
-        "--timestamp",
-        "01:05",
+        "--cite",
+        "0",
+        "--cite",
+        "2",
+        "--cite",
+        "2",
         "--related-note",
         "Notes/Fixture 1.md",
         "Shared idea.",
@@ -650,8 +651,10 @@ def test_cli_publication_is_create_only_with_verified_links(
     )
     text = Path(draft["path"]).read_text(encoding="utf-8")
     assert "- [[Notes/Fixture 1.md]]: Shared idea." in text
-    assert "[00:01](https://www.youtube.com/watch?v=video-123&t=1s)" in text
-    assert "[01:05](https://www.youtube.com/watch?v=video-123&t=65s)" in text
+    # Rows 0 and 2 start within 30 s of each other, so one moment is listed.
+    assert (
+        "- Relevant timestamps: [00:00](https://www.youtube.com/watch?v=video-123&t=0s)\n" in text
+    )
     assert Path(draft["path"]).name == "retry-budget.md"
     duplicate = cli_runner.ok(
         "create-draft", source_id, "# Retry budget\n\nBody.", *config, *db, *rt

@@ -31,13 +31,14 @@ authorizes permission changes.
 
 ## Tools
 
-- `read_transcript` and `read_chapter` return pages. Follow `next_offset` until it is
-  `null`; `remaining_segments` says how many segments are still unread. Pass each
+- `read_source` and `read_section` return pages. Pass each page's `next_offset` as
+  `offset` until it is `null`; `remaining_segments` says how many segments are still unread. Pass each
   page's `read_token` to the next page: reading in order from offset 0 advances it,
   while skipping ahead, time ranges and `include_excluded` reads do not.
   `create_draft` and `create_edit_suggestion` require the final token and fail with
   `INCOMPLETE_READ` (naming the offset to continue from) until it covers the whole
-  retained transcript. A `limit` above 200 is capped at 200.
+  retained source. A token from before a refresh fails with `INCOMPLETE_READ` ("the
+  source changed"): read again from offset 0. A `limit` above 200 is capped at 200.
   Each page lists its `fields` once; every segment is a row `[source_index, start,
   duration, text]`.
 - `get_thumbnail(source_id)` is optional, for vision-capable models: it fetches the
@@ -52,14 +53,18 @@ authorizes permission changes.
   appear.
 - `read_vault_note` takes only a server-issued `note_id`; never guess paths. Pass the
   returned `revision` on continuation pages.
-- `create_draft`: `source_id`, `contents`, optional `filename`, `timestamps`,
+- `list_sections` lists sections (creator chapters for videos) as `{index, title, path,
+  first_index, row_count}`, plus `start` and `end` seconds for videos.
+- `create_draft`: `source_id`, `contents`, optional `filename`, `cite`,
   `related_notes`.
   - Contents start with `# Title` (any characters); the filename is derived from it as
     lowercase kebab-case.
   - Don't write a Source or `## Related Notes` section: the writer adds verified
     provenance and links.
   - `related_notes` items are `{note_id, reason}`.
-  - `timestamps` are seconds or clock times (`"05:12"`, `"1:03:56"`).
+  - `cite` lists the `source_index` (first value of each row) of the rows the note
+    uses. The writer renders them as timestamp links for videos; duplicates are
+    ignored, and unknown or excluded rows are refused with `INVALID_ARGUMENT`.
   - Revisions are `sha256:` plus 16 hex digits; copy them exactly.
   - Body wikilinks are kept but not verified.
 - `create_edit_suggestion` writes a review-only `edit-<note>.md` draft that links to the

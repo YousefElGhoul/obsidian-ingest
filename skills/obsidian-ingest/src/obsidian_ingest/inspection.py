@@ -45,7 +45,7 @@ def _known(value: object) -> str:
 def _caption_lines(source: Source) -> list[str]:
     """Render shared provenance and timing observations without interpreting coverage."""
     diagnostics = source_diagnostics(source)
-    caption = diagnostics["caption"]
+    caption = diagnostics["evidence"]
     acquisition = diagnostics["acquisition"]
     timing = diagnostics["timing"]
     lines = [

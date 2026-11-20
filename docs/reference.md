@@ -77,11 +77,11 @@ obsidian-ingest inspect URL     # Source and SponsorBlock diagnostic report
 obsidian-ingest mcp [--vault PATH | --config TOML] [--draft-folder PATH] [--cache-db PATH]
 obsidian-ingest ingest-source URL [--include-sponsors] [--refresh] [--cache-db PATH]
 obsidian-ingest get-source-overview SOURCE_ID
-obsidian-ingest list-chapters SOURCE_ID
+obsidian-ingest list-sections SOURCE_ID
 obsidian-ingest list-exclusions SOURCE_ID
-obsidian-ingest read-transcript SOURCE_ID [--start SEC] [--end SEC] \
+obsidian-ingest read-source SOURCE_ID [--start SEC] [--end SEC] \
   [--include-excluded] [--offset N] [--limit N] [--read-token TOKEN]
-obsidian-ingest read-chapter SOURCE_ID CHAPTER_INDEX \
+obsidian-ingest read-section SOURCE_ID SECTION_INDEX \
   [--include-excluded] [--offset N] [--limit N]
 obsidian-ingest get-thumbnail SOURCE_ID
 obsidian-ingest search-vault [QUERY] [--scope title|content|both] \
@@ -89,12 +89,12 @@ obsidian-ingest search-vault [QUERY] [--scope title|content|both] \
 obsidian-ingest read-vault-note VAULT_RELATIVE_PATH \
   [--revision SHA256] [--offset N] [--limit N]
 obsidian-ingest create-draft SOURCE_ID CONTENTS [--filename NAME] \
-  [--timestamp SEC|MM:SS] [--related-note PATH REASON] --read-token TOKEN
+  [--cite SOURCE_INDEX] [--related-note PATH REASON] --read-token TOKEN
 obsidian-ingest create-edit-suggestion SOURCE_ID PATH REVISION SUMMARY REASONING CONTENT \
-  [--timestamp SEC|MM:SS] --read-token TOKEN
+  [--cite SOURCE_INDEX] --read-token TOKEN
 ```
 
-Source commands accept `--cache-db`; vault commands accept `--config`. `--timestamp`
+Source commands accept `--cache-db`; vault commands accept `--config`. `--cite`
 and `--related-note` are repeatable. See `obsidian-ingest COMMAND --help` for details.
 
 Vault-aware CLI commands use the trusted configuration at
@@ -164,7 +164,6 @@ result = create_draft(
     settings,
     contents="# Why retries can amplify an outage\n\nAgent-written note content.",
     source=source.metadata,
-    timestamps=(120.5, 245.0),
 )
 print(result.path)  # .../00 Inbox/AI Drafts/why-retries-can-amplify-an-outage.md
 ```
@@ -181,9 +180,12 @@ capped at 120 UTF-8 bytes, contains no path separators or dots, and reserved Win
 device names gain a `-note` suffix (`con-note.md`). Without a given filename or a
 leading H1, or when the slug is empty, the call fails with `INVALID_ARGUMENT`.
 A readable source section is appended with source identity, URL, creator when
-available, and optional timestamps.
-YouTube timestamps link to the normalized video ID at the corresponding whole second;
-timestamps for other providers remain plain time values.
+available, and an optional citation line. The tools build that line from the cited rows
+(`cite`): the source's provider renders it, so YouTube citations are timestamp links to
+the normalized video ID at each distinct whole second. Source titles and creator names
+are written as inert text: bracket, backtick, pipe, angle-bracket and `#` characters
+are escaped, control and bidi-override characters are removed, and long values are cut
+to 300 characters.
 Related-note links are verified against accessible notes when created. Vault search and
 read operations are available through the configured MCP and CLI adapters.
 
@@ -274,9 +276,14 @@ and `cached`; `SourceCache(path).get(source_id)` retrieves the normalized `Sourc
 a restart. The low-level `source.ingest_source` API and diagnostic CLI commands remain
 uncached and retain their existing behavior.
 
-The source tools let an agent ingest a URL, inspect its overview and creator chapters,
-list SponsorBlock ranges, read timestamped transcript pages or chapter pages, and create
-a draft attributed to that ingested source. Sponsor filtering defaults to `sponsor` only;
+The source tools let an agent ingest a URL, inspect its overview and sections (creator
+chapters for videos), list SponsorBlock ranges, read timestamped source pages
+(`read_source`) or section pages (`read_section`), and create a draft attributed to that
+ingested source. The overview reports `provider`, `kind` (`timed` for video), a
+`section_count`, an `exclusions` block (status, categories and segment counts), the
+`diagnostics` below, and a fixed `notice` that source text and metadata are untrusted
+data. `list_sections` returns `{index, title, path, first_index, row_count}` plus
+`start`/`end` seconds for videos. Sponsor filtering defaults to `sponsor` only;
 reads return the retained view, with an option to include original atoms. SponsorBlock
 errors are reported and ingestion continues with unfiltered text. Transcript reads
 default to 100 segments and cap a request at 200. The serialized MCP content envelope is
@@ -287,7 +294,11 @@ whole segments. The response includes `fields` (`source_index`, `start`, `durati
 `read_token`. The token is stateless, so it works the same across CLI processes and
 MCP. It records how far the transcript has been read in order from offset 0, and draft
 and edit writes require one that covers the whole retained transcript. Continue with
-the returned `next_offset` and `read_token` until `next_offset` is `null`. Ranged,
+the returned `next_offset` (as `offset`) and `read_token` until `next_offset` is `null`.
+The token is bound to the capture's content, so after a refresh that changed the source
+a write with an older token fails with `INCOMPLETE_READ` ("the source changed"), and
+the agent reads again. Writes cite rows by `source_index` (`cite`); unknown or
+excluded indices fail with `INVALID_ARGUMENT`, and duplicates are ignored. Ranged,
 chapter, skipped-ahead, or `include_excluded` reads do not advance full-read coverage.
 Source indices, wording, timestamps, and order are preserved. An individual atom that
 cannot fit by itself fails explicitly rather than being truncated. Transcript/chapter pages
@@ -303,7 +314,7 @@ For `create_draft`, start `contents` with an H1 that is the note's title; the op
 Do not include a mid-body Source/Sources/Source Attribution/Provenance section or an
 agent-authored `## Related Notes` section; a final agent-written source section is
 dropped. The application appends one `## Source`
-section with the source URL, creator when available, and supplied timestamps. A separate
+section with the source URL, creator when available, and the cited rows. A separate
 `## References` section for additional papers and materials is allowed. Heading
 validation covers ordinary ATX and Setext Markdown headings and ignores fenced or
 indented code examples; it is not a general-purpose Markdown parser.
@@ -313,7 +324,7 @@ indented code examples; it is not a general-purpose Markdown parser.
 `ingest_source` and `get_source_overview` (CLI `ingest-source`, `get-source-overview`)
 include `overview.diagnostics`, built by one shared function:
 
-- `caption`: `language`, `origin` (`manual` or `generated`), `format` (`json3` or
+- `evidence`: `kind` (`captions` for video), `language`, `origin` (`manual` or `generated`), `format` (`json3` or
   `vtt`), `translated`, and the retained original payload's byte size and SHA-256.
   `translated` is `true` only when yt-dlp's caption URL carries a translation language,
   `false` for an original automatic track, and `null` otherwise, including manual tracks.
@@ -399,7 +410,7 @@ The source and configured vault tools include:
   `next_offset` and the returned `revision`; changed notes require a fresh search/read.
   Both tools return compact JSON in one text result, bounded to 16 KiB.
 - `create_edit_suggestion(source_id, target_note_id, target_revision, change_summary,
-  reasoning, proposed_content, read_token, timestamps=None)` creates a review-only
+  reasoning, proposed_content, read_token, cite=None)` creates a review-only
   `edit-<target-title-slug>.md` draft.
   It starts with a Python-generated wikilink to the verified target and never modifies
   that target.
@@ -472,10 +483,10 @@ mcp_servers:
       include:
         - ingest_source
         - get_source_overview
-        - list_chapters
+        - list_sections
         - list_exclusions
-        - read_transcript
-        - read_chapter
+        - read_source
+        - read_section
         - get_thumbnail
         - create_draft
         - search_vault

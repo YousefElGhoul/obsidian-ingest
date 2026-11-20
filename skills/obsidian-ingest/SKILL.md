@@ -16,7 +16,7 @@ To install, repeat the install, or undo it, follow
 ## Steps
 
 1. `ingest_source(url)`. Keep the `source_id`.
-2. Read the whole transcript in order: `read_transcript` with `limit` 200, passing
+2. Read the whole transcript in order: `read_source` with `limit` 200, passing
    each page's `next_offset` value as `offset`, with its `read_token`, to the next call
    until `next_offset` is `null`. Keep the last `read_token`: every write needs it, and
    writing is refused until the whole transcript has been read. One page per call:
@@ -76,9 +76,9 @@ example (05:12) or (1:03:56).
   write one note per chapter. A one-line tip is never a note of its own.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, and no source
   section: the tool adds the source and the related links.
-- Also pass exactly the timestamps cited in the note's text as `timestamps` (seconds or
-  "05:12"), no others. The tool turns them into video links. Transcript `start` values
-  are seconds: `11.68` is (00:11), and `3661` is (1:01:01).
+- Also pass `cite`: the `source_index` (the first value of each row) of every row the
+  note uses, no others. The tool turns them into video links. Row `start` values are
+  seconds: `11.68` is (00:11), and `3661` is (1:01:01).
 - Only what the source says. Attribute opinions to the speaker by the person or channel
   name the video gives, not "the speaker". Rankings, "best" and "replace X with Y"
   claims are opinions too: "The Coding Sloth ranks verification highest", not

@@ -20,7 +20,6 @@ from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import ExclusionLookup, ExclusionStatus
 from obsidian_ingest.extractor.transcript import TranscriptSegment
 from obsidian_ingest.filtering import filter_source_transcript
-from obsidian_ingest.responses import parse_timestamps
 
 URL = "https://www.youtube.com/watch?v=video-123"
 
@@ -29,7 +28,7 @@ async def _read_token(client, source_id: str) -> str:
     """Read the whole transcript in order, as the skill requires, and return the token."""
     arguments: dict = {"source_id": source_id}
     while True:
-        page = json.loads((await client.call_tool("read_transcript", arguments)).content[0].text)
+        page = json.loads((await client.call_tool("read_source", arguments)).content[0].text)
         if page["next_offset"] is None:
             return page["read_token"]
         arguments = {
@@ -64,10 +63,10 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert names == {
                 "ingest_source",
                 "get_source_overview",
-                "list_chapters",
+                "list_sections",
                 "list_exclusions",
-                "read_transcript",
-                "read_chapter",
+                "read_source",
+                "read_section",
                 "get_thumbnail",
                 "create_draft",
             }
@@ -76,7 +75,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "source_id",
                 "contents",
                 "filename",
-                "timestamps",
+                "cite",
                 "related_notes",
                 "read_token",
             }
@@ -91,7 +90,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             related_item_schema = draft_tool.input_schema["$defs"]["RelatedNoteInput"]
             assert set(related_item_schema["required"]) == {"note_id", "reason"}
             assert "revision" in related_item_schema["properties"]
-            transcript_tool = next(tool for tool in tools.tools if tool.name == "read_transcript")
+            transcript_tool = next(tool for tool in tools.tools if tool.name == "read_source")
             assert transcript_tool.input_schema["properties"]["limit"]["default"] == 100
 
             ingested = _tool_data(await client.call_tool("ingest_source", {"url": URL}))
@@ -102,8 +101,8 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert hit["cached"] is True
             assert ingested["overview"]["title"] == "A useful explanation"
             assert ingested["overview"]["provider"] == Provider.YOUTUBE.value
-            assert ingested["overview"]["chapter_count"] == 1
-            assert ingested["overview"]["sponsor_filtering"] == {
+            assert ingested["overview"]["section_count"] == 1
+            assert ingested["overview"]["exclusions"] == {
                 "status": "complete",
                 "enabled": True,
                 "categories": ["sponsor"],
@@ -118,8 +117,18 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             )
             assert overview["description"] == "Context for the topic"
 
-            chapters = _tool_data(await client.call_tool("list_chapters", {"source_id": source_id}))
-            assert chapters == [{"index": 0, "title": "Main idea", "start": 0.0, "end": 20.0}]
+            chapters = _tool_data(await client.call_tool("list_sections", {"source_id": source_id}))
+            assert chapters == [
+                {
+                    "index": 0,
+                    "title": "Main idea",
+                    "path": "Main idea",
+                    "first_index": 0,
+                    "row_count": 3,
+                    "start": 0.0,
+                    "end": 20.0,
+                }
+            ]
             exclusions = _tool_data(
                 await client.call_tool("list_exclusions", {"source_id": source_id})
             )
@@ -136,11 +145,11 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             first_page = _tool_data(
                 await client.call_tool(
-                    "read_transcript", {"source_id": source_id, "offset": 0, "limit": 2}
+                    "read_source", {"source_id": source_id, "offset": 0, "limit": 2}
                 )
             )
             page_result = await client.call_tool(
-                "read_transcript", {"source_id": source_id, "offset": 0, "limit": 2}
+                "read_source", {"source_id": source_id, "offset": 0, "limit": 2}
             )
             assert page_result.structured_content is None
             assert len(page_result.content) == 1
@@ -162,14 +171,14 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert first_page["next_offset"] == 2
             second_page = _tool_data(
                 await client.call_tool(
-                    "read_transcript", {"source_id": source_id, "offset": 2, "limit": 2}
+                    "read_source", {"source_id": source_id, "offset": 2, "limit": 2}
                 )
             )
             assert [segment[3] for segment in second_page["segments"]] == ["Third atom"]
             assert second_page["next_offset"] is None
             raw_page = _tool_data(
                 await client.call_tool(
-                    "read_transcript",
+                    "read_source",
                     {"source_id": source_id, "include_excluded": True, "offset": 3},
                 )
             )
@@ -178,8 +187,8 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
 
             chapter_page = _tool_data(
                 await client.call_tool(
-                    "read_chapter",
-                    {"source_id": source_id, "chapter_index": 0, "limit": 2, "offset": 1},
+                    "read_section",
+                    {"source_id": source_id, "section_index": 0, "limit": 2, "offset": 1},
                 )
             )
             assert [segment[3] for segment in chapter_page["segments"]] == [
@@ -187,13 +196,13 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                 "Third atom",
             ]
             invalid_chapter = await client.call_tool(
-                "read_chapter", {"source_id": source_id, "chapter_index": 4}
+                "read_section", {"source_id": source_id, "section_index": 4}
             )
             assert invalid_chapter.is_error
-            assert "chapter_index 4 out of range" in invalid_chapter.content[0].text
+            assert "section_index 4 out of range" in invalid_chapter.content[0].text
 
             invalid_range = await client.call_tool(
-                "read_transcript", {"source_id": source_id, "start": 10, "end": 1}
+                "read_source", {"source_id": source_id, "start": 10, "end": 1}
             )
             assert invalid_range.is_error
             assert "end must not precede start" in invalid_range.content[0].text
@@ -205,7 +214,7 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
                         "source_id": source_id,
                         "read_token": await _read_token(client, source_id),
                         "contents": "# A useful note: why?\n\nAgent-authored content.",
-                        "timestamps": [1.0],
+                        "cite": [1],
                     },
                 )
             )
@@ -286,18 +295,16 @@ def test_stdio_server_exposes_source_navigation_and_bound_draft_writer(
             assert reference_text.count("## Source") == 1
             assert "## References\n- [Paper](https://example.com)\n\n## Source" in reference_text
 
-            missing = await client.call_tool("read_transcript", {"source_id": "not-ingested"})
+            missing = await client.call_tool("read_source", {"source_id": "not-ingested"})
             assert missing.is_error
             assert "SOURCE_NOT_FOUND: Unknown source_id" in missing.content[0].text
 
             # Above the maximum is capped, not rejected; the page reports what was applied.
-            capped = await client.call_tool(
-                "read_transcript", {"source_id": source_id, "limit": 500}
-            )
+            capped = await client.call_tool("read_source", {"source_id": source_id, "limit": 500})
             assert not capped.is_error
             assert json.loads(capped.content[0].text)["limit"] == 200
             invalid_page = await client.call_tool(
-                "read_transcript", {"source_id": source_id, "limit": 0}
+                "read_source", {"source_id": source_id, "limit": 0}
             )
             assert invalid_page.is_error
             assert "INVALID_ARGUMENT: limit" in invalid_page.content[0].text
@@ -334,14 +341,12 @@ def test_source_handles_survive_server_restarts(tmp_path: Path, monkeypatch, sam
                 await client.call_tool("get_source_overview", {"source_id": source_id})
             )
             assert overview["title"] == source.metadata.title
-            assert _tool_data(await client.call_tool("list_chapters", {"source_id": source_id}))
+            assert _tool_data(await client.call_tool("list_sections", {"source_id": source_id}))
             assert _tool_data(await client.call_tool("list_exclusions", {"source_id": source_id}))
-            transcript = _tool_data(
-                await client.call_tool("read_transcript", {"source_id": source_id})
-            )
+            transcript = _tool_data(await client.call_tool("read_source", {"source_id": source_id}))
             assert transcript["total_segments"] == 3
             chapter = _tool_data(
-                await client.call_tool("read_chapter", {"source_id": source_id, "chapter_index": 0})
+                await client.call_tool("read_section", {"source_id": source_id, "section_index": 0})
             )
             assert chapter["segments"] == transcript["segments"]
             draft = _tool_data(
@@ -402,10 +407,10 @@ def test_long_transcript_pages_are_bounded_and_preserve_every_atom(
                     tool,
                     (
                         {"source_id": source_id, "offset": offset, "include_excluded": True}
-                        if tool == "read_transcript"
+                        if tool == "read_source"
                         else {
                             "source_id": source_id,
-                            "chapter_index": 0,
+                            "section_index": 0,
                             "offset": offset,
                             "include_excluded": True,
                         }
@@ -426,7 +431,7 @@ def test_long_transcript_pages_are_bounded_and_preserve_every_atom(
                 offset = page["next_offset"]
             return pages
 
-    for tool in ("read_transcript", "read_chapter"):
+    for tool in ("read_source", "read_section"):
         pages = asyncio.run(read_pages(tool))
         actual = [segment for page in pages for segment in page["segments"]]
         assert [segment[3] for segment in actual] == [segment.text for segment in segments]
@@ -486,7 +491,7 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
             assert ingested["cached"] is True
             assert ingested["source_id"] == seeded.source_id
             page = _tool_data(
-                await client.call_tool("read_transcript", {"source_id": seeded.source_id})
+                await client.call_tool("read_source", {"source_id": seeded.source_id})
             )
             assert page["segments"][0][3] == "First atom"
             result = _tool_data(
@@ -496,7 +501,7 @@ def test_subprocess_restart_preserves_cached_source_and_draft(tmp_path, monkeypa
                         "source_id": seeded.source_id,
                         "read_token": await _read_token(client, seeded.source_id),
                         "contents": "# Restarted source\n\nA useful body.",
-                        "timestamps": [1.5],
+                        "cite": [1],
                     },
                 )
             )
@@ -643,10 +648,6 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
     tmp_path, monkeypatch, sample_source
 ):
     source = sample_source
-    # Formatting of long timestamps is tested here; the end-of-video guard has its own test.
-    monkeypatch.setattr(
-        "obsidian_ingest.responses._source_timestamps", lambda _s, v: parse_timestamps(v)
-    )
     monkeypatch.setattr(source_cache, "ingest_source", lambda *args, **kwargs: source)
     vault = tmp_path / "vault"
     (vault / "Engineering").mkdir(parents=True)
@@ -698,7 +699,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
                                 "revision": selected["revision"],
                             }
                         ],
-                        "timestamps": [125.9, "1:03:56"],
+                        "cite": [0, 2],
                     },
                 )
             )
@@ -707,8 +708,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
                 "## Related Notes\n\n- [[Engineering/Retry Policies.md]]: Explains the per-request policy."
                 in related_text
             )
-            assert "[02:05](https://www.youtube.com/watch?v=video-123&t=125s)" in related_text
-            assert "[01:03:56](https://www.youtube.com/watch?v=video-123&t=3836s)" in related_text
+            assert "[00:00](https://www.youtube.com/watch?v=video-123&t=0s)" in related_text
 
             unicode_search = json.loads(
                 (await client.call_tool("search_vault", {"query": "unicode marker"}))
@@ -753,7 +753,7 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
                         "change_summary": "Add an aggregate retry budget.",
                         "reasoning": "The current explanation omits system-wide load.",
                         "proposed_content": "A retry budget caps retries across clients.",
-                        "timestamps": [125],
+                        "cite": [2],
                     },
                 )
             )
@@ -803,9 +803,9 @@ def test_related_links_and_edit_suggestions_are_verified_create_only_drafts(
             unread = await client.call_tool(
                 "create_draft", {"source_id": source_id, "contents": "# Unread\n\nBody"}
             )
-            assert unread.is_error and "final read_transcript page" in unread.content[0].text
+            assert unread.is_error and "final read_source page" in unread.content[0].text
             first_page = json.loads(
-                (await client.call_tool("read_transcript", {"source_id": source_id, "limit": 1}))
+                (await client.call_tool("read_source", {"source_id": source_id, "limit": 1}))
                 .content[0]
                 .text
             )
@@ -882,7 +882,8 @@ def test_cli_and_mcp_expose_identical_vtt_diagnostics(tmp_path, vtt_only_youtube
     cli_ingest = cli_runner.ok("ingest-source", URL, "--cache-db", str(database))
     diagnostics = cli_ingest["overview"]["diagnostics"]
     payload = vtt_only_youtube.urlopen.return_value.read.return_value
-    assert diagnostics["caption"] == {
+    assert diagnostics["evidence"] == {
+        "kind": "captions",
         "language": "en",
         "origin": "manual",
         "format": "vtt",
@@ -893,7 +894,7 @@ def test_cli_and_mcp_expose_identical_vtt_diagnostics(tmp_path, vtt_only_youtube
     assert diagnostics["acquisition"]["extractor"] == "yt-dlp"
     assert diagnostics["acquisition"]["acquired_at"].endswith("+00:00")
     assert diagnostics["acquisition"]["reused_from_cache"] is False
-    sponsor_filtering = cli_ingest["overview"]["sponsor_filtering"]
+    sponsor_filtering = cli_ingest["overview"]["exclusions"]
     assert (sponsor_filtering["status"], sponsor_filtering["error"]) == (
         "failed",
         "SponsorBlock down",
@@ -1010,10 +1011,10 @@ def test_cli_and_mcp_return_identical_results_except_identifiers(
     source_id = cli_ingest["source_id"]
     cli_results = {
         "overview": cli_runner.ok("get-source-overview", source_id, *cache_args),
-        "chapters": cli_runner.ok("list-chapters", source_id, *cache_args),
+        "chapters": cli_runner.ok("list-sections", source_id, *cache_args),
         "exclusions": cli_runner.ok("list-exclusions", source_id, *cache_args),
-        "transcript": cli_runner.ok("read-transcript", source_id, "--limit", "2", *cache_args),
-        "chapter": cli_runner.ok("read-chapter", source_id, "0", "--offset", "1", *cache_args),
+        "transcript": cli_runner.ok("read-source", source_id, "--limit", "2", *cache_args),
+        "chapter": cli_runner.ok("read-section", source_id, "0", "--offset", "1", *cache_args),
     }
     cli_search = cli_runner.ok("search-vault", "retry", "--limit", "2", "--config", str(config))
 
@@ -1035,10 +1036,10 @@ def test_cli_and_mcp_return_identical_results_except_identifiers(
             )
             calls = {
                 "overview": ("get_source_overview", {}),
-                "chapters": ("list_chapters", {}),
+                "chapters": ("list_sections", {}),
                 "exclusions": ("list_exclusions", {}),
-                "transcript": ("read_transcript", {"limit": 2}),
-                "chapter": ("read_chapter", {"chapter_index": 0, "offset": 1}),
+                "transcript": ("read_source", {"limit": 2}),
+                "chapter": ("read_section", {"section_index": 0, "offset": 1}),
             }
             for key, (tool, arguments) in calls.items():
                 result = await client.call_tool(tool, {"source_id": source_id} | arguments)
@@ -1063,8 +1064,8 @@ def test_cli_and_mcp_return_identical_results_except_identifiers(
             )
             assert [note["path"] for note in continued["notes"]] == ["Engineering/Retry 2.md"]
             errors = {
-                "SOURCE_NOT_FOUND": ("read_transcript", {"source_id": "missing"}),
-                "INVALID_ARGUMENT": ("read_transcript", {"source_id": source_id, "offset": -1}),
+                "SOURCE_NOT_FOUND": ("read_source", {"source_id": "missing"}),
+                "INVALID_ARGUMENT": ("read_source", {"source_id": source_id, "offset": -1}),
                 "INVALID_CURSOR": ("search_vault", {"query": "retry", "cursor": "bogus"}),
                 "NOTE_UNAVAILABLE": ("read_vault_note", {"note_id": "note_unknown"}),
             }
@@ -1136,23 +1137,23 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, fake
             ]
             draft = {"source_id": source_id, "contents": "# T\n\nBody."}
             malformed = [
-                ("read_transcript", {"source_id": source_id, "offset": True}, "offset"),
-                ("read_transcript", {"source_id": source_id, "limit": False}, "limit"),
-                ("read_transcript", {"source_id": source_id, "offset": "1"}, "offset"),
-                ("read_transcript", {"source_id": source_id, "offset": "bad"}, "offset"),
-                ("read_transcript", {"source_id": source_id, "limit": 1.5}, "limit"),
-                ("read_transcript", {"source_id": source_id, "start": True}, "start"),
-                ("read_transcript", {"source_id": source_id, "start": "1"}, "start"),
-                ("read_transcript", {"source_id": source_id, "include_excluded": 1}, "include"),
-                ("read_transcript", {"source_id": source_id, "include_excluded": "true"}, "incl"),
-                ("read_transcript", {"source_id": source_id, "limit": 0}, "limit"),
-                ("read_transcript", {"source_id": source_id, "offset": -1}, "offset"),
+                ("read_source", {"source_id": source_id, "offset": True}, "offset"),
+                ("read_source", {"source_id": source_id, "limit": False}, "limit"),
+                ("read_source", {"source_id": source_id, "offset": "1"}, "offset"),
+                ("read_source", {"source_id": source_id, "offset": "bad"}, "offset"),
+                ("read_source", {"source_id": source_id, "limit": 1.5}, "limit"),
+                ("read_source", {"source_id": source_id, "start": True}, "start"),
+                ("read_source", {"source_id": source_id, "start": "1"}, "start"),
+                ("read_source", {"source_id": source_id, "include_excluded": 1}, "include"),
+                ("read_source", {"source_id": source_id, "include_excluded": "true"}, "incl"),
+                ("read_source", {"source_id": source_id, "limit": 0}, "limit"),
+                ("read_source", {"source_id": source_id, "offset": -1}, "offset"),
                 ("search_vault", {"query": "retry", "limit": 50}, "limit"),
-                ("read_transcript", {"source_id": 123}, "source_id"),
-                ("read_transcript", {}, "source_id"),
-                ("read_transcript", {"source_id": source_id, "unknown": 1}, "unknown"),
-                ("read_chapter", {"source_id": source_id, "chapter_index": True}, "chapter"),
-                ("read_chapter", {"source_id": source_id, "chapter_index": "0"}, "chapter"),
+                ("read_source", {"source_id": 123}, "source_id"),
+                ("read_source", {}, "source_id"),
+                ("read_source", {"source_id": source_id, "unknown": 1}, "unknown"),
+                ("read_section", {"source_id": source_id, "section_index": True}, "section"),
+                ("read_section", {"source_id": source_id, "section_index": "0"}, "section"),
                 ("ingest_source", {"url": URL, "refresh": "false"}, "refresh"),
                 ("ingest_source", {"url": URL, "exclude_sponsors": 0}, "exclude_sponsors"),
                 ("search_vault", {"query": "retry", "limit": True}, "limit"),
@@ -1177,7 +1178,7 @@ def test_mcp_rejects_malformed_argument_types_as_invalid_argument(tmp_path, fake
             # Valid JSON numbers still work: integers for float fields included.
             page = _tool_data(
                 await client.call_tool(
-                    "read_transcript", {"source_id": source_id, "start": 1, "end": 2.5}
+                    "read_source", {"source_id": source_id, "start": 1, "end": 2.5}
                 )
             )
             assert page["offset"] == 0

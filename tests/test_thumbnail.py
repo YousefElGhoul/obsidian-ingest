@@ -95,7 +95,7 @@ def test_cli_and_mcp_return_the_same_thumbnail(
 ):
     image = make_image("png", 480, 360)
     monkeypatch.setattr(
-        "obsidian_ingest.responses.fetch_youtube_thumbnail",
+        "obsidian_ingest.extractor.providers.youtube.provider.fetch_youtube_thumbnail",
         lambda video_id: (image, f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
     )
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
@@ -138,14 +138,16 @@ def test_unavailable_thumbnail_is_a_coded_error(monkeypatch, tmp_path, fake_extr
     def unavailable(video_id):
         raise ThumbnailError("this video has no thumbnail")
 
-    monkeypatch.setattr("obsidian_ingest.responses.fetch_youtube_thumbnail", unavailable)
+    monkeypatch.setattr(
+        "obsidian_ingest.extractor.providers.youtube.provider.fetch_youtube_thumbnail", unavailable
+    )
     db = ("--cache-db", str(tmp_path / "cache.db"))
     source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
     error = cli_runner.fail("get-thumbnail", source_id, *db)
     assert error == {"code": "THUMBNAIL_UNAVAILABLE", "message": "this video has no thumbnail"}
 
     monkeypatch.setattr(
-        "obsidian_ingest.responses.fetch_youtube_thumbnail",
+        "obsidian_ingest.extractor.providers.youtube.provider.fetch_youtube_thumbnail",
         lambda video_id: (b"<html>gone</html>", "https://i.ytimg.com/vi/x/hqdefault.jpg"),
     )
     error = cli_runner.fail("get-thumbnail", source_id, *db)
@@ -154,4 +156,4 @@ def test_unavailable_thumbnail_is_a_coded_error(monkeypatch, tmp_path, fake_extr
 
 def test_source_cache_is_untouched_by_thumbnails():
     # Thumbnails are fetched on demand and never stored in the source cache.
-    assert source_cache.SCHEMA_VERSION == 2
+    assert source_cache.SCHEMA_VERSION == 3

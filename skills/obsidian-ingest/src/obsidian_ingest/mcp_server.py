@@ -56,7 +56,9 @@ def _strict_argument_model(function: Callable[..., Any]) -> type[BaseModel]:
 
 
 _ARGUMENT_HINTS = {
-    "read_token": "pass the read_token from your final read_transcript page",
+    "read_token": "pass the read_token from your final read_source page",
+    "cite": "list the source_index numbers (first value of each row) of the rows used",
+    "offset": "pass the previous page's next_offset value as offset",
 }
 
 
@@ -164,31 +166,31 @@ def create_server(
     def ingest_source(
         url: str, exclude_sponsors: bool = True, refresh: bool = False
     ) -> dict[str, Any]:
-        """Reuse a persistent source; refresh explicitly re-extracts. Sponsors excluded by default."""
+        """Ingest a source URL; reuse its persistent capture, refresh re-extracts. Sponsor segments are excluded by default."""
         return responses.ingest(cache(), url, exclude_sponsors=exclude_sponsors, refresh=refresh)
 
     @server.tool()
     @_tool_errors
     def get_source_overview(source_id: str) -> dict[str, Any]:
-        """Get source metadata, sponsor filtering, and caption diagnostics without transcript text."""
+        """Get source metadata, exclusions, and acquisition evidence without the source text."""
         return responses.source_overview(load_source(source_id))
 
     @server.tool()
     @_tool_errors
-    def list_chapters(source_id: str) -> list[dict[str, Any]]:
-        """List creator chapters with zero-based indices."""
-        return responses.chapters(load_source(source_id))
+    def list_sections(source_id: str) -> list[dict[str, Any]]:
+        """List sections (creator chapters for videos) with zero-based indices."""
+        return responses.sections(load_source(source_id))
 
     @server.tool()
     @_tool_errors
     def list_exclusions(source_id: str) -> list[dict[str, Any]]:
-        """List sponsor ranges and original transcript indices they exclude."""
+        """List excluded ranges (such as sponsor segments) and the source indices they remove."""
         return responses.exclusions(load_source(source_id))
 
-    # Compact text avoids duplicating bounded transcript rows in structured output.
+    # Compact text avoids duplicating bounded source rows in structured output.
     @server.tool(structured_output=False)
     @_tool_errors
-    def read_transcript(
+    def read_source(
         source_id: str,
         start: float | None = None,
         end: float | None = None,
@@ -197,8 +199,8 @@ def create_server(
         limit: int = DEFAULT_PAGE_SIZE,
         read_token: str | None = None,
     ) -> str:
-        """Read compact JSON pages in order; follow next_offset until null, passing each page's read_token to the next call. Writing requires the final read_token."""
-        page = responses.transcript_page(
+        """Read the source in compact JSON pages, in order: pass each page's next_offset as offset, with its read_token, until next_offset is null. Writing requires the final read_token."""
+        page = responses.source_page(
             load_source(source_id),
             start=start,
             end=end,
@@ -211,17 +213,17 @@ def create_server(
 
     @server.tool(structured_output=False)
     @_tool_errors
-    def read_chapter(
+    def read_section(
         source_id: str,
-        chapter_index: int,
+        section_index: int,
         include_excluded: bool = False,
         offset: int = 0,
         limit: int = DEFAULT_PAGE_SIZE,
     ) -> str:
-        """Read compact JSON chapter pages; follow next_offset until null (remaining_segments 0)."""
-        page = responses.chapter_page(
+        """Read one section in compact JSON pages; pass next_offset as offset until it is null."""
+        page = responses.section_page(
             load_source(source_id),
-            chapter_index,
+            section_index,
             include_excluded=include_excluded,
             offset=offset,
             limit=limit,
@@ -231,7 +233,7 @@ def create_server(
     @server.tool(structured_output=False)
     @_tool_errors
     def get_thumbnail(source_id: str) -> list[Image | str]:
-        """Optional: fetch the video's thumbnail image for a vision-capable model. Not needed to understand the video; skip it if you cannot view images."""
+        """Optional: fetch the source's thumbnail image for a vision-capable model. Not needed to understand the source; skip it if you cannot view images."""
         result = responses.thumbnail(load_source(source_id))
         image = Image(data=result.data, format=result.image.mime_type.removeprefix("image/"))
         return [image, compact_json(result.summary())]
@@ -243,16 +245,16 @@ def create_server(
         contents: str,
         read_token: str,
         filename: str | None = None,
-        timestamps: list[float | str] | None = None,
+        cite: list[int] | None = None,
         related_notes: list[RelatedNoteInput] | None = None,
     ) -> dict[str, str]:
-        """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. read_token is the token from your final read_transcript page; writing is refused until the whole transcript was read. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and timestamps in seconds for the moments cited."""
+        """Create a source-attributed draft. Start contents with an H1 that is the note's title (any characters allowed); no source section. read_token is the token from your final read_source page; writing is refused until the whole source was read. filename is optional and derived from the H1 as kebab-case. Pass related_notes ({note_id from search_vault, reason}) for every vault note the idea connects to, and cite: the source_index (first value of each row) of the rows the note uses."""
         return responses.write_draft(
             settings,
             load_source(source_id),
             contents=contents,
             filename=filename,
-            timestamps=tuple(timestamps or ()),
+            cite=cite,
             related_notes=[dict(item) for item in related_notes] if related_notes else None,
             vault=vault,
             read_token=read_token,
@@ -299,9 +301,9 @@ def create_server(
             reasoning: str,
             proposed_content: str,
             read_token: str,
-            timestamps: list[float | str] | None = None,
+            cite: list[int] | None = None,
         ) -> dict[str, str]:
-            """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section. read_token is the token from your final read_transcript page."""
+            """Create a review-only edit-<note>.md draft for a verified accessible note; never changes it. proposed_content is only the new or changed lines, not a copy of the note, with no Source or Related Notes section. read_token is the token from your final read_source page; cite lists the source_index of the rows used."""
             return responses.write_edit_suggestion(
                 settings,
                 load_source(source_id),
@@ -311,7 +313,7 @@ def create_server(
                 change_summary=change_summary,
                 reasoning=reasoning,
                 proposed_content=proposed_content,
-                timestamps=tuple(timestamps or ()),
+                cite=cite,
                 read_token=read_token,
             )
 

@@ -33,7 +33,7 @@ hermes -p <profile> mcp add obsidian-ingest --command <absolute uv> --connect-ti
 
 ```bash
 hermes -p <profile> config set mcp_servers.obsidian-ingest.tools \
-  '{"include":["ingest_source","get_source_overview","list_chapters","list_exclusions","read_transcript","read_chapter","get_thumbnail","create_draft","search_vault","read_vault_note","create_edit_suggestion"],"resources":false,"prompts":false}'
+  '{"include":["ingest_source","get_source_overview","list_sections","list_exclusions","read_source","read_section","get_thumbnail","create_draft","search_vault","read_vault_note","create_edit_suggestion"],"resources":false,"prompts":false}'
 hermes -p <profile> mcp test obsidian-ingest
 ```
 

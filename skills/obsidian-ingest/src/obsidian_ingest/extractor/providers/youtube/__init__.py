@@ -23,13 +23,13 @@ from obsidian_ingest.extractor.metadata import (
     ExclusionStatus,
     NativeFormat,
     SourceMetadata,
-    YouTubeMetadata,
 )
 from obsidian_ingest.extractor.providers.youtube.captions import (
     parse_captions,
     parse_json3,
     parse_vtt,
 )
+from obsidian_ingest.extractor.providers.youtube.details import YouTubeMetadata
 from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
 
 __all__ = (

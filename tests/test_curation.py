@@ -107,7 +107,9 @@ def suggest(vault_root, reader, notes, sample_source):
 
 
 def test_edit_suggestion_links_the_unchanged_target(suggest, vault_root) -> None:
-    result = suggest(timestamps=(65.0,))
+    from obsidian_ingest.extractor.providers import Citation
+
+    result = suggest(citation=Citation("Relevant timestamps", "[01:05](https://example.test)"))
     text = result.path.read_text(encoding="utf-8")
     assert result.path.name == "edit-retry.md"
     assert text.startswith(

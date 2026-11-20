@@ -1,8 +1,6 @@
-"""Define unchanged caption atoms and provider dispatch for acquisition before curation."""
+"""Source atoms in source order, plus timed-source helpers shared by providers."""
 
 from dataclasses import dataclass
-
-from obsidian_ingest.extractor import Provider, detect_provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,34 +14,30 @@ class TranscriptSegment:
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
-    """Keep source-ordered caption atoms and their selected language/origin together."""
+    """Keep source-ordered atoms and their language/origin together."""
 
-    video_id: str
+    source_id: str
     language: str
     language_code: str
     is_generated: bool
     segments: tuple[TranscriptSegment, ...]
 
 
-def fetch_transcript(
-    url: str,
-) -> Transcript:
-    """Acquire a supported source's captions, raising ValueError for unsupported providers."""
-    provider = detect_provider(url)
-    if provider == Provider.YOUTUBE:
-        from obsidian_ingest.extractor.providers.youtube import get_youtube_subtitles
+TIMESTAMP_GAP_SECONDS = 30
+MAX_LISTED_TIMESTAMPS = 8
 
-        video_id, language, is_generated, segments = get_youtube_subtitles(url)
-    else:
-        raise ValueError(f"Unsupported provider for URL: {url}")
 
-    return Transcript(
-        video_id=video_id,
-        language=language,
-        language_code=language,
-        is_generated=is_generated,
-        segments=segments,
-    )
+def distinct_moments(timestamps: tuple[float, ...]) -> tuple[float, ...]:
+    """List distinct moments: weak models often cite every caption line of one passage.
+
+    Keeps the earliest of timestamps closer than TIMESTAMP_GAP_SECONDS, in time order,
+    up to MAX_LISTED_TIMESTAMPS.
+    """
+    kept: list[float] = []
+    for timestamp in sorted(timestamps):
+        if not kept or timestamp - kept[-1] >= TIMESTAMP_GAP_SECONDS:
+            kept.append(timestamp)
+    return tuple(kept[:MAX_LISTED_TIMESTAMPS])
 
 
 def format_timestamp(seconds: float) -> str:
@@ -57,18 +51,3 @@ def format_timestamp(seconds: float) -> str:
         return f"{hours:02}:{minutes:02}:{seconds:02}"
 
     return f"{minutes:02}:{seconds:02}"
-
-
-def print_transcript(url: str) -> None:
-    """Fetch and print original caption atoms with source identity and start timestamps."""
-    transcript = fetch_transcript(url)
-
-    print(f"Video: {transcript.video_id}")
-    print(f"Language: {transcript.language} ({transcript.language_code})")
-    print(f"Generated captions: {transcript.is_generated}")
-    print(f"Segments: {len(transcript.segments)}")
-    print()
-
-    for segment in transcript.segments:
-        timestamp = format_timestamp(segment.start)
-        print(f"[{timestamp}] {segment.text}")

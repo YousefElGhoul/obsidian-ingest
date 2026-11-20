@@ -5,6 +5,7 @@ These application functions bridge agent choices and the create-only draft write
 
 from obsidian_ingest.drafts import DraftResult, DraftWriterSettings, create_draft
 from obsidian_ingest.extractor.metadata import SourceMetadata
+from obsidian_ingest.extractor.providers import Citation
 from obsidian_ingest.vault import NoteChanged, NoteUnavailable, VaultReader
 
 MAX_RELATED_NOTES = 5
@@ -72,7 +73,7 @@ def create_edit_suggestion(
     change_summary: str,
     reasoning: str,
     proposed_content: str,
-    timestamps: tuple[float, ...] = (),
+    citation: Citation | None = None,
 ) -> DraftResult:
     """Write a human-review-only proposal linked to an unchanged existing note."""
     if (
@@ -118,6 +119,6 @@ def create_edit_suggestion(
         filename=f"edit-{target.title}",
         contents=contents,
         source=source,
-        timestamps=timestamps,
+        citation=citation,
         leading_link=f"[[{target.path}]]",
     )

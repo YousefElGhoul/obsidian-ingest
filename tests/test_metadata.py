@@ -9,12 +9,14 @@ from obsidian_ingest.extractor.metadata import (
     Chapter,
     NativeFormat,
     SourceMetadata,
-    YouTubeMetadata,
     categorize_content,
-    fetch_metadata,
 )
-from obsidian_ingest.extractor.providers import youtube
-from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
+from obsidian_ingest.extractor.providers import supported_provider, youtube
+from obsidian_ingest.extractor.providers.youtube import (
+    get_youtube_metadata,
+    normalize_youtube_metadata,
+)
+from obsidian_ingest.extractor.providers.youtube.details import YouTubeMetadata
 
 URL = "https://youtu.be/abc123"
 
@@ -256,12 +258,12 @@ def test_categorization(
     assert categorize_content(metadata) == expected
 
 
-def test_fetch_metadata_normalizes_mocked_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_youtube_metadata_normalizes_mocked_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
     factory = MagicMock()
     ydl = factory.return_value.__enter__.return_value
     ydl.extract_info.return_value = {"id": "abc123", "title": "Test", "duration": 600}
     monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
-    metadata = fetch_metadata(URL)
+    metadata = get_youtube_metadata(URL)
     assert isinstance(metadata, SourceMetadata)
     assert metadata.title == "Test"
     assert categorize_content(metadata) == ContentCategory.LONG_FORM
@@ -271,14 +273,14 @@ def test_fetch_metadata_normalizes_mocked_extraction(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.parametrize("info", [None, {"_type": "playlist"}, {"_type": "multi_video"}])
-def test_fetch_metadata_rejects_non_video_results(
+def test_get_youtube_metadata_rejects_non_video_results(
     info: dict | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     factory = MagicMock()
     factory.return_value.__enter__.return_value.extract_info.return_value = info
     monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
     with pytest.raises(ValueError, match="single YouTube video"):
-        fetch_metadata(URL)
+        get_youtube_metadata(URL)
 
 
 @pytest.mark.parametrize(
@@ -289,11 +291,11 @@ def test_fetch_metadata_rejects_non_video_results(
         "https://example.com/video",
     ],
 )
-def test_fetch_metadata_rejects_unsupported_sources(
+def test_unsupported_sources_have_no_acquiring_provider(
     url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     factory = MagicMock()
     monkeypatch.setattr(youtube.yt_dlp, "YoutubeDL", factory)
     with pytest.raises(ValueError):
-        fetch_metadata(url)
+        supported_provider(url)
     factory.assert_not_called()

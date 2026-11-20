@@ -116,7 +116,7 @@ def test_ingest_source_reuses_one_snapshot_and_reads_do_not_extract_again(
     source = ingest_source(URL)
 
     assert isinstance(source, Source)
-    assert source.metadata.source_id == source.transcript.video_id == "snapshot-id"
+    assert source.metadata.source_id == source.transcript.source_id == "snapshot-id"
     assert source.metadata.original_url == URL
     assert source.metadata.canonical_url == "https://www.youtube.com/watch?v=snapshot-id"
     assert source.metadata.title == "One snapshot"
@@ -325,9 +325,9 @@ def test_chapters_remain_unchanged_and_use_the_same_ownership_rule(source: Sourc
 @pytest.mark.parametrize(
     ("index", "error", "message"),
     [
-        (-1, IndexError, "chapter_index -1 out of range for 3 chapters"),
-        (3, IndexError, "chapter_index 3 out of range for 3 chapters"),
-        (100, IndexError, "chapter_index 100 out of range for 3 chapters"),
+        (-1, IndexError, "section_index -1 out of range for 3 sections"),
+        (3, IndexError, "section_index 3 out of range for 3 sections"),
+        (100, IndexError, "section_index 100 out of range for 3 sections"),
         (True, TypeError, "chapter_index must be an integer"),
         (1.5, TypeError, "chapter_index must be an integer"),
         ("1", TypeError, "chapter_index must be an integer"),
@@ -342,7 +342,7 @@ def test_no_chapters_are_invented(source: Source) -> None:
     source = replace(source, metadata=replace(source.metadata, chapters=()))
     assert list_chapters(source) == ()
     assert get_source_overview(source).chapter_count == 0
-    with pytest.raises(IndexError, match="out of range for 0 chapters"):
+    with pytest.raises(IndexError, match="out of range for 0 sections"):
         read_chapter(source, 0)
 
 

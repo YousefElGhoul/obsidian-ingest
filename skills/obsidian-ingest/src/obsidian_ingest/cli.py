@@ -15,19 +15,39 @@ from typing import Any, NoReturn
 
 from obsidian_ingest import responses
 from obsidian_ingest.config import default_config_path, load_vault_settings
-from obsidian_ingest.extractor.metadata import fetch_metadata
-from obsidian_ingest.extractor.transcript import print_transcript
+from obsidian_ingest.extractor.metadata import SourceMetadata
+from obsidian_ingest.extractor.transcript import format_timestamp
 from obsidian_ingest.responses import OperationError
+from obsidian_ingest.source import ingest_source
 from obsidian_ingest.source_cache import SourceCache
+
+
+def fetch_metadata(url: str) -> SourceMetadata:
+    """Acquire one source without the cache and return its normalized metadata."""
+    return ingest_source(url, exclude_sponsors=False).metadata
+
+
+def print_transcript(url: str) -> None:
+    """Acquire one source without the cache and print every original atom in order."""
+    source = ingest_source(url, exclude_sponsors=False)
+    transcript = source.transcript
+    print(f"Source: {transcript.source_id}")
+    print(f"Language: {transcript.language} ({transcript.language_code})")
+    print(f"Generated captions: {transcript.is_generated}")
+    print(f"Segments: {len(transcript.segments)}")
+    print()
+    for segment in transcript.segments:
+        print(f"[{format_timestamp(segment.start)}] {segment.text}")
+
 
 TOOL_COMMANDS = frozenset(
     {
         "ingest-source",
         "get-source-overview",
-        "list-chapters",
+        "list-sections",
         "list-exclusions",
-        "read-transcript",
-        "read-chapter",
+        "read-source",
+        "read-section",
         "get-thumbnail",
         "create-draft",
         "search-vault",
@@ -134,7 +154,9 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
 
-    parser = subparsers.add_parser("list-chapters", help="List creator chapters")
+    parser = subparsers.add_parser(
+        "list-sections", help="List sections (creator chapters for videos)"
+    )
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
 
@@ -142,7 +164,7 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
 
-    parser = subparsers.add_parser("read-transcript", help="Read a bounded transcript page")
+    parser = subparsers.add_parser("read-source", help="Read a bounded source page, in order")
     parser.add_argument("source_id")
     parser.add_argument("--start", type=float)
     parser.add_argument("--end", type=float)
@@ -152,9 +174,9 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--read-token", help="read_token from the previous page")
     parser.add_argument("--cache-db", type=Path)
 
-    parser = subparsers.add_parser("read-chapter", help="Read a bounded creator-chapter page")
+    parser = subparsers.add_parser("read-section", help="Read a bounded page of one section")
     parser.add_argument("source_id")
-    parser.add_argument("chapter_index", type=int)
+    parser.add_argument("section_index", type=int)
     parser.add_argument("--include-excluded", action="store_true")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_PAGE_SIZE)
@@ -162,7 +184,7 @@ def _tool_parsers(subparsers) -> None:
 
     parser = subparsers.add_parser(
         "get-thumbnail",
-        help="Optional: save the video's thumbnail to a disposable cache and print its path",
+        help="Optional: save the source's thumbnail to a disposable cache and print its path",
     )
     parser.add_argument("source_id")
     parser.add_argument("--cache-db", type=Path)
@@ -175,7 +197,13 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument(
         "--filename", help="Optional filename; default is the kebab-case slug of the H1"
     )
-    parser.add_argument("--timestamp", action="append", default=[], help="seconds or MM:SS")
+    parser.add_argument(
+        "--cite",
+        type=int,
+        action="append",
+        default=[],
+        help="source_index of a row the note uses (repeatable)",
+    )
     parser.add_argument(
         "--related-note",
         nargs=2,
@@ -183,9 +211,7 @@ def _tool_parsers(subparsers) -> None:
         metavar=("PATH", "REASON"),
         help="Verified vault-relative note to link; repeatable; no revision is required",
     )
-    parser.add_argument(
-        "--read-token", required=True, help="read_token from the last transcript page"
-    )
+    parser.add_argument("--read-token", required=True, help="read_token from the last source page")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
 
@@ -215,10 +241,14 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("change_summary")
     parser.add_argument("reasoning")
     parser.add_argument("proposed_content")
-    parser.add_argument("--timestamp", action="append", default=[], help="seconds or MM:SS")
     parser.add_argument(
-        "--read-token", required=True, help="read_token from the last transcript page"
+        "--cite",
+        type=int,
+        action="append",
+        default=[],
+        help="source_index of a row the note uses (repeatable)",
     )
+    parser.add_argument("--read-token", required=True, help="read_token from the last source page")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--cache-db", type=Path)
 
@@ -287,16 +317,16 @@ def main() -> None:
     parser = _Parser(prog="obsidian-ingest")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    transcript_parser = subparsers.add_parser("transcript", help="Print source captions")
-    transcript_parser.add_argument("url", help="Video URL")
+    transcript_parser = subparsers.add_parser("transcript", help="Print source atoms")
+    transcript_parser.add_argument("url", help="Source URL")
 
     inspect_parser = subparsers.add_parser(
-        "inspect", help="Inspect normalized source data and best-effort sponsor filtering"
+        "inspect", help="Inspect normalized source data and best-effort exclusions"
     )
-    inspect_parser.add_argument("url", help="Video URL")
+    inspect_parser.add_argument("url", help="Source URL")
 
     metadata_parser = subparsers.add_parser("metadata", help="Print normalized source metadata")
-    metadata_parser.add_argument("url", help="Video URL")
+    metadata_parser.add_argument("url", help="Source URL")
 
     mcp_parser = subparsers.add_parser("mcp", help="Run the local stdio MCP server")
     vault_source = mcp_parser.add_mutually_exclusive_group(required=False)
@@ -385,12 +415,12 @@ def _run_tool_command(args) -> Any:
         return _save_thumbnail(responses.thumbnail(source), source.metadata.source_id)
     if args.command == "get-source-overview":
         return responses.source_overview(source)
-    if args.command == "list-chapters":
-        return responses.chapters(source)
+    if args.command == "list-sections":
+        return responses.sections(source)
     if args.command == "list-exclusions":
         return responses.exclusions(source)
-    if args.command == "read-transcript":
-        return responses.transcript_page(
+    if args.command == "read-source":
+        return responses.source_page(
             source,
             start=args.start,
             end=args.end,
@@ -399,10 +429,10 @@ def _run_tool_command(args) -> Any:
             limit=args.limit,
             read_token=args.read_token,
         )
-    if args.command == "read-chapter":
-        return responses.chapter_page(
+    if args.command == "read-section":
+        return responses.section_page(
             source,
-            args.chapter_index,
+            args.section_index,
             include_excluded=args.include_excluded,
             offset=args.offset,
             limit=args.limit,
@@ -456,7 +486,7 @@ def _run_write_command(args, source) -> dict[str, str]:
                 source,
                 contents=args.contents,
                 filename=args.filename,
-                timestamps=tuple(args.timestamp),
+                cite=args.cite,
                 related_notes=related,
                 vault=vault,
                 read_token=args.read_token,
@@ -471,7 +501,7 @@ def _run_write_command(args, source) -> dict[str, str]:
             change_summary=args.change_summary,
             reasoning=args.reasoning,
             proposed_content=args.proposed_content,
-            timestamps=tuple(args.timestamp),
+            cite=args.cite,
             read_token=args.read_token,
         )
 

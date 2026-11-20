@@ -123,7 +123,8 @@ def source_diagnostics(source: "Source", *, cached: bool | None = None) -> dict[
     track = acquisition.caption if acquisition is not None else None
     transcript = source.transcript
     return {
-        "caption": {
+        "evidence": {
+            "kind": "captions",
             "language": transcript.language,
             "origin": "generated" if transcript.is_generated else "manual",
             "format": track.format.value if track is not None else None,

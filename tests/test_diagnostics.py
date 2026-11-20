@@ -115,7 +115,8 @@ def test_diagnostics_are_json_serializable_and_bounded() -> None:
         _source(segments, duration=None, acquisition=acquisition), cached=True
     )
     assert json.loads(json.dumps(data, allow_nan=False)) == data
-    assert data["caption"] == {
+    assert data["evidence"] == {
+        "kind": "captions",
         "language": "en",
         "origin": "generated",
         "format": "vtt",
@@ -139,8 +140,8 @@ def test_diagnostics_are_json_serializable_and_bounded() -> None:
 
 def test_unknown_provenance_is_explicitly_none() -> None:
     data = source_diagnostics(_source((TranscriptSegment("a", 0, 1),)))
-    assert data["caption"]["format"] is None
-    assert data["caption"]["translated"] is None
+    assert data["evidence"]["format"] is None
+    assert data["evidence"]["translated"] is None
     assert data["acquisition"] == {
         "acquired_at": None,
         "extractor": None,
@@ -181,8 +182,8 @@ def test_vtt_source_with_early_end_and_sponsor_failure_reports_both(vtt_only) ->
     assert source.exclusion_lookup.status == ExclusionStatus.FAILED
     assert source.exclusion_lookup.error_message == "SponsorBlock down"
     data = source_diagnostics(source, cached=False)
-    assert data["caption"]["format"] == "vtt"
-    assert data["caption"]["origin"] == "manual"
+    assert data["evidence"]["format"] == "vtt"
+    assert data["evidence"]["origin"] == "manual"
     assert data["timing"]["gaps"] == [{"start": 10.0, "end": 300.0, "position": "trailing"}]
     assert data["acquisition"]["reused_from_cache"] is False
     assert source.original_caption.data.startswith(b"WEBVTT")

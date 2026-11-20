@@ -3,14 +3,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from obsidian_ingest.extractor import Provider, detect_provider
+from obsidian_ingest.cli import print_transcript
+from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.acquisition import (
     MAX_CAPTION_BYTES,
     CaptionError,
     CaptionFormat,
     OriginalCaption,
 )
-from obsidian_ingest.extractor.providers import youtube
+from obsidian_ingest.extractor.providers import resolve_url, youtube
 from obsidian_ingest.extractor.providers.youtube import (
     choose_caption_format,
     choose_caption_track,
@@ -18,7 +19,6 @@ from obsidian_ingest.extractor.providers.youtube import (
     get_youtube_content,
     sponsorblock,
 )
-from obsidian_ingest.extractor.transcript import print_transcript
 
 
 @pytest.mark.parametrize(
@@ -214,8 +214,8 @@ def test_selected_format_without_url_fails(monkeypatch: pytest.MonkeyPatch) -> N
         ("https://www.tiktok.com/@user/video/123", Provider.TIKTOK),
     ],
 )
-def test_detect_provider_by_host(url: str, provider: Provider) -> None:
-    assert detect_provider(url) == provider
+def test_resolve_url_by_host(url: str, provider: Provider) -> None:
+    assert resolve_url(url).name == provider
 
 
 @pytest.mark.parametrize(
@@ -231,7 +231,7 @@ def test_detect_provider_by_host(url: str, provider: Provider) -> None:
 )
 def test_unknown_or_spoofed_provider_is_rejected(url: str) -> None:
     with pytest.raises(ValueError):
-        detect_provider(url)
+        resolve_url(url)
 
 
 def test_print_transcript_with_mocked_extraction(
@@ -258,6 +258,6 @@ def test_print_transcript_with_mocked_extraction(
     ydl.extract_info.assert_called_once_with(url, download=False)
     ydl.urlopen.assert_called_once_with("https://example.com/captions")
     assert capsys.readouterr().out == (
-        "Video: abc123\nLanguage: en (en)\nGenerated captions: True\nSegments: 2\n\n"
+        "Source: abc123\nLanguage: en (en)\nGenerated captions: True\nSegments: 2\n\n"
         "[00:01] Hello world\n[01:00:00] Next\n"
     )

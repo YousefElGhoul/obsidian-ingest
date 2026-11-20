@@ -58,11 +58,11 @@ class FakeSession:
             return _result({"source_id": "source-1", "overview": {"title": "Lesson"}})
         if name == "get_source_overview":
             return _result({"title": "Lesson", "sponsor_filtering": {"status": "complete"}})
-        if name == "list_chapters":
+        if name == "list_sections":
             return _result([{"index": 0, "title": "First", "start": 0, "end": 10}])
         if name == "list_exclusions":
             return _result([{"start": 4, "end": 5, "source_indices": [1]}])
-        if name == "read_transcript":
+        if name == "read_source":
             if arguments["offset"] == 0:
                 return _text_result(
                     {
@@ -82,7 +82,7 @@ class FakeSession:
                     "next_offset": None,
                 }
             )
-        if name == "read_chapter":
+        if name == "read_section":
             return _text_result(
                 {
                     "segments": [{"source_index": 0, "text": "One"}],
@@ -105,11 +105,11 @@ def test_evaluate_video_records_all_source_tool_content_without_writing_drafts()
     assert [name for name, _ in session.calls] == [
         "ingest_source",
         "get_source_overview",
-        "list_chapters",
+        "list_sections",
         "list_exclusions",
-        "read_transcript",
-        "read_transcript",
-        "read_chapter",
+        "read_source",
+        "read_source",
+        "read_section",
     ]
     assert all(name != "create_draft" for name, _ in session.calls)
     assert session.calls[0][1] == {"url": _URL}
@@ -118,7 +118,7 @@ def test_evaluate_video_records_all_source_tool_content_without_writing_drafts()
     assert all(
         arguments["limit"] == 200
         for name, arguments in session.calls
-        if name in {"read_transcript", "read_chapter"}
+        if name in {"read_source", "read_section"}
     )
     assert session.calls[5][1]["offset"] == 1
     transcript_result = report["calls"][4]["result"]
@@ -153,23 +153,21 @@ class ScriptedSession(FakeSession):
 
 
 def test_evaluation_without_chapters_skips_the_chapter_probe() -> None:
-    session = ScriptedSession(list_chapters=lambda _: _result([]))
+    session = ScriptedSession(list_sections=lambda _: _result([]))
     report = asyncio.run(evaluate_source(session, _URL, []))
     assert report["status"] == "success"
     assert report["chapter_probe"] == {"skipped": "No creator chapters were provided"}
-    assert "read_chapter" not in [name for name, _ in session.calls]
+    assert "read_section" not in [name for name, _ in session.calls]
 
 
 @pytest.mark.parametrize("next_offset", [0, True, "1"], ids=["not-advancing", "bool", "string"])
 def test_invalid_transcript_paging_is_a_recorded_failure(next_offset) -> None:
     page = {"segments": [], "next_offset": next_offset}
-    session = ScriptedSession(read_transcript=lambda _: _text_result(page))
+    session = ScriptedSession(read_source=lambda _: _text_result(page))
     report = asyncio.run(evaluate_source(session, _URL, []))
     assert report["status"] == "failed"
-    assert (
-        report["error"] == "EvaluationFailure: Tool read_transcript returned an invalid next_offset"
-    )
-    assert [name for name, _ in session.calls].count("read_transcript") == 1
+    assert report["error"] == "EvaluationFailure: Tool read_source returned an invalid next_offset"
+    assert [name for name, _ in session.calls].count("read_source") == 1
 
 
 def test_unparseable_tool_text_is_recorded_not_raised() -> None:
@@ -428,10 +426,10 @@ def test_local_stdio_server_exposes_tools_without_source_or_agent(tmp_path: Path
     assert asyncio.run(list_server_tools()) == {
         "ingest_source",
         "get_source_overview",
-        "list_chapters",
+        "list_sections",
         "list_exclusions",
-        "read_transcript",
-        "read_chapter",
+        "read_source",
+        "read_section",
         "get_thumbnail",
         "create_draft",
     }

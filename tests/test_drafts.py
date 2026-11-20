@@ -8,9 +8,16 @@ import pytest
 
 from obsidian_ingest import drafts
 from obsidian_ingest.drafts import DraftWriterSettings, create_draft
-from obsidian_ingest.extractor import Provider
 from obsidian_ingest.extractor.metadata import SourceMetadata
+from obsidian_ingest.extractor.providers import Citation
 from obsidian_ingest.extractor.providers.youtube import normalize_youtube_metadata
+from obsidian_ingest.extractor.providers.youtube.provider import YOUTUBE
+from obsidian_ingest.extractor.transcript import TranscriptSegment
+
+
+def _moments(source: SourceMetadata, *seconds: float) -> Citation | None:
+    """Render cited timestamps the way the YouTube provider does for cited rows."""
+    return YOUTUBE.citation(source, tuple(TranscriptSegment("x", s, 1.0) for s in seconds))
 
 
 @pytest.fixture
@@ -40,7 +47,7 @@ def test_create_draft_names_file_from_h1_and_keeps_h1_verbatim(
         settings,
         contents=contents,
         source=source_metadata,
-        timestamps=(12.5, 45),
+        citation=_moments(source_metadata, 12.5, 45),
     )
 
     assert result.path == settings.vault_path / "00 Inbox/AI Drafts/a-useful-idea-why.md"
@@ -74,7 +81,7 @@ def test_youtube_timestamp_links_use_video_id_and_floor_fractional_seconds(
         settings,
         contents="# Linked timestamps\n\nBody",
         source=source_metadata,
-        timestamps=(125.9, 3661.8),
+        citation=_moments(source_metadata, 125.9, 3661.8),
     )
     rendered = result.path.read_text(encoding="utf-8")
     assert (
@@ -93,7 +100,11 @@ def test_youtube_timestamp_links_ignore_existing_url_query_parameters(
         original_url="https://www.youtube.com/watch?v=video-123&t=17s&list=playlist-1",
     )
     result = create_draft(
-        settings, filename="Query parameters", contents="Body", source=source, timestamps=(125,)
+        settings,
+        filename="Query parameters",
+        contents="Body",
+        source=source,
+        citation=_moments(source, 125),
     )
     rendered = result.path.read_text(encoding="utf-8")
     assert "[02:05](https://www.youtube.com/watch?v=video-123&t=125s)" in rendered
@@ -101,18 +112,41 @@ def test_youtube_timestamp_links_ignore_existing_url_query_parameters(
     assert "- URL: https://www.youtube.com/watch?v=video-123&t=17s&list=playlist-1" in rendered
 
 
-def test_non_youtube_timestamp_format_stays_plain(
+def test_source_metadata_cannot_inject_markdown_structure(
     settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:
     from dataclasses import replace
 
-    source = replace(source_metadata, provider=Provider.TIKTOK)
-    result = create_draft(
-        settings, filename="Other provider", contents="Body", source=source, timestamps=(125.5,)
+    source = replace(
+        source_metadata,
+        title="Evil [[Secret note]] | `code` <b>x</b> #tag\n## Heading\u202eesrever",
+        creator_name="[link](https://evil.example)\r\n---",
     )
+    result = create_draft(settings, filename="Hostile", contents="Body", source=source)
     rendered = result.path.read_text(encoding="utf-8")
-    assert "- Relevant timestamps: 125.5s" in rendered
-    assert "[02:05]" not in rendered
+    source_section = rendered.split("## Source\n\n")[1]
+    import re
+
+    assert not re.search(r"(?<!\\)\[(?!\\)", source_section)  # every [ is escaped
+    assert not re.search(r"(?<!\\)\]\(", source_section)  # no live link
+    assert "\u202e" not in rendered and "\n## Heading" not in rendered
+    assert source_section.count("\n") == 3  # Source, URL and Creator lines only
+    assert "\\[\\[Secret note\\]\\]" in source_section
+    assert "\\#tag" in source_section
+
+
+def test_long_metadata_is_capped(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    from dataclasses import replace
+
+    source = replace(source_metadata, title="word " * 200)
+    rendered = create_draft(
+        settings, filename="Long", contents="Body", source=source
+    ).path.read_text(encoding="utf-8")
+    title_line = next(line for line in rendered.splitlines() if line.startswith("- Source: "))
+    assert len(title_line) <= len("- Source: ") + 300
+    assert title_line.endswith("…")
 
 
 def test_custom_relative_draft_folder_and_unicode_content(
@@ -382,7 +416,10 @@ def test_listed_timestamps_collapse_to_distinct_moments(
 ) -> None:
     cited = tuple(float(second) for second in range(317, 420, 2)) + (5.0, 600.0)
     result = create_draft(
-        settings, contents="# Moments\n\nBody.", source=source_metadata, timestamps=cited
+        settings,
+        contents="# Moments\n\nBody.",
+        source=source_metadata,
+        citation=_moments(source_metadata, *cited),
     )
     listed = result.path.read_text(encoding="utf-8").split("Relevant timestamps: ")[1]
     assert [link.split("]")[0] for link in listed.split("[")[1:]] == [
@@ -484,29 +521,15 @@ def test_missing_vault_is_not_created(tmp_path: Path, source_metadata: SourceMet
     assert not missing.exists()
 
 
-@pytest.mark.parametrize(
-    ("timestamps", "error", "message"),
-    [
-        ((-1,), ValueError, "timestamps must be finite and nonnegative"),
-        ((float("nan"),), ValueError, "timestamps must be finite and nonnegative"),
-        ((float("inf"),), ValueError, "timestamps must be finite and nonnegative"),
-        ([1.0], TypeError, "timestamps must be a tuple"),
-        ((True,), TypeError, "timestamps must be numbers"),
-    ],
-)
-def test_invalid_timestamps_are_rejected_before_writing(
-    settings: DraftWriterSettings,
-    source_metadata: SourceMetadata,
-    timestamps,
-    error: type[Exception],
-    message: str,
+def test_invalid_citation_is_rejected_before_writing(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:
-    with pytest.raises(error, match=message):
+    with pytest.raises(TypeError, match="citation must be a Citation"):
         create_draft(
             settings,
-            contents="# Invalid timestamp\n\nbody",
+            contents="# Invalid citation\n\nbody",
             source=source_metadata,
-            timestamps=timestamps,
+            citation=("Relevant timestamps", "00:01"),
         )
     assert not (settings.vault_path / "00 Inbox").exists()
 
