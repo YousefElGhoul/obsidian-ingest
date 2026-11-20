@@ -1,7 +1,7 @@
 """Article metadata from the page itself, with the provenance of every field.
 
 Sources, in precedence order: JSON-LD (Article, NewsArticle, BlogPosting and similar),
-trafilatura's metadata, OpenGraph and ``article:*``/``meta`` tags, then ``<title>``.
+trafilatura's metadata (not its dates, which can be guesses), OpenGraph and ``article:*``/``meta`` tags, then ``<title>``.
 A field no source supplies stays None; nothing is guessed. Conflicting values are
 recorded so the evidence shows them.
 """
@@ -154,7 +154,8 @@ def extract_metadata(document: etree._Element, doc: dict[str, str]) -> PageMetad
     offer("title", "trafilatura", _text(doc.get("title")))
     if doc.get("author"):
         offer("authors", "trafilatura", _authors([a.strip() for a in doc["author"].split(";")]))
-    offer("published", "trafilatura", parse_date(doc.get("date")))
+    # trafilatura's date can be guessed from page text (a bare year becomes January 1),
+    # so publication dates come only from structured metadata.
     offer("description", "trafilatura", _text(doc.get("description")))
 
     meta = _meta(document)

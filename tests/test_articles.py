@@ -1055,3 +1055,15 @@ def test_extraction_finishing_after_the_deadline_is_not_cached(
     assert "TIMEOUT" in error["message"] and "Web Clipper" in error["message"]
     assert cli_runner.ok("ingest-source", URL, *db)["cached"] is False
     assert len(web.requests) == 2
+
+
+def test_dates_in_page_text_are_not_guessed_into_metadata(monkeypatch) -> None:
+    body = (
+        "<article><h1>Essay</h1><p>July 2023</p>"
+        + "".join(f"<p>{words(40, f'd{i}w')}</p>" for i in range(5))
+        + "</article>"
+    )
+    FakeWeb(routes={URL: Reply(page(body, head="<title>Essay</title>"))}).install(monkeypatch)
+    content = acquire()
+    assert content.metadata.published_at is None
+    assert "published" not in content.acquisition.evidence["metadata_provenance"]
