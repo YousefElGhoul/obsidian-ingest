@@ -16,8 +16,8 @@ CLIP = """---
 title: "Locked [[Secret]] | story #tag"
 source: "https://example.com/posts/locked?utm_source=clipper"
 author:
-  - "[[Ada Writer]]"
-  - "[[Bo Editor|Bo]]"
+- "[[Ada Writer]]"
+- "[[Bo Editor|Bo]]"
 published: 2025-03-14
 created: 2026-11-20
 lang: en
@@ -84,6 +84,61 @@ def test_markdown_body_becomes_kinds_and_sections() -> None:
     assert ("table_row", "Why it matters", "Setting: budget; Value: 10%") in rows
     assert ("code", "Why it matters", "```python\ndef retry(n):\n    return n\n```") in rows
     assert sections == [("Why it matters", 1), ("Why it matters › Details", len(atoms) - 1)]
+
+
+def test_clipper_keeps_only_http_link_and_image_destinations() -> None:
+    atoms, _ = markdown_atoms(
+        "[Read](https://example.com/a_(b)) or [help](relative/path).\n\n"
+        '![Chart](<file:///local chart.png> "Title") and [action](obsidian://open).\n\n'
+        '[Title [v2]](<https://example.com/a b> "Link title") or [Nested [label]](relative).\n\n'
+        "`[example](relative/path)`"
+    )
+    assert [atom.text for atom in atoms] == [
+        "[Read](https://example.com/a_%28b%29) or help.",
+        "Chart and action.",
+        '[Title [v2]](https://example.com/a%20b "Link title") or Nested [label].',
+        "`[example](relative/path)`",
+    ]
+
+
+def test_clipper_preserves_heading_hashes_and_disambiguates_full_paths() -> None:
+    long = "x" * 550
+    atoms, sections = markdown_atoms(
+        "## C#\nOne\n### Results (UK) ###\nTwo\n### Results (UK)\nThree\n"
+        f"## {long}\nFour\n## {long}\nFive"
+    )
+    assert sections == [
+        ("C#", 0),
+        ("C# › Results (UK)", 1),
+        ("C# › Results (UK) (2)", 2),
+        ("x" * 500, 3),
+        ("x" * 496 + " (2)", 4),
+    ]
+    assert [atom.section for atom in atoms] == [path for path, _ in sections]
+
+
+def test_frontmatter_reads_indentless_author_list() -> None:
+    fields, _ = split_frontmatter(
+        '---\nauthor:\n- "[[Ada Writer]]"\n- "[[Bo Editor|Bo]]"\ntags:\n- clippings\n---\nBody'
+    )
+    assert fields == {"author": ["Ada Writer", "Bo"]}
+
+
+@pytest.mark.parametrize(
+    ("begin", "end", "kind"),
+    [
+        ("```\n", "\n```", "code"),
+        ("> ", "", "quote"),
+        ("- ", "", "list_item"),
+        ("| ", " |", "table_row"),
+    ],
+)
+def test_clipper_splits_all_oversized_block_kinds(begin: str, end: str, kind: str) -> None:
+    text = "x" * 24_000
+    atoms, _ = markdown_atoms(begin + text + end)
+    assert len(atoms) > 1
+    assert all(atom.kind == kind for atom in atoms)
+    assert text in "".join(atom.text.removeprefix("(continued) ") for atom in atoms)
 
 
 # --- End to end through the CLI -------------------------------------------------------

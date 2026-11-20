@@ -1,10 +1,11 @@
 """HTML to text atoms: sanitize, extract the main content, render Markdown atoms.
 
-1. Sanitize (lxml): remove everything a reader cannot see (scripts, styles, templates,
-   comments, hidden and aria-hidden elements, form controls) so hidden instructions
-   never reach the agent, and prune page chrome (ads, sponsored and promo blocks,
+1. Sanitize (lxml): remove scripts, styles, templates, comments, explicitly hidden
+   elements and form controls, and prune page chrome (ads, sponsored and promo blocks,
    newsletter and paywall prompts, related-story and share widgets, cookie banners,
-   comment sections) with a small, named list of class/id tokens.
+   comment sections) with a small, named list of class/id tokens. Stylesheet visibility
+   is not evaluated; pruning and instruction detection are heuristics, not guarantees.
+   Retained text, including image alt text, is untrusted.
 2. Extract (trafilatura): main text as XML, keeping headings, links, images, lists,
    quotes, code, tables and inline formatting.
 3. Render: one atom per block in source order, as Markdown, with the heading path as
@@ -13,18 +14,21 @@
    the sanitized HTML.
 """
 
+import json
 import re
 import unicodedata
 import warnings
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 from lxml import etree, html
 
 from obsidian_ingest.extractor.quality import instruction_like
 
 SECTION_SEPARATOR = " › "
-MAX_ATOM_CHARS = 6000
+MAX_ATOM_BYTES = 8_000
+MAX_SECTION_CHARS = 500
 LAYOUT_CELL_WORDS = 150
 CONTINUED = "(continued) "
 # Bidi embedding/override/isolate controls and zero-width characters (outside the
@@ -48,10 +52,13 @@ CHROME_MAX_WORDS = 300
 _PROTECTED = {"html", "body", "article", "main"}
 _REMOVED_TAGS = ("script", "style", "noscript", "template", "iframe", "object", "embed",
                  "form", "input", "textarea", "select", "button", "svg", "canvas")  # fmt: skip
-_IMAGE_ONLY = re.compile(r"(\s*!\[[^\]]*\]\([^)]*\)\s*)+")
+_IMAGE_ONLY = re.compile(r"(\s*!\[(?:\\.|[^\]\\])*\]\([^)]*\)\s*)+")
 _SPACER = re.compile(r"(spacer|1x1|pixel|blank|trans(parent)?(_1x1)?)\.(gif|png)$", re.IGNORECASE)
 _BLOCKS = {"p", "head", "list", "item", "quote", "table", "row"}
-_INLINE_MARKS = {"#b": "**", "#i": "*", "#u": "", "#t": "`", "#s": "~~"}
+_INLINE_MARKS = {"#b": "**", "#i": "*", "#s": "~~"}
+_LITERAL_MARKS = re.compile(r"([\\`*_\[\]<>|]|%(?=%)|(?<=%)%)")
+_DESTINATION_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<> "})
+_SENTENCE_END = re.compile(r"[.!?؟。！？](?=\s)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +85,38 @@ class Extraction:
     link_words: int = 0
 
 
+class SectionPaths:
+    """Allocate distinct heading paths while bounding section size in each row."""
+
+    def __init__(self) -> None:
+        self._headings: list[tuple[int, str]] = []
+        self._counts: dict[str, int] = {}
+        self._used: set[str] = set()
+
+    @property
+    def current(self) -> str | None:
+        return self._headings[-1][1] if self._headings else None
+
+    def add(self, level: int, label: str) -> str:
+        while self._headings and self._headings[-1][0] >= level:
+            self._headings.pop()
+        full_path = (self.current + SECTION_SEPARATOR if self.current else "") + label
+        base = full_path[:MAX_SECTION_CHARS]
+        count = self._counts.get(base, 0) + 1
+        path = base
+        while count > 1 or path in self._used:
+            count = max(count, 2)
+            suffix = f" ({count})"
+            path = base[: MAX_SECTION_CHARS - len(suffix)] + suffix
+            if path not in self._used:
+                break
+            count += 1
+        self._counts[base] = count
+        self._used.add(path)
+        self._headings.append((level, path))
+        return path
+
+
 def clean_text(text: str) -> str:
     """NFC-normalize and strip invisible controls; keep line structure."""
     return _INVISIBLE.sub("", unicodedata.normalize("NFC", text))
@@ -95,8 +134,9 @@ def parse(markup: str) -> etree._Element:
 
 
 def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dict:
-    """Remove invisible content and page chrome in place; return recovered hints."""
-    hints: dict = {"captions": {}, "code_languages": {}}
+    """Remove explicitly hidden content and page chrome; return recovered hints."""
+    captions: dict[str, deque[str | None]] = defaultdict(deque)
+    code_languages: dict[str, str] = {}
     for node in list(document.iter(etree.Comment, etree.ProcessingInstruction)):
         _drop(node)
         result.removed_hidden += 1
@@ -104,7 +144,9 @@ def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dic
         _drop(element)
         result.removed_hidden += 1
     for element in list(document.iter()):
-        if not isinstance(element.tag, str) or element.getparent() is None:
+        if not isinstance(element.tag, str) or (
+            element is not document and element.getparent() is None
+        ):
             continue
         hidden = (
             element.get("hidden") is not None
@@ -112,8 +154,11 @@ def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dic
             or _HIDDEN_STYLE.search(element.get("style", ""))
         )
         if hidden:
-            _drop(element)
             result.removed_hidden += 1
+            if element is document:
+                document.clear()
+                break
+            _drop(element)
         elif (
             element.tag not in _PROTECTED
             and _tokens(element) & CHROME_TOKENS
@@ -124,15 +169,14 @@ def sanitize(document: etree._Element, base_url: str, result: Extraction) -> dic
     for figure in document.iter("figure"):
         image = next(figure.iter("img"), None)
         caption = next(figure.iter("figcaption"), None)
-        if image is not None and caption is not None and image.get("src"):
-            text = " ".join(clean_text(caption.text_content()).split())
-            if text:
-                hints["captions"][urljoin(base_url, image.get("src"))] = text
+        if image is not None and (url := _safe_url(image.get("src"), base_url)):
+            text = _line(caption.text_content()) if caption is not None else ""
+            captions[url].append(text or None)
     for code in document.iter("code"):
         match = re.search(r"(?:language|lang)-([A-Za-z0-9_+-]+)", code.get("class", ""))
         if match and code.getparent() is not None and code.getparent().tag == "pre":
-            hints["code_languages"][_code_key(code.text_content())] = match.group(1)
-    return hints
+            code_languages[_code_key(code.text_content())] = match.group(1)
+    return {"captions": captions, "code_languages": code_languages}
 
 
 def _drop(node: etree._Element) -> None:
@@ -156,41 +200,56 @@ def _code_key(text: str) -> str:
 def _safe_url(value: str | None, base_url: str) -> str | None:
     if not value:
         return None
-    absolute = urljoin(base_url, value.strip())
-    return absolute if urlsplit(absolute).scheme in {"http", "https"} else None
+    try:
+        absolute = urljoin(base_url, value.strip())
+        return absolute if urlsplit(absolute).scheme in {"http", "https"} else None
+    except ValueError:
+        return None
+
+
+def escape_destination(url: str) -> str:
+    return url.translate(_DESTINATION_ESCAPES)
+
+
+def _literal(text: str | None) -> str:
+    return _LITERAL_MARKS.sub(r"\\\1", text or "")
 
 
 def _inline(element: etree._Element, base_url: str, result: Extraction) -> str:
     """Render an element's mixed content as one line of Markdown."""
-    parts = [element.text or ""]
+    parts = [_literal(element.text)]
     for child in element:
-        inner = _inline(child, base_url, result)
-        tag = child.tag
-        if tag == "ref":
-            target = _safe_url(child.get("target"), base_url)
-            if target and inner.strip():
-                result.links += 1
-                result.link_words += len(inner.split())
-                inner = f"[{inner}]({target})"
-        elif tag == "hi":
-            rend = child.get("rend", "")
-            if rend in {"#sub", "#sup"}:
-                inner = f"<{rend[1:]}>{inner}</{rend[1:]}>"
-            elif _INLINE_MARKS.get(rend) and inner.strip():
-                mark = _INLINE_MARKS[rend]
-                inner = f"{mark}{inner}{mark}"
-        elif tag == "code":
-            inner = f"`{inner}`"
-        elif tag == "lb":
-            inner = "\n"
-        elif tag == "graphic":
-            inner = _image(child, base_url, result) or ""
-        elif tag in _BLOCKS:
-            # A block nested in inline context (paragraphs inside a table cell).
-            inner = f"\n\n{inner}\n\n"
-        parts.append(inner)
-        parts.append(child.tail or "")
+        parts.extend((_inline_child(child, base_url, result), _literal(child.tail)))
     return "".join(parts)
+
+
+def _inline_child(child: etree._Element, base_url: str, result: Extraction) -> str:
+    tag = child.tag
+    rend = child.get("rend", "")
+    if tag == "code" or (tag == "hi" and rend == "#t"):
+        code = "".join(child.itertext())
+        marker = "`" * (max(map(len, re.findall(r"`+", code)), default=0) + 1)
+        pad = " " if code.startswith("`") or code.endswith("`") else ""
+        return f"{marker}{pad}{code}{pad}{marker}" if code.strip() else code
+    if tag == "lb":
+        return "\n"
+    if tag == "graphic":
+        return _image(child, base_url, result) or ""
+    inner = _inline(child, base_url, result)
+    if tag == "ref":
+        target = _safe_url(child.get("target"), base_url)
+        if target and inner.strip():
+            result.links += 1
+            result.link_words += len(inner.split())
+            return f"[{inner}]({escape_destination(target)})"
+    elif tag == "hi":
+        if rend in {"#sub", "#sup"}:
+            return f"<{rend[1:]}>{inner}</{rend[1:]}>"
+        if (mark := _INLINE_MARKS.get(rend)) and inner.strip():
+            return f"{mark}{inner}{mark}"
+    elif tag in _BLOCKS:
+        return f"\n\n{inner}\n\n"
+    return inner
 
 
 def _image(element: etree._Element, base_url: str, result: Extraction) -> str | None:
@@ -198,10 +257,10 @@ def _image(element: etree._Element, base_url: str, result: Extraction) -> str | 
     if src is None or _SPACER.search(urlsplit(src).path):
         return None
     result.images += 1
-    alt = " ".join(clean_text(element.get("alt") or "").split()).replace("]", ")")
+    alt = _line(element.get("alt") or "")
     if instruction_like([alt]):
-        alt = ""  # Alt text is not shown to readers; instructions there are hidden text.
-    return f"![{alt}]({src})"
+        alt = ""
+    return f"![{_literal(alt)}]({escape_destination(src)})"
 
 
 def _line(text: str) -> str:
@@ -213,19 +272,42 @@ def _paragraphs(text: str) -> list[str]:
     return [line for line in (_line(part) for part in re.split(r"\n[ \t]*\n", text)) if line]
 
 
-def _split(text: str) -> list[str]:
-    """Split an oversized block at line or sentence boundaries; never truncate."""
-    if len(text) <= MAX_ATOM_CHARS:
-        return [text]
-    parts = []
-    while len(text) > MAX_ATOM_CHARS:
-        window = text[:MAX_ATOM_CHARS]
-        cut = max(window.rfind("\n"), window.rfind(". ") + 1)
-        cut = cut if cut > MAX_ATOM_CHARS // 2 else MAX_ATOM_CHARS
-        parts.append(text[:cut].rstrip())
-        text = CONTINUED + text[cut:].lstrip()
-    parts.append(text)
-    return parts
+def split_atom(text: str) -> list[str]:
+    """Split on a line, a sentence, or a character without dropping content."""
+    parts: list[str] = []
+    start = 0
+    prefix = ""
+    while True:
+        # Every character needs at least one byte, in addition to the JSON quotes.
+        end = min(len(text), start + MAX_ATOM_BYTES - len(prefix) - 2)
+        if not _atom_fits(prefix + text[start:end]):
+            low = start
+            while low < end:
+                middle = (low + end + 1) // 2
+                if _atom_fits(prefix + text[start:middle]):
+                    low = middle
+                else:
+                    end = middle - 1
+        if end == len(text):
+            parts.append(prefix + text[start:end])
+            return parts
+        window = text[start:end]
+        if (newline := window.rfind("\n")) >= 0:
+            cut = newline + 1
+        else:
+            cut = max(
+                (match.end() for match in _SENTENCE_END.finditer(window)), default=len(window)
+            )
+            # Keep a Markdown escape with the character it protects.
+            if (cut - len(window[:cut].rstrip("\\"))) % 2:
+                cut -= 1
+        parts.append(prefix + window[:cut])
+        start += cut
+        prefix = CONTINUED
+
+
+def _atom_fits(text: str) -> bool:
+    return len(json.dumps(text, ensure_ascii=False).encode()) <= MAX_ATOM_BYTES
 
 
 class _Walker:
@@ -233,11 +315,8 @@ class _Walker:
         self.base_url = base_url
         self.hints = hints
         self.result = result
-        self.headings: list[tuple[int, str]] = []
+        self.headings = SectionPaths()
         self.title: str | None = None
-
-    def section(self) -> str | None:
-        return SECTION_SEPARATOR.join(text for _, text in self.headings) or None
 
     def emit(self, text: str, kind: str) -> None:
         # Leading spaces carry list nesting; everything else is trimmed.
@@ -245,26 +324,19 @@ class _Walker:
         if not text.strip():
             return
         self.result.words += len(text.split())
-        for part in _split(text):
-            self.result.atoms.append(Atom(part, kind, self.section()))
+        for part in split_atom(text):
+            self.result.atoms.append(Atom(part, kind, self.headings.current))
 
     def heading(self, element: etree._Element) -> None:
         level = int((element.get("rend") or "h2").lstrip("h") or 2)
-        text = _line(_inline(element, self.base_url, self.result))
+        # Section paths are plain labels; the draft writer escapes them when citing.
+        text = _line("".join(element.itertext()))
         if not text:
             return
         # A leading h1 repeating the title is the article's name, not a section.
         if level == 1 and not self.result.atoms and self.title and text == self.title:
             return
-        self.headings = [(lvl, t) for lvl, t in self.headings if lvl < level]
-        self.headings.append((level, text))
-        path = self.section() or text
-        # Repeated headings get an ordinal so section labels stay unique and stable.
-        used = sum(1 for existing, _ in self.result.sections if existing.split(" (")[0] == path)
-        if used:
-            self.headings[-1] = (level, f"{text} ({used + 1})")
-            path = self.section() or text
-        self.result.sections.append((path, len(self.result.atoms)))
+        self.result.sections.append((self.headings.add(level, text), len(self.result.atoms)))
 
     def walk(self, element: etree._Element) -> None:
         for child in element:
@@ -289,23 +361,29 @@ class _Walker:
                 if image:
                     self.emit(image, "image")
                     absolute = _safe_url(child.get("src"), self.base_url)
-                    caption = self.hints["captions"].get(absolute or "")
-                    if caption:
-                        self.emit(caption, "caption")
+                    captions = self.hints["captions"].get(absolute)
+                    if captions and (caption := captions.popleft()):
+                        self.emit(_literal(caption), "caption")
             else:
                 self.walk(child)
 
     def list(self, element: etree._Element, depth: int) -> None:
-        for item in element.iter("item"):
-            if item.getparent() is not element:
-                continue
-            nested = [child for child in item if child.tag == "list"]
-            for child in nested:
-                item.remove(child)
-            text = _line(_inline(item, self.base_url, self.result))
-            self.emit(("  " * depth) + text if text else "", "list_item")
-            for child in nested:
-                self.list(child, depth + 1)
+        indent = "  " * depth
+        for item in element.iterchildren("item"):
+            parts = [_literal(item.text)]
+            suffix = ""
+            for child in item:
+                if child.tag == "list":
+                    if text := _line("".join(parts)):
+                        self.emit(indent + text + suffix, "list_item")
+                    self.list(child, depth + 1)
+                    parts.clear()
+                    suffix = " (continued)"
+                else:
+                    parts.append(_inline_child(child, self.base_url, self.result))
+                parts.append(_literal(child.tail))
+            if text := _line("".join(parts)):
+                self.emit(indent + text + suffix, "list_item")
 
     def table(self, element: etree._Element) -> None:
         raw_rows = [

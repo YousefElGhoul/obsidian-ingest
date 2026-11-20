@@ -10,6 +10,7 @@ import stat
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from obsidian_ingest.extractor.metadata import SourceMetadata
 from obsidian_ingest.extractor.providers import Citation
@@ -33,6 +34,7 @@ _RESERVED_HEADINGS = {"source", "sources", "source attribution", "provenance", "
 # needs none of them, so stripping them does not damage Arabic or Hebrew.
 _BIDI_CONTROLS = re.compile("[\u202a-\u202e\u2066-\u2069]")
 _MAX_METADATA_CHARS = 300
+_URL_ESCAPES = str.maketrans({char: quote(char, safe="") for char in "()<>[]| "})
 
 
 def _inert(value: str, limit: int = _MAX_METADATA_CHARS) -> str:
@@ -46,7 +48,7 @@ def _inert(value: str, limit: int = _MAX_METADATA_CHARS) -> str:
     text = " ".join(text.split())
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
-    return re.sub(r"([\\`\[\]<>|#])", r"\\\1", text)
+    return re.sub(r"([\\`\[\]<>|#]|%(?=%)|(?<=%)%|=(?==)|(?<==)=)", r"\\\1", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +209,7 @@ def _render_draft(
         rendered_body = f"{leading_link}\n\n{rendered_body}"
 
     lines = ["## Source", "", f"- Source: {_inert(source.title or source.source_id)}"]
-    lines.append(f"- URL: {single_line(source.original_url)}")
+    lines.append(f"- URL: {single_line(source.original_url).translate(_URL_ESCAPES)}")
     if attribution is None:
         attribution = (("Creator", source.creator_name),) if source.creator_name else ()
     for label, value in attribution:

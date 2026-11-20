@@ -233,7 +233,7 @@ def sections(source: Source) -> list[dict[str, Any]]:
         item = {
             "index": index,
             # Text section titles are heading paths; the last part is the heading itself.
-            "title": chapter.title.rsplit(" › ", 1)[-1],
+            "title": chapter.title if timed else chapter.title.rsplit(" › ", 1)[-1],
             "path": chapter.title,
             "first_index": entries[0][0] if entries else None,
             "row_count": len(entries),
@@ -267,9 +267,9 @@ SEGMENT_FIELDS = ("source_index", "start", "duration", "text")
 TEXT_SEGMENT_FIELDS = ("source_index", "section", "kind", "text")
 
 
-def _row(source_index: int, segment: TranscriptSegment) -> list[Any]:
+def _row(source_index: int, segment: TranscriptSegment, kind: SourceKind) -> list[Any]:
     """One compact row: times for timed atoms, section and block kind for text atoms."""
-    if segment.start is None:
+    if kind == SourceKind.TEXT:
         return [source_index, segment.section, segment.kind, segment.text]
     return [source_index, segment.start, segment.duration, segment.text]
 
@@ -296,6 +296,8 @@ def segment_page(
     offset: int,
     limit: int,
     extra: dict[str, Any] | None = None,
+    *,
+    kind: SourceKind = SourceKind.TIMED,
 ) -> dict[str, Any]:
     """Page whole transcript atoms, shrinking the page to fit the response limit.
 
@@ -307,10 +309,10 @@ def segment_page(
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_SIZE}")
     limit = min(limit, MAX_PAGE_SIZE)
-    fields = TEXT_SEGMENT_FIELDS if entries and entries[0][1].start is None else SEGMENT_FIELDS
+    fields = TEXT_SEGMENT_FIELDS if kind == SourceKind.TEXT else SEGMENT_FIELDS
     segments: list[list[Any]] = []
     for source_index, segment in entries[offset : offset + limit]:
-        segments.append(_row(source_index, segment))
+        segments.append(_row(source_index, segment, kind))
         page = _segment_page_data(segments, offset, limit, len(entries), fields) | (extra or {})
         if not fits_envelope(page, MAX_PAGE_ENVELOPE_BYTES):
             segments.pop()
@@ -343,7 +345,7 @@ def source_page(
     ordered_read = start is None and end is None and not include_excluded
     # Budget the token before choosing atoms so adding it cannot overflow the envelope.
     reserve = {"read_token": TOKEN_PLACEHOLDER} if ordered_read or read_token else None
-    page = segment_page(entries, offset, limit, reserve)
+    page = segment_page(entries, offset, limit, reserve, kind=source.transcript.kind)
     if ordered_read:
         page["read_token"] = advance_token(source, read_token, offset, len(page["segments"]))
     elif read_token is not None:
@@ -361,7 +363,7 @@ def section_page(
 ) -> dict[str, Any]:
     """Page whole atoms owned by a section, preserving source indices."""
     entries = read_chapter_entries(source, section_index, include_excluded=include_excluded)
-    return segment_page(entries, offset, limit)
+    return segment_page(entries, offset, limit, kind=source.transcript.kind)
 
 
 @dataclass(frozen=True, slots=True)

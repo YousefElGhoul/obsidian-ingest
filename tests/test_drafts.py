@@ -149,6 +149,27 @@ def test_long_metadata_is_capped(
     assert title_line.endswith("…")
 
 
+def test_attribution_neutralizes_obsidian_markers_and_encodes_url(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    from dataclasses import replace
+
+    source = replace(
+        source_metadata,
+        title="Source %%title",
+        original_url="https://example.com/a(b)<c>[d]|e f?encoded=%20",
+    )
+    rendered = create_draft(
+        settings,
+        contents="# A note\n\nBody",
+        source=source,
+        citation=Citation("Relevant sections", "Section %% ==mark==", literal=True),
+    ).path.read_text(encoding="utf-8")
+    assert r"- Source: Source \%\%title" in rendered
+    assert r"- Relevant sections: Section \%\% \=\=mark\=\=" in rendered
+    assert "- URL: https://example.com/a%28b%29%3Cc%3E%5Bd%5D%7Ce%20f?encoded=%20\n" in rendered
+
+
 def test_custom_relative_draft_folder_and_unicode_content(
     settings: DraftWriterSettings, source_metadata: SourceMetadata
 ) -> None:

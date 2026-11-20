@@ -70,7 +70,9 @@ class YouTubeProvider:
         for key, types in _DETAIL_TYPES.items():
             value = data[key]
             # bool is an int subclass; an index must not be a boolean.
-            if not isinstance(value, types) or (key == "playlist_index" and value is True):
+            if not isinstance(value, types) or (
+                key == "playlist_index" and isinstance(value, bool)
+            ):
                 raise ValueError(f"malformed YouTube detail: {key}")
         return YouTubeMetadata(**data)
 
