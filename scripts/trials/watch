@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Print one line each time a trial child agent stops working.
+
+    scripts/trials/watch
+
+Run it as a background watcher (for example a Claude Code Monitor) instead of
+blocking on `hc wait` or a timeout, so the orchestrator can answer each child the
+moment its turn ends. It polls `hc ls` every two seconds and watches only the named
+children of the calling terminal ($HC_TERMINAL_ID).
+
+- Claude Code, Codex and opencode report their status to hc. A stop is printed only
+  after it has held for three polls, because Codex briefly reports idle mid-turn.
+- Hermes does not report status, so its turn ends are counted from its turn-summary
+  lines (`─ 2m29s · …`) on screen.
+- A child that exits is reported once. Children already stopped when the watcher
+  starts are recorded silently: read those yourself after a restart. A child first seen
+  working is reported when it stops.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+POLL_SECONDS = 2
+SETTLE_POLLS = 3
+SUMMARY = re.compile(r"^\s*─ [0-9][0-9.ms]* · ", re.MULTILINE)
+
+
+def children(parent: str) -> list[dict]:
+    out = subprocess.run(["hc", "ls"], capture_output=True, text=True, check=False).stdout
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return []
+    terminals = data.get("terminals", []) if isinstance(data, dict) else data
+    return [
+        t for t in terminals if isinstance(t, dict) and t.get("parent") == parent and t.get("name")
+    ]
+
+
+def observe(terminal: dict) -> tuple[object, bool]:
+    """Return a key that changes once per turn, and whether the child is stopped."""
+    if terminal.get("state") != "live":
+        return ("exited",), True
+    if terminal.get("agent") == "hermes":
+        screen = subprocess.run(
+            ["hc", "read", "--lines", "400", terminal["name"]],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        return len(SUMMARY.findall(screen)), True
+    status = terminal.get("status")
+    stopped = status in ("done", "idle", "blocked", "error", None)
+    return (terminal.get("turn"), "stopped" if status in ("done", "idle") else status), stopped
+
+
+def main() -> int:
+    parent = os.environ.get("HC_TERMINAL_ID")
+    if not parent:
+        print("watch: run inside an hc terminal (HC_TERMINAL_ID is unset)", file=sys.stderr)
+        return 2
+    reported: dict[str, object] = {}
+    settled: dict[str, int] = {}
+    worked: set[str] = set()  # seen working since the watcher started
+    while True:
+        for terminal in children(parent):
+            name = terminal["name"]
+            key, stopped = observe(terminal)
+            settled[name] = settled.get(name, 0) + 1 if stopped else 0
+            if not stopped:
+                worked.add(name)
+            if settled[name] >= SETTLE_POLLS and reported.get(name) != key:
+                if name in reported or name in worked:
+                    print(f"{name}: stopped {key}", flush=True)
+                reported[name] = key
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

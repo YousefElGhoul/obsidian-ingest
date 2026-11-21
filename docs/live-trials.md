@@ -134,7 +134,7 @@ for proof that `SKILL.md` reached the model. Follow each harness's documented sk
 probe. Inspect the actual vault after each phase; transcript claims are not enough.
 Check restart/cache reuse where relevant and distinguish reuse from a fresh capture.
 
-## Parallelism, waiting, and usage
+## Parallelism and waiting
 
 Run ingestions in parallel fresh sessions, normally in batches of five. About three
 sessions per batch is a better starting point for NVIDIA NIM's advertised “up to
@@ -142,20 +142,18 @@ sessions per batch is a better starting point for NVIDIA NIM's advertised “up 
 A rate-limited run measures the provider, not the skill. Harnesses using independent
 subscriptions can run in parallel.
 
-Use the harness-specific waiting method, not a foreground sleep in the orchestrator.
-Confirm the TUI is ready before sending a prompt, and read it back afterward.
+Wait with a background watcher, not a foreground sleep, a timeout or a blocking `hc wait`
+on one child. `scripts/trials/watch` prints one line each time a child of the calling
+`hc` terminal stops: run it under the orchestrator's background monitor (for example a
+Claude Code `Monitor`) and answer each child as soon as its line arrives, while the
+others keep working. It debounces Codex's brief mid-turn idles and counts Hermes turn
+summaries, since Hermes does not report status. A restarted watcher records children that
+are already stopped without printing them, so read those yourself. Confirm the TUI is
+ready before sending a prompt, and read it back afterward.
 
-Before the run, agree a usage stop threshold with the tester. Check subscription
-usage **only between complete runs**, not between individual turns or sources:
-
-```bash
-scripts/trials/usage claude
-scripts/trials/usage codex
-```
-
-These probes require `hc` and read `/usage` or `/status` in throwaway children. Stop
-when the tester's threshold is reached; do not silently substitute an older report's
-threshold or continue through an exhausted allowance. Record unavailable usage data.
+Usage checks are not part of the protocol (tester decision, 2026-11-21). If a tester
+asks for one, `scripts/trials/usage claude` or `scripts/trials/usage codex` reads
+`/usage` or `/status` in a throwaway `hc` child; run it only between complete runs.
 
 Keep code, skill text, and installed schemas fixed throughout a run. Finish and report,
 then fix and start a new run. Refreshing credentials is not a product fix. After a

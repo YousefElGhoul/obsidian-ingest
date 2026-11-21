@@ -79,6 +79,8 @@ Use live trials for installation, agent-written Markdown, and UX changes. Read
 Non-Hermes trials use the bwrap trial sandbox; auto-approve is allowed only inside it.
 Run `scripts/trials/selftest` before any trial agent; stop if isolation checks fail.
 Run `scripts/trials/compare` afterward to verify real harness config/data are unchanged.
+Wait on trial children with `scripts/trials/watch` as a background watcher, never a
+foreground sleep or timeout, and answer each child as soon as it stops.
 Hermes uses an `hc` child in a throwaway profile; abort if one cannot be created.
 Reports go in gitignored `trial-reports/`.
 

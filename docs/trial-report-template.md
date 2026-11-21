@@ -28,8 +28,6 @@ workflow compliance, and draft usefulness. Zero notes is not automatically a fai
 - Sandbox selftest result and evidence:
 - Source selection: <manifest subset and why>
 - Parallelism, provider limits, and retries:
-- Usage threshold agreed before the run:
-- Between-run usage observations and stop reason:
 - Known deviations or orchestrator assistance:
 - Earlier reports read:
 
