@@ -259,7 +259,9 @@ existing notes, but an agent with shell or filesystem access can bypass the writ
 Restricted curation sessions expose this MCP's content tools and the skill loader,
 with general shell, filesystem, and other bypass tools disabled. The installer offers
 this mode only on Hermes because its profiles keep curation sessions visibly separate
-from normal agent work. The Claude Code, Codex, and opencode harness notes document
+from normal agent work. Hermes' skill loader also includes a skill-editing tool, so the
+restricted install locks this skill against agent edits (`hermes curator lock`); new
+skills the agent writes are held for your approval. The Claude Code, Codex, and opencode harness notes document
 advanced restricted launches for experienced users; their installer path stays trusted.
 MCP restrictions are not an OS sandbox and do not restrict already-running sessions.
 

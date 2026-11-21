@@ -20,8 +20,12 @@ reconfiguring.
 
 - Every command takes `-p <profile>`. The profile's directory is
   `~/.hermes/profiles/<profile>`; `hermes -p <profile> config path` prints its config.
-- Make the skill visible with a symlink:
+- Trusted mode: make the skill visible with a symlink:
   `ln -s <skill> ~/.hermes/profiles/<profile>/skills/obsidian-ingest`.
+- Restricted mode: do not symlink. Add the folder that holds the skill (`<clone>/skills`,
+  which contains only this skill) to the profile's `skills.external_dirs`, keeping any
+  existing entries. "Restrict" below locks it; Hermes can lock only skills in its own
+  skills folder or in `external_dirs`, not a symlinked one.
 
 ## Register the MCP server
 
@@ -70,6 +74,11 @@ All settings below live in the profile's `config.yaml`; set them with
   is stored as a quoted string and leaves tool search on; check with `config get`.
 - `platform_toolsets.cli '["obsidian-ingest","skills"]'`, so CLI sessions start with only this
   toolset.
+- Last, after the runtime and settings are in place: `hermes -p <profile> curator lock
+  obsidian-ingest`. A locked skill stays loadable, but every agent write path refuses to
+  change it (`skill_manage`, file tools, the terminal, the background self-improvement
+  review), in this session too, and agents cannot unlock it. The lock is per profile, so
+  later repeat installs from another profile can still update the clone and settings.
 
 Start curation sessions with:
 
@@ -87,6 +96,8 @@ trials. Start sessions with `hermes -p <profile> chat --cli --skills obsidian-in
 ## Verify
 
 - `hermes -p <profile> mcp test obsidian-ingest` lists the eleven tools.
+- Restricted mode: `hermes -p <profile> curator status` lists `obsidian-ingest` as locked,
+  and `hermes -p <profile> skills list --source all` shows it as `external`.
 - Start the curation command above and type `/exit`. The banner lists the MCP tools and
   `Activated skills: obsidian-ingest`. In the trial the banner counted 14 tools while the
   agent received only the allowed ones (the other four are MCP resource and prompt
@@ -122,10 +133,15 @@ list form and forbids probe writes.
 
 ## Undo
 
-Run undo from a session with terminal access. A restricted profile has no shell or file
-tools, so undo it from another profile (`hermes -p <other> chat`, naming the restricted
-profile in the request). Show the planned changes and ask first. Restore the backed-up
-`config.yaml` after checking for later edits, then remove only the skill entry in
-`~/.hermes/profiles/<profile>/skills/obsidian-ingest`: `unlink` it if it is a symlink,
-or move the copy aside if the install copied it. Leave the vault, published notes, the
-skill's runtime, settings, and source cache alone unless the user asks.
+Run undo, and repeat installs of a restricted profile, from a session with terminal
+access. A restricted profile has no shell or file tools, so use another profile
+(`hermes -p <other> chat`, naming the restricted profile in the request). Show the
+planned changes and ask first. Restore the backed-up `config.yaml` after checking for
+later edits, then remove only the skill entry: in restricted mode its
+`skills.external_dirs` entry (restoring the backup does this), in trusted mode
+`~/.hermes/profiles/<profile>/skills/obsidian-ingest` (`unlink` a symlink, or move a
+copy aside). Leave the restricted profile's lock record: it names a skill that no
+longer resolves, and agents cannot run `curator unlock`. Tell the user they can run
+`hermes -p <profile> curator unlock obsidian-ingest` themselves. Leave the vault,
+published notes, the skill's runtime, settings, and source cache alone unless the user
+asks.

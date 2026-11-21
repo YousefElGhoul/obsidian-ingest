@@ -46,7 +46,11 @@ Then ask in a single message, and reuse any answer the user already gave:
   folder (default `00 Inbox/AI Drafts`). An excluded path must not also be listed as
   allowed; to hide part of an allowed folder, exclude a subfolder of it.
 
-Never infer a vault, broaden scope, or switch mode without the user's approval. If the
+Never infer a vault, broaden scope, or switch mode without the user's approval. Never
+create, edit, or patch skills while installing, repeating the install, or undoing it:
+not this skill, and not the harness's own (for example with Hermes' `skill_manage`). If
+you think a skill should change, say what and why in the report. Stop only the processes
+the approved plan names. If the
 host's sandbox blocks a command this install needs, such as `uv sync` needing network,
 ask the user to approve it. Never copy caches or other files from outside the paths
 this install uses as a workaround.
@@ -78,14 +82,17 @@ skill-installer): it copies the skill without a plan and skips these steps. The 
 
 The skill must also be visible to the harness. Prefer a symlink from the harness's
 skills directory to the skill directory over copying, so updates and settings stay in
-one place. If a different skill of the same name already exists there, stop and ask.
+one place. Follow the harness notes where they say otherwise (Hermes restricted
+mode loads the skill from its folder and locks it). If a different skill of the same name already exists there, stop and ask.
 
 ## 3. Show the plan, get approval, back up
 
 Before changing anything, list every change with its path (the clone or update and the
 skill link from step 2, and steps 4 to 6) and ask for approval in one message, even if the user already gave every choice or said "go
 ahead". Then end your turn and wait for the answer: never show the plan and start
-changing things in the same turn. After approval, back up every host configuration
+changing things in the same turn. A repeat install that will change nothing needs no
+approval: show the existing settings, run the step 7 checks, and say in the report that
+nothing was changed. Ask as above as soon as anything would change, including an update. After approval, back up every host configuration
 file you will edit (for example `config.yaml.before-obsidian-ingest-<timestamp>`), then
 clone or update the skill and create the link as decided in step 2. Preserve provider,
 model, credentials, other profiles, and other skills. Do not print credentials.
