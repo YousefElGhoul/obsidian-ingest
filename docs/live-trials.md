@@ -122,7 +122,7 @@ must not excuse a missing plan. Outside bwrap, real permission prompts go to the
 | Explicit invocation | Outside Hermes this is the ingest phase above: use the harness's actual skill invocation, not a wrapped chat message that merely resembles a slash command. A bare URL outside Hermes is an optional discovery check, reported but not a failure. |
 | Restricted setup | Hermes offers a distinct restricted profile. Other harnesses install trusted and test only the documented advanced restricted launch. Inspect actual tools in a fresh session: keep the skill loader and intended MCP tools; identify any leaked tools. Never claim a complete restriction when undeletable tools remain. Verify configured exclusions and canary privacy without granting access to real files. |
 | Thumbnail | With an image-capable model, explicitly request `get_thumbnail` for a source and verify the model receives and can describe the image. A successful tool response alone is not proof of image delivery. If unavailable, mark the phase not tested or blocked; thumbnails remain optional for normal ingestion. |
-| Undo | From a session with terminal access, asks before changes and checks for later config edits. Removes the registration and skill link, restores only applicable backed-up settings, and verifies the result. Leaves runtime, settings, cache, vault, and published notes unless explicitly asked otherwise. |
+| Undo | The tester sends the undo message from the install report (it points at `install.md`), never a bare "undo" request: a session without the skill loaded, such as a second Hermes profile, has no instructions otherwise. From a session with terminal access, asks before changes and checks for later config edits. Removes the registration and skill link, restores only applicable backed-up settings, and verifies the result. Leaves runtime, settings, cache, vault, and published notes unless explicitly asked otherwise. |
 
 For restricted launches, compare the advanced launch's own deny/approval policy with
 the trial wrapper's auto-approve policy. Do not let the wrapper silently undo the
@@ -148,7 +148,8 @@ on one child. `scripts/trials/watch` prints one line each time a child of the ca
 Claude Code `Monitor`) and answer each child as soon as its line arrives, while the
 others keep working. It debounces Codex's brief mid-turn idles and counts Hermes turn
 summaries, since Hermes does not report status. A restarted watcher records children that
-are already stopped without printing them, so read those yourself. Confirm the TUI is
+are already stopped without printing them, so read those yourself. Stop the watcher, and any
+other monitor started for the run, as soon as the run is done. Confirm the TUI is
 ready before sending a prompt, and read it back afterward.
 
 Usage checks are not part of the protocol (tester decision, 2026-11-21). If a tester

@@ -23,7 +23,17 @@ version pin: confirm each command with `claude --help` or `claude mcp --help` fi
 ## Register the MCP server
 
 `claude mcp add` writes `<config dir>/.claude.json` when `CLAUDE_CONFIG_DIR` is set,
-otherwise `~/.claude.json`. Back that file up first.
+otherwise `~/.claude.json`. Find the file with the shell, not from memory, and name it
+in the plan:
+
+```bash
+f="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}"; f="${f:-$HOME/.claude.json}"
+ls -l "$f"
+```
+
+Back it up before `claude mcp add`. If it does not exist yet, say so in the plan and the
+report: undo then only needs `claude mcp remove`. The report names the backup, or says
+there was no file to back up.
 
 ```bash
 claude mcp add --scope user obsidian-ingest -- <absolute uv> run --no-dev \

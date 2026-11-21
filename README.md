@@ -324,9 +324,16 @@ They are observations, not a promise about every version, model, or draft's qual
 
 ## Undo
 
-Ask an agent with terminal access to undo the installation using the
-[undo steps](skills/obsidian-ingest/references/install.md#undo). For a restricted
-Hermes install, use another profile. The agent must show its plan and ask first.
+Send an agent with terminal access the undo message from your install report, which
+points it at the [undo steps](skills/obsidian-ingest/references/install.md#undo):
+
+```text
+Read <skill>/references/install.md and follow its Undo section to undo obsidian-ingest.
+```
+
+For a restricted Hermes install, send it from another profile and add `in profile
+<profile>`. Without the link, an agent that does not have the skill loaded has no undo
+instructions. The agent must show its plan and ask first.
 
 Undo removes the MCP registration and skill link or installed harness copy, and
 restores changed host settings after checking for later edits. It leaves the runtime,

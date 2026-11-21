@@ -191,18 +191,24 @@ runtime, settings, source cache, and vault unless the user asks to remove them. 
 OS sandbox, support for every harness version, or restriction of already-running
 sessions. On a repeat install, reuse valid configuration rather than duplicating it.
 
-In restricted mode, say that undo must run from a session with terminal access (for
-example another profile), because the restricted profile has no shell or file tools.
+Give the exact message to send for undo, pointing at this guide like the install
+sentence does: `Read <skill>/references/install.md and follow its Undo section to undo
+obsidian-ingest` (on Hermes, add `in profile <profile>`). A session where the skill is not
+loaded, such as another Hermes profile, otherwise has no undo instructions. In restricted
+mode, say that undo must run from a session with terminal access (for example another
+profile), because the restricted profile has no shell or file tools.
 
 ## Undo
 
 When asked to undo, read the harness notes file's Undo section, list what you will
-change, and ask the user before changing anything, even when the harness would approve
-the commands without asking or runs with approvals bypassed. End your turn after asking
-and wait for the answer: never list the changes and make them in the same turn, even
-when the request itself says "undo". After approval, check for config edits made after the install,
-remove the MCP registration with the harness's own command where it has one, restore
-the backed-up host configuration, and remove only the skill link (or the copy the install
-placed in the harness's skills directory). Leave the runtime, settings, source cache,
-vault, and published notes alone unless the user asks to remove them. Verify against
-the backup and report what changed.
+change, and ask the user before changing anything. As during install, never create,
+edit, or patch any skill (this one or the harness's own) and stop only processes the
+plan names. Ask even when the harness would approve the commands without asking or runs
+with approvals bypassed. End your turn after asking and wait for the answer: never list
+the changes and make them in the same turn, even when the request itself says "undo".
+After approval, check for config edits made after the install, remove the MCP
+registration with the harness's own command where it has one, restore the backed-up host
+configuration, and remove only the skill link (or the copy the install placed in the
+harness's skills directory). Leave the runtime, settings, source cache, vault, and
+published notes alone unless the user asks to remove them. Verify against the backup and
+report what changed.

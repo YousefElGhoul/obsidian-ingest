@@ -51,7 +51,11 @@ difference first; a "registered 15 tool(s)" line means resources or prompts are 
 ## Restrict (restricted mode)
 
 All settings below live in the profile's `config.yaml`; set them with
-`hermes -p <profile> config set <key> <value>`.
+`hermes -p <profile> config set <key> <value>`, one plain command per setting. Do not
+wrap them in `python -c`, `bash -c` or heredoc scripts, here or during undo: Hermes asks
+the user to approve inline scripts ("script execution via -e/-c flag", "via heredoc"),
+and an unanswered prompt is denied after five minutes. Undo needs only `cp` for the
+backup and `hermes config set`/`unset` or `mcp remove`.
 
 - **Do not put `skills` in `agent.disabled_toolsets`.** Without it Hermes never injects
   `SKILL.md` into the curation agent (see the next bullets).
@@ -68,8 +72,13 @@ All settings below live in the profile's `config.yaml`; set them with
   agent never sees `SKILL.md`, even though the banner says "Activated skills".
   `write_approval` stages any skill edit for the user's review.
 - `skills.auto_load: ["obsidian-ingest"]`, and every other installed skill in
-  `skills.disabled`. Hermes always keeps its own `hermes-agent` skill in the catalog;
+  `skills.disabled`. There is no wildcard: read the names from
+  `hermes -p <profile> skills list --source all` yourself and pass them as one list
+  (`config set skills.disabled '["a","b",…]'`), without a parsing script. Hermes always keeps its own `hermes-agent` skill in the catalog;
   it is not auto-loaded during curation. Report this.
+- `auxiliary.background_review.enabled false`. Otherwise Hermes' automatic post-turn
+  review proposes edits to its own skills after curation and install turns (a 2026-11-21
+  trial staged a `hermes-agent` patch this way); curation sessions don't need it.
 - `tools.tool_search.enabled off`, passed exactly like that. A JSON-quoted `'"off"'`
   is stored as a quoted string and leaves tool search on; check with `config get`.
 - `platform_toolsets.cli '["obsidian-ingest","skills"]'`, so CLI sessions start with only this
@@ -132,6 +141,10 @@ JSON string and then wrote test notes to check the result; the skill now asks fo
 list form and forbids probe writes.
 
 ## Undo
+
+Hermes' own system prompt asks agents to save non-trivial workflows as skills with
+`skill_manage`. During install, repeat install and undo, don't: the rule in the install
+steps overrides it. Use `hermes --help` and the docs, not Hermes' source code.
 
 Run undo, and repeat installs of a restricted profile, from a session with terminal
 access. A restricted profile has no shell or file tools, so use another profile
