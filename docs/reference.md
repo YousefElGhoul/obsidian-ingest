@@ -536,8 +536,10 @@ The former version-pinned profile converter has been removed. Never create dummy
 to test connectivity. Changes do not retroactively restrict an existing session. Host
 configuration and live runs remain user-controlled.
 
-To curate, send only the source URL in a fresh session; the skill treats a bare URL as
-a complete request to run its whole workflow (ingest, read, search and compare vault
+To curate, start a fresh session and send the URL: on Hermes the bare URL alone, and on
+other harnesses with their skill invocation (`/obsidian-ingest <url>` on Claude Code,
+`$obsidian-ingest <url>` on Codex, `@obsidian-ingest <url>` on opencode). The skill
+treats the URL as a complete request to run its whole workflow (ingest, read, search and compare vault
 notes, then create drafts, edit suggestions, or nothing). Use only an explicitly
 authorized profile and vault for configuration or live trials.
 

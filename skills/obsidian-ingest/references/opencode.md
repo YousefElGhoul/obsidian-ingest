@@ -55,7 +55,8 @@ Back up first, and do not change other permissions.
 ## Start a session
 
 Start `opencode` in any directory and type `@obsidian-ingest <url>`, which loads the
-skill. A pasted bare URL usually loads it too. Tell the user both in the report.
+skill. This is the supported way to ingest; tell the user so in the report. A pasted
+bare URL often loads it too, but that is not guaranteed.
 
 ## Verify
 

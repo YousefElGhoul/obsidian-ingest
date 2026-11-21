@@ -56,8 +56,8 @@ Codex has no per-server switch for MCP resources and prompts; say so in the repo
 ## Start a session
 
 Start `codex` in any directory and type `$obsidian-ingest <url>`. Codex invokes skills
-by `$name`, not with a slash. A pasted bare URL usually selects the skill too. Tell the
-user both in the report.
+by `$name`, not with a slash. This is the supported way to ingest; tell the user so in
+the report. A pasted bare URL often selects the skill too, but that is not guaranteed.
 
 ## Verify
 

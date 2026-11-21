@@ -6,7 +6,7 @@ argument-hint: "[url]"
 
 # Obsidian Ingest
 
-A bare URL is the whole request. Do all the steps below, then report. Do not stop to ask.
+A URL, bare or after the skill's invocation, is the whole request. Do all the steps below, then report. Do not stop to ask.
 Read the source only with `ingest_source` and `read_source`; never fetch or summarize
 the page with other web tools.
 

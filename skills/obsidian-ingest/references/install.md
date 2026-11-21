@@ -175,7 +175,9 @@ Do not create test notes, call `create_draft`, or ingest a source to test connec
 
 Report the mode and profile, the skill, settings, and cache locations, every command and
 setting changed, the backups, each check with its result, the exact command to start a
-curation session, and concrete undo steps. Write the undo steps so they work without
+curation session and how to send a source (on Hermes the bare URL; elsewhere the skill
+invocation from the harness notes, such as `/obsidian-ingest <url>`), and concrete undo
+steps. Write the undo steps so they work without
 this guide: ask the user first; remove only the registration, skill link, and added
 permission rules; restore backups only after checking for later edits; keep the
 runtime, settings, source cache, and vault unless the user asks to remove them. State what was not verified. Do not claim an

@@ -45,10 +45,9 @@ yes, back the file up first. Do not change other permissions. On a repeat instal
 ## Start a session
 
 Start `claude` in any directory and type `/obsidian-ingest <url>`; autocomplete shows
-the `[url]` hint. A pasted bare URL usually loads the skill too. Tell the user both in
-the report.
-With a small model such as Haiku, a bare article URL is sometimes answered with Claude
-Code's own web fetching instead of the skill; `/obsidian-ingest <url>` always loads it.
+the `[url]` hint. This is the supported way to ingest; tell the user so in the report.
+A pasted bare URL often loads the skill too, but small models such as Haiku sometimes
+answer it with Claude Code's own web fetching instead.
 
 ## Verify
 

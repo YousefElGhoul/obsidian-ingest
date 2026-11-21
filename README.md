@@ -218,22 +218,21 @@ permanent version requirements.
 
 ## First use
 
-Open the fresh curation session reported by the installer. Send a source URL:
+Open the fresh curation session reported by the installer and send a source URL the
+way your harness expects:
 
-```text
-https://www.youtube.com/watch?v=VIDEO_ID
-```
-
-Replace `VIDEO_ID` with a real video ID, or send an article URL. A bare URL is the
-skill's complete request.
-If your harness does not select the skill automatically, invoke it explicitly:
-
-| Harness | Invocation |
+| Harness | Send |
 |---|---|
-| Hermes | Start with `--skills obsidian-ingest`, then send the URL |
+| Hermes | Start with `--skills obsidian-ingest`, then send just the URL |
 | Claude Code | `/obsidian-ingest <url>` |
 | Codex | `$obsidian-ingest <url>` |
 | opencode | `@obsidian-ingest <url>` |
+
+On Hermes a bare URL is the whole request, so you can send links from a connected chat
+app such as Telegram the way you would send them to a friend, and the agent ingests
+them and reports back. On the other harnesses, use the invocation above: a bare URL
+often loads the skill too, but it is not guaranteed, and small models may answer it
+with their own web tools instead.
 
 The agent should read the whole retained source, search for each useful idea,
 read the closest existing notes, and then decide what to write. It reports its

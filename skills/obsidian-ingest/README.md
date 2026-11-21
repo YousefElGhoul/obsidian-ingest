@@ -40,10 +40,11 @@ old one. Update host allowlists for the renamed tools and re-ingest sources; see
 
 ## Use and boundaries
 
-In the installer's fresh curation session, send a bare YouTube or article URL. Explicit invocation
-is `/obsidian-ingest <url>` on Claude Code, `$obsidian-ingest <url>` on Codex, or
-`@obsidian-ingest <url>` on opencode. Hermes uses `--skills obsidian-ingest` in the
-session command. Review the created drafts, by default under `00 Inbox/AI Drafts/`.
+In the installer's fresh curation session, send a YouTube or article URL. On Hermes,
+which starts the session with `--skills obsidian-ingest`, send the bare URL (it also
+works from a connected chat app such as Telegram). Elsewhere, invoke the skill with
+it: `/obsidian-ingest <url>` on Claude Code, `$obsidian-ingest <url>` on Codex, or
+`@obsidian-ingest <url>` on opencode. Review the created drafts, by default under `00 Inbox/AI Drafts/`.
 
 Both CLI and MCP writers are create-only; they never modify an existing note.
 Trusted mode keeps normal host tools, which can bypass that boundary. Restricted mode

@@ -32,7 +32,8 @@ The workflow has two separate paths:
   behavior. Tests never open the real default cache.
 - **Installation, Markdown, and UX:** Live trials use disposable vaults and fresh
   harness sessions. A frontier model installs the skill from its `SKILL.md` link,
-  then a weaker model receives bare `videos.txt` URLs in parallel fresh sessions.
+  then a weaker model receives `videos.txt` URLs in parallel fresh sessions (bare on
+  Hermes, with the harness's skill invocation elsewhere).
   Review the install and ingest transcripts and the actual generated Markdown.
   Hermes runs as an `hc` child in a throwaway profile. Other tested harnesses use
   the verified bubblewrap sandbox built by `scripts/trials/`. Never auto-approve a

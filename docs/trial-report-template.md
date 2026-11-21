@@ -44,7 +44,7 @@ A successful final state does not erase a missing approval or an interim overwri
 |---|---|---|---|
 | Fresh install | | | |
 | Repeat install | | | |
-| Bare-URL ingest | | | |
+| Ingest (bare URL on Hermes, invocation elsewhere) | | | |
 | Explicit invocation | | | |
 | Restricted setup / advanced launch | | | |
 | Thumbnail delivery | | | |

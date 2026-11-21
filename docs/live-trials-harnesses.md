@@ -18,7 +18,7 @@ home before teardown.
 | Launch | `scripts/trials/sandbox claude agent --model <model>` |
 | Auto-approve | Wrapper uses `--permission-mode bypassPermissions`, only inside bwrap. |
 | Model | `--model <model>` or `-m <model>`; choose separately for install and ingest. |
-| Invoke | Bare URL for discovery; actual `/obsidian-ingest <url>` for explicit invocation. Skills initially expose only their description. Unattended explicit runs: `hc run --bg --name <n> scripts/trials/sandbox claude agent --model <model> -p "/obsidian-ingest <url>"` passes a real slash command (verified 2026-11-21); the watcher reports its exit and `hc read` shows the result. |
+| Invoke | Ingest with the actual `/obsidian-ingest <url>`; a bare URL is only an optional discovery check. Skills initially expose only their description. Unattended explicit runs: `hc run --bg --name <n> scripts/trials/sandbox claude agent --model <model> -p "/obsidian-ingest <url>"` passes a real slash command (verified 2026-11-21); the watcher reports its exit and `hc read` shows the result. |
 | Transcripts | `<CLAUDE_CONFIG_DIR>/projects/*/*.jsonl`; dedupe `tool_use` by `id`. |
 | Wait | `scripts/trials/watch` in the background; confirm readiness and completion with `hc read`. |
 | Pre-seeding | `prepare` seeds onboarding, theme, work-directory trust, and `skipDangerousModePermissionPrompt`. Without the last setting the bypass warning defaults to “No, exit.” |
@@ -37,7 +37,7 @@ between-run usage probe, not an ingestion prompt.
 | Launch | `scripts/trials/sandbox codex agent --model <model>` |
 | Auto-approve | Wrapper uses `--dangerously-bypass-approvals-and-sandbox`, only inside bwrap. The outer bwrap boundary remains necessary. |
 | Model | `--model <model>` or `-m <model>`. |
-| Invoke | Bare URL, then `$obsidian-ingest <url>` in a separate explicit-invocation session. The `$name` mention injects `SKILL.md`. |
+| Invoke | Ingest with `$obsidian-ingest <url>` (`hc send` works); the `$name` mention injects `SKILL.md`. A bare URL is only an optional discovery check. |
 | Skill path | `~/.agents/skills`; `$CODEX_HOME/skills` is deprecated. |
 | Transcripts | `$CODEX_HOME/sessions/**/rollout-*.jsonl`; retain call identifiers when deduplicating. |
 | Wait | `scripts/trials/watch`; Codex reports idle briefly mid-turn, which the watcher ignores. Startup can be slow: read the pane before sending. |
@@ -59,7 +59,7 @@ The outer trial sandbox keeps network on. `/status` shows five-hour and weekly l
 | Launch | `hermes -p <profile> chat --cli --skills obsidian-ingest --in <profile>/cache/scratch`, as an `hc` child. Use the installed skill's restricted curation command when testing that mode: `hermes -p <profile> chat --cli --in <scratch> --toolsets obsidian-ingest,skills --skills obsidian-ingest`. After install, confirm `--cache-db`, the 11-tool include list and `resources`/`prompts: false` (see `references/hermes.md`). |
 | Auto-approve | None. Do not add bypass flags outside an OS sandbox. Any real permission prompt goes to the user. In the 2026-11-21 restricted install, `python -c` in a pipeline prompted ("script execution via -e/-c flag") and was denied after 5 minutes unanswered; notify the user at once. |
 | Model | `hermes -p <profile> config set model.default <model>`; set `model.provider` when needed for the chosen integration. Ingest trials use GPT-6 Luna (`openai-codex`, `gpt-6-luna`) from 2026-11-21; Haiku is planned as a second ingest model. Installs use the latest Sol. |
-| Invoke | `--skills obsidian-ingest` plus a bare URL. Keep the `skills` toolset enabled so the text reaches the model; the activated-skill banner alone is not proof. |
+| Invoke | `--skills obsidian-ingest` plus a bare URL: Hermes is the harness where a bare URL must work, because users send links from chat apps such as Telegram. Keep the `skills` toolset enabled so the text reaches the model; the activated-skill banner alone is not proof. |
 | Transcripts | `hermes -p <profile> sessions export <file>`; preserve the export and session-to-source mapping in the report. |
 | Wait | Hermes did not report idle to `hc`. `scripts/trials/watch` counts its turn-summary lines (`^─ [0-9][0-9.ms]* · `); read the output when one appears. Do not block the orchestrator with a foreground sleep. |
 | Traps | Trusted MCP tools sit behind tool search. Several trusted regression sessions never loaded the skill. Three rejected MCP calls pause the server for 60 seconds across every session in the profile; repeated calls during a pause extend it. Lower concurrency or use trial-profile clones if pauses cascade. NIM (Nemotron) held two parallel sessions reliably in the 2026-11-21 loop. Nemotron sometimes JSON-stringified `tool_call` `calls`; check drafts for probe/test notes. |
@@ -73,7 +73,7 @@ The outer trial sandbox keeps network on. `/status` shows five-hour and weekly l
 | Launch | `scripts/trials/sandbox opencode agent` |
 | Auto-approve | Wrapper uses `--auto`, only inside bwrap. |
 | Model | The tested TUI had no model flag. Set `"model"` in the throwaway `opencode.jsonc` before the phase and verify the session's effective model. |
-| Invoke | Bare URL, then `@obsidian-ingest <url>` in a separate explicit-invocation session; the `skill` tool can load it too. |
+| Invoke | Ingest with `@obsidian-ingest <url>` (`hc send` works); the `skill` tool can load it too. A bare URL is only an optional discovery check. |
 | Transcripts | `opencode session export <id>` from the isolated environment. Preserve the session IDs and exports before teardown. |
 | Wait | The shared service made panes look continually busy. Use plain `hc send`, not `--if idle`, after checking readiness; read back and inspect completion in the transcript. |
 | Service isolation | The real opencode shares one background service per user on a fixed port, so `prepare` gives the trial its own (`TRIAL_OPENCODE_PORT`, default 49391). Run service commands only inside the trial environment. Check `opencode debug paths` before any probe. |

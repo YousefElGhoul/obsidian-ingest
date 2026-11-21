@@ -83,7 +83,7 @@ Distinguish “installed successfully” from “followed the install procedure.
 Check each session against every workflow step in the tested `SKILL.md`:
 
 1. Acquired the intended URL and retained its source identity. Was the request truly
-   a bare URL or the actual harness invocation? Did the skill text reach the model?
+   a bare URL (expected on Hermes) or the actual harness invocation (expected elsewhere)? Did the skill text reach the model?
 2. Read the whole transcript in source order, one page per call, passing offsets and
    read tokens until completion. Inspect actual returned output for truncation.
    Successful pagination or a final token alone does not prove the model read pages
