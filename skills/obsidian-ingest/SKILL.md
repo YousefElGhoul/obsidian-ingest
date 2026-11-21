@@ -76,13 +76,13 @@ To install, repeat the install, or undo it, follow
      for that tool, add every such tip from the source to its edit suggestion, including
      tips whose own search found nothing. Otherwise write nothing for them.
    - The idea is new → `create_draft`, for example
-     `{"source_id": "…", "read_token": "rt1-…", "contents": "# Title\n\nBody…", "cite": [12, 13]}`.
-     Pass up to five `related_notes` from step 4
-     that a reader would open next, each with a one-line reason:
-     `[{"note_id": "<id from search_vault>", "reason": "<what that note adds>"}]`.
-     Always link the overview note of the same tool or topic if you found one (a
-     `Kubernetes` note for a Kubernetes idea). Never link a note only because it
-     shares a word or a broad theme; no link is fine.
+     `{"source_id": "…", "read_token": "rt1-…", "contents": "# Title\n\nBody…", "cite": [12, 13],
+     "related_notes": [{"note_id": "<id from search_vault>", "reason": "<what that note adds>"}]}`.
+     Pass up to five `related_notes` from step 4 that a reader would open next, each
+     with a one-line reason. Always link the overview note of the same tool or topic if
+     you found one (a `Kubernetes` note for a Kubernetes idea), including a note you
+     wrote an edit suggestion for. Never link a note only because it shares a word or a
+     broad theme; no link is fine.
    - The idea is already covered or weak → write nothing.
 6. After the write attempts, report your searches and decisions, the returned paths
    (count them; that is how many notes you wrote), and any failed or unconfirmed writes

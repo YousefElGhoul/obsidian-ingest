@@ -927,6 +927,23 @@ def test_hostile_section_names_stay_inert_in_drafts(tmp_path, monkeypatch, cli_r
     assert line == "- Relevant sections: Evil \\[\\[Secret\\]\\] \\| \\`x\\` \\#tag"
 
 
+def test_a_page_without_headings_gets_no_sections_line(tmp_path, monkeypatch, cli_runner) -> None:
+    flat = page(
+        f"<article><p>{words(60)}</p><p>{words(60, 'f')}</p></article>", head="<title>Flat</title>"
+    )
+    FakeWeb(routes={URL: Reply(flat)}).install(monkeypatch)
+    config = _vault_config(tmp_path)
+    db = ("--cache-db", str(tmp_path / "cache.db"))
+    source_id = cli_runner.ok("ingest-source", URL, *db)["source_id"]
+    page_data = cli_runner.ok("read-source", source_id, *db)
+    draft = cli_runner.ok(
+        "create-draft", source_id, "# Note\n\nBody.", "--cite", "1",
+        "--read-token", page_data["read_token"], "--config", str(config), *db,
+    )  # fmt: skip
+    text = Path(draft["path"]).read_text(encoding="utf-8")
+    assert "Relevant sections" not in text and f"- URL: {URL}" in text
+
+
 def test_cli_and_mcp_return_the_same_article_results(tmp_path, monkeypatch, cli_runner) -> None:
     import asyncio
 

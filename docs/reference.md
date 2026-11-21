@@ -195,7 +195,7 @@ A readable source section is appended with source identity and URL. YouTube adds
 when known. The optional citation line is built from `cite`: YouTube lists up to twelve
 timestamp links, starting with the earliest and keeping the next only if it is at
 least 30 seconds after the last kept one. Articles list up to twelve unique section
-names. Beyond twelve, the line ends with "and N more" rather than dropping them silently. Source titles and creator names are written as inert text: brackets,
+names, and no line at all for a page without headings. Beyond twelve, the line ends with "and N more" rather than dropping them silently. Source titles and creator names are written as inert text: brackets,
 backticks, pipes, angle brackets, `#`, `%%` and `==` are neutralized, control and
 bidi-override characters are removed, and long values are cut to 300 characters.
 Related-note links are verified against accessible notes when created. Vault search and

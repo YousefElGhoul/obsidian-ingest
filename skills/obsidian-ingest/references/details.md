@@ -118,7 +118,8 @@ authorizes permission changes.
     Duplicates are ignored, and unknown or excluded rows fail with `INVALID_ARGUMENT`.
     Videos list up to twelve timestamps, starting with the earliest and keeping the
     next only if it is at least 30 s after the last kept one. Articles list up to
-    twelve unique section names; any more are counted as "and N more".
+    twelve unique section names; any more are counted as "and N more". A page without
+    headings gets no sections line.
   - Body wikilinks are kept but not verified.
 - `create_edit_suggestion` writes a review-only `edit-<note>.md` draft that links to the
   verified target. It never edits the target. Pass the reviewed `revision` as

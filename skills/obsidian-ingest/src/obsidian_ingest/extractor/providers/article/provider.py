@@ -627,6 +627,9 @@ class ArticleProvider(ProviderDefaults):
     def citation(
         self, metadata: SourceMetadata, segments: tuple[TranscriptSegment, ...]
     ) -> Citation | None:
+        # A page without headings is all "Opening"; naming it would tell the reader nothing.
+        if not metadata.chapters:
+            return None
         names: list[str] = []
         for segment in segments:
             name = segment.section or OPENING_SECTION
