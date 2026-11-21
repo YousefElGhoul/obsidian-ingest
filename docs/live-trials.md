@@ -138,7 +138,7 @@ Check restart/cache reuse where relevant and distinguish reuse from a fresh capt
 
 Run ingestions in parallel fresh sessions, normally in batches of five. About three
 sessions per batch is a better starting point for NVIDIA NIM's advertised “up to
-40 rpm.” Reduce parallelism on HTTP 429 or provider queuing and record the change.
+40 rpm”; two at a time ran without queuing in the 2026-11-21 Hermes loop. Reduce parallelism on HTTP 429 or provider queuing and record the change.
 A rate-limited run measures the provider, not the skill. Harnesses using independent
 subscriptions can run in parallel.
 

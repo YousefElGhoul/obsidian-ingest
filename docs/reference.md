@@ -319,14 +319,15 @@ whole segments. The response includes `fields` (`source_index`, `start`, `durati
 `text` for videos; see [Articles](#articles) for text fields), `segments` as rows in
 that order, `offset`, applied `limit` (at most 200), `total_segments`,
 `remaining_segments`, and `next_offset`. Only contiguous `read_source` pages of the
-retained view without time bounds advance `read_token` coverage. Start at offset 0,
+retained view without time bounds advance `read_token` coverage. Start at offset 0
+without a token (an unusable token on that page is ignored and the count restarts),
 then pass each returned `next_offset` (as `offset`) and `read_token` until `next_offset`
 is `null`. Skipping ahead does not advance coverage; ranged and `include_excluded`
 reads can pass an existing token through unchanged. `read_section` neither takes nor
 returns a token. Tokens work across CLI processes and MCP, and writes require one
 covering the whole retained source. A read token is bound to the stored capture. Any
 republication invalidates earlier tokens, even if the payload is identical. A write
-with an older token fails with `INCOMPLETE_READ`; read again from offset 0. Writes
+with an older token fails with `INCOMPLETE_READ`; read again from offset 0 without a token. Writes
 accept up to 200 supporting `source_index` values in `cite`; unknown or excluded
 indices fail with `INVALID_ARGUMENT`, and duplicates are ignored.
 Source indices, wording, timestamps, and order are preserved. An individual atom that

@@ -76,8 +76,9 @@ authorizes permission changes.
 - `read_source` and `read_section` return pages. Pass each page's `next_offset` as
   `offset` until it is `null`; `remaining_segments` is the number of rows after
   that page. Only contiguous `read_source` pages of the retained view without time
-  bounds advance coverage. Start at offset 0 and pass each page's `read_token` to the
-  next. Skipping ahead does not advance coverage; ranged or `include_excluded` reads
+  bounds advance coverage. Start at offset 0 without a token and pass each page's
+  `read_token` to the next; an unusable token on the offset-0 page is ignored, so
+  reading from 0 always restarts the count. Skipping ahead does not advance coverage; ranged or `include_excluded` reads
   can pass a token through unchanged. `read_section` neither takes nor returns one.
   `create_draft` and `create_edit_suggestion` require the final token and fail with
   `INCOMPLETE_READ` (naming the offset to continue from) until it covers the whole

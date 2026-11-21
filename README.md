@@ -305,11 +305,12 @@ agent-owned wiki layout.
 
 ## Tested harnesses
 
-These scopes come from each harness note's `Validated:` entry, all dated 2026-11-15.
+These scopes come from each harness note's `Validated:` entry, dated 2026-11-15 unless noted.
 They are observations, not a promise about every version, model, or draft's quality.
 
 - [Hermes Agent v0.23.0](skills/obsidian-ingest/references/hermes.md):
-  restricted and trusted install, repeat install, and undo.
+  restricted and trusted install, repeat install, and undo; v0.23.2 (2026-11-21):
+  restricted install and article and video curation.
 - [Claude Code v2.1.325](skills/obsidian-ingest/references/claude-code.md):
   trusted install, repeat install, undo, bare-URL and `/obsidian-ingest` ingestion,
   thumbnail, and advanced restricted session.
@@ -349,6 +350,9 @@ settings, source cache, vault, and published notes alone unless you ask otherwis
 - The SQLite cache is disposable. Refresh replaces the current capture, not published
   notes; no capture history is kept.
 - Attribution traces a claim to its source. It does not independently verify it.
+- Draft quality depends on the model. In the 2026-11-21 Hermes trials GPT-6 Luna wrote
+  no unusable drafts, while Nemotron 3 Ultra still wrote some recaps and claims the
+  source only linked to. Review drafts before keeping them.
 
 ## More
 
