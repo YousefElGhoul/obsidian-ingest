@@ -91,7 +91,7 @@ obsidian-ingest read-section SOURCE_ID SECTION_INDEX \
   [--include-excluded] [--offset N] [--limit N]
 obsidian-ingest get-thumbnail SOURCE_ID
 obsidian-ingest search-vault [QUERY] [--scope title|content|both] \
-  [--cursor TOKEN] [--limit N]
+  [--cursor TOKEN] [--limit N] [--source-id SOURCE_ID --cache-db PATH]
 obsidian-ingest read-vault-note VAULT_RELATIVE_PATH \
   [--revision SHA256] [--offset N] [--limit N]
 obsidian-ingest create-draft SOURCE_ID CONTENTS [--filename NAME] \
@@ -192,10 +192,10 @@ device names gain a `-note` suffix (`con-note.md`). Without a given filename or 
 leading H1, or when the slug is empty, the call fails with `INVALID_ARGUMENT`.
 A readable source section is appended with source identity and URL. YouTube adds
 `Creator` when known; articles add `Author`/`Authors`, `Site`, `Published` and `Language`
-when known. The optional citation line is built from `cite`: YouTube lists up to eight
+when known. The optional citation line is built from `cite`: YouTube lists up to twelve
 timestamp links, starting with the earliest and keeping the next only if it is at
-least 30 seconds after the last kept one. Articles list up to eight unique section
-names. Source titles and creator names are written as inert text: brackets,
+least 30 seconds after the last kept one. Articles list up to twelve unique section
+names. Beyond twelve, the line ends with "and N more" rather than dropping them silently. Source titles and creator names are written as inert text: brackets,
 backticks, pipes, angle brackets, `#`, `%%` and `==` are neutralized, control and
 bidi-override characters are removed, and long values are cut to 300 characters.
 Related-note links are verified against accessible notes when created. Vault search and
@@ -422,8 +422,10 @@ The source and configured vault tools include:
   `$XDG_CACHE_HOME/obsidian-ingest/thumbnails/` (never the vault) and prints its `path`
   with the same fields. Thumbnails are not cached in SQLite and are not part of ingest.
   This source tool is also available without vault read configuration.
-- `search_vault(query="", scope="both", cursor=None, limit=10)` searches note titles
+- `search_vault(query="", scope="both", cursor=None, limit=10, source_id=None)` searches note titles
   and/or content; an empty query browses accessible notes, including old AI drafts.
+  With `source_id`, the clipped note that source was ingested from is left out (an
+  unknown or inaccessible source fails as in `read_source`); cursors are bound to it.
   Query length is limited to 256 characters. `scope` is `title`, `content`, or `both`;
   pages contain at most 20 notes and use an opaque `next_cursor`. Note IDs (`note_`
   plus 12 hex digits) are server-process scoped. Revisions are `sha256:` plus the
@@ -614,7 +616,7 @@ naming another page as canonical never stands in for it. Canonical URLs on other
 sites are ignored for identity. `canonical_url` falls back to the final URL; when language is unknown,
 metadata `language` is `null` and `diagnostics.evidence.language` is `und`. Drafts
 add `Author`/`Authors`, `Site`, `Published` and `Language` when known, and cite up to
-eight unique `Relevant sections` as escaped plain text.
+twelve unique `Relevant sections` as escaped plain text.
 
 **Failure reasons.** Article URL acquisition errors take the form
 `INGEST_FAILED: Could not ingest source: <REASON>: …` (CLI JSON separates code and

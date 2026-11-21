@@ -220,3 +220,25 @@ def test_unchanged_clip_skips_extraction(tmp_path, monkeypatch):
 def test_skill_does_not_retry_unconfirmed_writes():
     skill = Path(cli.__file__).resolve().parents[2] / "SKILL.md"
     assert "report it as unconfirmed and do not retry" in " ".join(skill.read_text().split())
+
+
+def test_search_can_leave_out_the_clip_a_source_came_from(tmp_path, monkeypatch, cli_runner):
+    (tmp_path / NOTE).parent.mkdir()
+    (tmp_path / NOTE).write_text(clip_text())
+    (tmp_path / "Opening notes.md").write_text("# Opening notes\n\nOpening paragraph ideas.")
+    config = tmp_path / "settings.toml"
+    config.write_text(f'[vault]\nroot = "{tmp_path}"\nallowed = ["*"]\n')
+    monkeypatch.setattr(cli, "default_config_path", lambda: config)
+    db = ("--cache-db", str(tmp_path / "sources.db"))
+    FakeWeb(routes={URL: Reply("blocked", status=403)}).install(monkeypatch)
+    source_id = cli_runner.ok("ingest-source", "--note", NOTE, *db)["source_id"]
+
+    def paths(*extra: str) -> list[str]:
+        return [note["path"] for note in cli_runner.ok("search-vault", "opening", *extra)["notes"]]
+
+    assert set(paths()) == {NOTE, "Opening notes.md"}
+    assert paths("--source-id", source_id, *db) == ["Opening notes.md"]
+    page = cli_runner.ok("search-vault", "opening", "--limit", "1", "--source-id", source_id, *db)
+    assert page["next_cursor"] is None
+    error = cli_runner.fail("search-vault", "opening", "--source-id", "nope", *db)
+    assert error["code"] == "SOURCE_NOT_FOUND"

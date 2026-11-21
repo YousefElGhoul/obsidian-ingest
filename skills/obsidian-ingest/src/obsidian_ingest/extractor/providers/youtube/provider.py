@@ -16,9 +16,11 @@ from obsidian_ingest.extractor.providers.youtube import extract_video_id, get_yo
 from obsidian_ingest.extractor.providers.youtube.details import YouTubeMetadata
 from obsidian_ingest.extractor.providers.youtube.thumbnail import fetch_youtube_thumbnail
 from obsidian_ingest.extractor.transcript import (
+    MAX_LISTED_TIMESTAMPS,
     TranscriptSegment,
     distinct_moments,
     format_timestamp,
+    listed,
 )
 
 if TYPE_CHECKING:
@@ -99,7 +101,7 @@ class YouTubeProvider(ProviderDefaults):
                 {"v": metadata.source_id, "t": f"{seconds}s"}
             )
             links.append(f"[{format_timestamp(seconds)}]({url})")
-        return Citation("Relevant timestamps", ", ".join(links))
+        return Citation("Relevant timestamps", listed(links, MAX_LISTED_TIMESTAMPS, ", "))
 
     def attribution(self, metadata: SourceMetadata) -> tuple[tuple[str, str], ...]:
         return (("Creator", metadata.creator_name),) if metadata.creator_name else ()

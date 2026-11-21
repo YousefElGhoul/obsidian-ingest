@@ -34,20 +34,28 @@ class Transcript:
 
 
 TIMESTAMP_GAP_SECONDS = 30
-MAX_LISTED_TIMESTAMPS = 8
+MAX_LISTED_TIMESTAMPS = 12
 
 
 def distinct_moments(timestamps: tuple[float, ...]) -> tuple[float, ...]:
     """List distinct moments: weak models often cite every caption line of one passage.
 
-    Keeps the earliest of timestamps closer than TIMESTAMP_GAP_SECONDS, in time order,
-    up to MAX_LISTED_TIMESTAMPS.
+    Keeps the earliest of timestamps closer than TIMESTAMP_GAP_SECONDS, in time order.
+    Callers list at most MAX_LISTED_TIMESTAMPS and count the rest (see `listed`).
     """
     kept: list[float] = []
     for timestamp in sorted(timestamps):
         if not kept or timestamp - kept[-1] >= TIMESTAMP_GAP_SECONDS:
             kept.append(timestamp)
-    return tuple(kept[:MAX_LISTED_TIMESTAMPS])
+    return tuple(kept)
+
+
+def listed(items: list[str], limit: int, separator: str) -> str:
+    """Join the first ``limit`` items and say how many more were cited, never dropping
+    them silently."""
+    text = separator.join(items[:limit])
+    hidden = len(items) - limit
+    return f"{text}{separator}and {hidden} more" if hidden > 0 else text
 
 
 def format_timestamp(seconds: float) -> str:

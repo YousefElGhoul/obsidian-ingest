@@ -98,7 +98,7 @@ authorizes permission changes.
   prints its `path` with the same fields). `THUMBNAIL_UNAVAILABLE` if it can't be
   fetched; articles have none. Nothing depends on it.
 - `search_vault`: `query`, `scope` (`title`, `content`, `both`), `cursor`, `limit`
-  (1–20). Each query word is matched on its own, case-insensitive and as a whole word
+  (1–20), and `source_id` (the source you're curating: its own clipped note is left out). Each query word is matched on its own, case-insensitive and as a whole word
   (`go` doesn't match "going"), in filenames and content. Notes that match more distinct words come first, and
   each result lists its `matched_terms`. An empty query lists accessible notes. Excluded paths never
   appear.
@@ -116,9 +116,9 @@ authorizes permission changes.
     reason of at most 300 characters, without wikilinks.
   - `cite` takes up to 200 supporting `source_index` values (first value of each row).
     Duplicates are ignored, and unknown or excluded rows fail with `INVALID_ARGUMENT`.
-    Videos list up to eight timestamps, starting with the earliest and keeping the
+    Videos list up to twelve timestamps, starting with the earliest and keeping the
     next only if it is at least 30 s after the last kept one. Articles list up to
-    eight unique section names.
+    twelve unique section names; any more are counted as "and N more".
   - Body wikilinks are kept but not verified.
 - `create_edit_suggestion` writes a review-only `edit-<note>.md` draft that links to the
   verified target. It never edits the target. Pass the reviewed `revision` as

@@ -275,10 +275,19 @@ def create_server(
             scope: Literal["title", "content", "both"] = "both",
             cursor: str | None = None,
             limit: int = DEFAULT_SEARCH_LIMIT,
+            source_id: str | None = None,
         ) -> str:
-            """Search note filenames and content. Each query word is matched on its own as a whole word; notes matching the most distinct words come first, with matched_terms listed. Use specific words, not common ones. Empty query browses notes."""
+            """Search note filenames and content. Each query word is matched on its own as a whole word; notes matching the most distinct words come first, with matched_terms listed. Use specific words, not common ones. Empty query browses notes. Pass the source_id you are curating so a clipped source's own note is left out."""
             return compact_json(
-                responses.search_vault(vault, query, scope=scope, cursor=cursor, limit=limit)
+                responses.search_vault(
+                    vault,
+                    query,
+                    scope=scope,
+                    cursor=cursor,
+                    limit=limit,
+                    cache=cache() if source_id is not None else None,
+                    source_id=source_id,
+                )
             )
 
         @server.tool(structured_output=False)

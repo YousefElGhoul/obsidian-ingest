@@ -913,3 +913,18 @@ def test_symlink_component_in_relative_folder_is_not_followed(
     with pytest.raises(OSError):
         create_draft(custom, contents="# Unsafe\n\nbody", source=source_metadata)
     assert not (outside / "Drafts").exists()
+
+
+def test_citations_beyond_the_listed_moments_are_counted(
+    settings: DraftWriterSettings, source_metadata: SourceMetadata
+) -> None:
+    cited = tuple(float(minute * 60) for minute in range(15))
+    result = create_draft(
+        settings,
+        contents="# Many moments\n\nBody.",
+        source=source_metadata,
+        citation=_moments(source_metadata, *cited),
+    )
+    listed = result.path.read_text(encoding="utf-8").split("Relevant timestamps: ")[1]
+    assert listed.count("](") == 12
+    assert listed.rstrip().endswith(", and 3 more")

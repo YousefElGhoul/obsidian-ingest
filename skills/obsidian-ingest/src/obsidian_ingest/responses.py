@@ -518,9 +518,22 @@ def search_vault(
     cursor: str | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
     identifier: NoteIdentifier = "note_id",
+    cache: SourceCache | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
-    """Search with shared bounds; CLI results drop note_id and keep path, MCP results stay unchanged."""
-    result = vault.search(query, scope=scope, cursor=cursor, limit=limit)
+    """Search with shared bounds; CLI results drop note_id and keep path, MCP results stay unchanged.
+
+    With ``source_id``, the clipped note that source was ingested from is left out, so
+    the source is never mistaken for an existing note about its own ideas.
+    """
+    exclude: tuple[str, ...] = ()
+    if source_id is not None:
+        if cache is None:
+            raise OperationError("INVALID_ARGUMENT", "source_id needs the source cache")
+        note = required_note(load_source(cache, source_id, vault))
+        if note is not None:
+            exclude = (note.path,)
+    result = vault.search(query, scope=scope, cursor=cursor, limit=limit, exclude=exclude)
     return result | {"notes": [_with_identifier(note, identifier) for note in result["notes"]]}
 
 

@@ -45,7 +45,7 @@ To install, repeat the install, or undo it, follow
    title that names the source's subject ("X is proved", "Three ways to Y") is a recap.
    Long sources don't need more notes than short ones; many sources have a few ideas,
    and some have none.
-4. `search_vault` for every idea. Each query word is matched on its own, as a whole word,
+4. `search_vault` for every idea, passing your `source_id`. Each query word is matched on its own, as a whole word,
    in note names and content, and notes matching the most words come first (see
    `matched_terms`). So query the specific words a note on that idea would contain, with
    other forms you want too (`index indexes`): names, tools, terms
@@ -113,7 +113,8 @@ adding random jitter to the retry delay cut her team's recovery time by half.
 - No "Summary", "Takeaways", "How to apply" or disclaimer sections, no source
   section and no row numbers: the tool adds the source and the related links.
 - Also pass `cite`: the `source_index` (the first value of each row) of every row the
-  note uses, no others (at most 200). The tool turns them into video timestamps or
+  note uses, no others (at most 200). Cite the rows that explain each claim, not the
+  row where the topic is first named or introduced. The tool turns them into video timestamps or
   article section names, so write no timestamps or row numbers in the body.
 - Keep a link from the source (`[text](url)` in a row) when a reader would follow it.
 - Write in the language the user writes in, even when the source is in another one.

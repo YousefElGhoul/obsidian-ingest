@@ -64,7 +64,7 @@ from obsidian_ingest.extractor.providers.article.settings import (
     parse_settings,
 )
 from obsidian_ingest.extractor.quality import Quality, assess, instruction_like
-from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment
+from obsidian_ingest.extractor.transcript import Transcript, TranscriptSegment, listed
 from obsidian_ingest.extractor.urls import URLRejected, check_url
 from obsidian_ingest.notes import InvalidNoteSource, NoteRef
 
@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from obsidian_ingest.source import Source
 
 LOG = logging.getLogger("obsidian_ingest.article")
-MAX_CITED_SECTIONS = 8
+MAX_CITED_SECTIONS = 12
 OPENING_SECTION = "Opening"
 CLIP_HINT = (
     "save the page with Obsidian Web Clipper (your browser can render it and use your "
@@ -634,7 +634,7 @@ class ArticleProvider(ProviderDefaults):
                 names.append(name)
         if not names:
             return None
-        return Citation("Relevant sections", "; ".join(names[:MAX_CITED_SECTIONS]), literal=True)
+        return Citation("Relevant sections", listed(names, MAX_CITED_SECTIONS, "; "), literal=True)
 
     def attribution(self, metadata: SourceMetadata) -> tuple[tuple[str, str], ...]:
         lines = []

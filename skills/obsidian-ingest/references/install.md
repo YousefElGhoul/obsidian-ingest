@@ -29,7 +29,9 @@ that this harness is untested and restricted mode is not offered.
 Before asking anything, check for an existing install: the skill link, the MCP
 registration, and `<skill>/config/settings.toml`. If one exists, read it, show it, and
 ask only about what is missing or wrong; on a repeat install, valid settings are the
-user's earlier answers. Report where each piece lives, and say if the skill link is in
+user's earlier answers. When nothing is missing or wrong, ask no separate question:
+show the existing location, mode and scope at the top of the plan in step 3, so one
+approval covers both. Report where each piece lives, and say if the skill link is in
 a location the harness notes call deprecated.
 
 Then ask in a single message, and reuse any answer the user already gave:
@@ -187,7 +189,9 @@ example another profile), because the restricted profile has no shell or file to
 
 When asked to undo, read the harness notes file's Undo section, list what you will
 change, and ask the user before changing anything, even when the harness would approve
-the commands without asking. Then check for config edits made after the install,
+the commands without asking or runs with approvals bypassed. End your turn after asking
+and wait for the answer: never list the changes and make them in the same turn, even
+when the request itself says "undo". After approval, check for config edits made after the install,
 remove the MCP registration with the harness's own command where it has one, restore
 the backed-up host configuration, and remove only the skill link (or the copy the install
 placed in the harness's skills directory). Leave the runtime, settings, source cache,

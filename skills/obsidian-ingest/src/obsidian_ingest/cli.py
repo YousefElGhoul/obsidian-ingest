@@ -263,6 +263,10 @@ def _tool_parsers(subparsers) -> None:
     parser.add_argument("--scope", choices=("title", "content", "both"), default="both")
     parser.add_argument("--cursor", help="next_cursor from an earlier search with the same query")
     parser.add_argument("--limit", type=int, default=responses.DEFAULT_SEARCH_LIMIT)
+    parser.add_argument(
+        "--source-id", help="Leave out the clipped note this source was ingested from"
+    )
+    parser.add_argument("--cache-db", type=Path)
     parser.add_argument("--config", type=Path)
 
     parser = subparsers.add_parser(
@@ -433,6 +437,8 @@ def _run_tool_command(args) -> Any:
                     cursor=args.cursor,
                     limit=args.limit,
                     identifier="path",
+                    cache=_cache(args) if args.source_id is not None else None,
+                    source_id=args.source_id,
                 )
             # Paths replace MCP handles; revision checks stay in VaultReader.read.
             reference = vault.get_path_reference(args.path, args.revision)

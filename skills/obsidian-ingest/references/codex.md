@@ -67,7 +67,9 @@ user both in the report.
 
 ## Undo
 
-Show the planned changes with their paths, and what stays, and ask first. Then:
+Show the planned changes with their paths, and what stays, and ask first. End the turn
+there, even in a `--dangerously-bypass-approvals-and-sandbox` session; the
+earlier trial ran the removal in the same turn. After the user approves:
 - run `codex mcp remove obsidian-ingest`, or restore `config.toml` from its backup after
   checking for later edits;
 - `unlink ~/.agents/skills/obsidian-ingest`;

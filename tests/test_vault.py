@@ -130,8 +130,8 @@ def test_search_cursor_is_stateless_but_bound_to_access_policy(tmp_path):
                 reader.search("retry", limit=1, cursor=malformed)
     cursor = first["next_cursor"]
     decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8")
-    version, fingerprint, query, scope, offset = json.loads(decoded)
-    assert (version, query, scope, offset) == (2, "retry", "both", 1)
+    version, fingerprint, query, scope, exclude, offset = json.loads(decoded)
+    assert (version, query, scope, exclude, offset) == (3, "retry", "both", [], 1)
     assert len(fingerprint) == 32 and all(char in "0123456789abcdef" for char in fingerprint)
     # The decoded payload reveals neither the vault root nor the configured scope.
     for secret in (str(root), str(root.resolve()), root.name, "Private"):

@@ -28,7 +28,7 @@ MAX_SNIPPET_CHARS = 240
 MAX_NOTE_READ_CHARS = 8000
 MAX_NOTE_RESPONSE_BYTES = 16 * 1024
 MAX_CURSOR_LENGTH = 4096
-CURSOR_VERSION = 2
+CURSOR_VERSION = 3
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -364,18 +364,20 @@ class VaultReader:
         )
         return hashlib.sha256(policy.encode()).hexdigest()[:32]
 
-    def _cursor(self, query: str, scope: str, offset: int) -> str:
-        """Encode a continuation offset bound to this query and trusted vault policy."""
+    def _cursor(self, query: str, scope: str, offset: int, exclude: tuple[str, ...] = ()) -> str:
+        """Encode a continuation offset bound to this query, exclusions and vault policy."""
         # The cursor is a stateless continuation hint, not a capability: every search
         # re-applies the current access policy, so a forged offset cannot widen access.
         payload = json.dumps(
-            [CURSOR_VERSION, self._policy_fingerprint(), query, scope, offset],
+            [CURSOR_VERSION, self._policy_fingerprint(), query, scope, list(exclude), offset],
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode()
         return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
-    def _decode_cursor(self, cursor: str, query: str, scope: str) -> int:
+    def _decode_cursor(
+        self, cursor: str, query: str, scope: str, exclude: tuple[str, ...] = ()
+    ) -> int:
         """Return a matching nonnegative offset or raise a coded invalid-cursor error."""
         try:
             if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_LENGTH:
@@ -384,13 +386,15 @@ class VaultReader:
             raw = base64.b64decode(
                 encoded + b"=" * (-len(encoded) % 4), altchars=b"-_", validate=True
             )
-            version, fingerprint, cursor_query, cursor_scope, offset = json.loads(raw)
+            version, fingerprint, cursor_query, cursor_scope, cursor_exclude, offset = json.loads(
+                raw
+            )
         except (ValueError, TypeError, UnicodeError) as error:
             raise ValueError("INVALID_CURSOR: cursor is malformed; restart the search") from error
         if (
             version != CURSOR_VERSION
             or fingerprint != self._policy_fingerprint()
-            or (cursor_query, cursor_scope) != (query, scope)
+            or (cursor_query, cursor_scope, cursor_exclude) != (query, scope, list(exclude))
             or type(offset) is not int
             or offset < 0
         ):
@@ -401,9 +405,19 @@ class VaultReader:
         return offset
 
     def search(
-        self, query: str = "", *, scope: str = "both", cursor: str | None = None, limit: int = 10
+        self,
+        query: str = "",
+        *,
+        scope: str = "both",
+        cursor: str | None = None,
+        limit: int = 10,
+        exclude: tuple[str, ...] = (),
     ) -> dict:
-        """Return a bounded ranked note page; reject invalid arguments or cursor bindings."""
+        """Return a bounded ranked note page; reject invalid arguments or cursor bindings.
+
+        ``exclude`` holds vault-relative paths left out of the results, such as the clipped
+        note a source was ingested from.
+        """
         if not isinstance(query, str) or len(query) > MAX_QUERY_LENGTH:
             raise ValueError("INVALID_ARGUMENT: query must be at most 256 characters")
         if scope not in {"title", "content", "both"}:
@@ -414,7 +428,8 @@ class VaultReader:
             or not 1 <= limit <= MAX_SEARCH_LIMIT
         ):
             raise ValueError(f"INVALID_ARGUMENT: limit must be between 1 and {MAX_SEARCH_LIMIT}")
-        offset = self._decode_cursor(cursor, query, scope) if cursor is not None else 0
+        exclude = tuple(sorted(set(exclude)))
+        offset = self._decode_cursor(cursor, query, scope, exclude) if cursor is not None else 0
         # Each word is matched on its own as a whole word; notes matching more distinct
         # words rank first.
         # Words without a letter or digit (such as "-") would match almost every note.
@@ -425,6 +440,8 @@ class VaultReader:
         )
         candidates = []
         for position, relative in enumerate(self._paths()):
+            if relative in exclude:
+                continue
             try:
                 revision, content_terms, snippet = self._scan_file(
                     relative, terms, search_content=scope != "title" and bool(terms)
@@ -471,7 +488,7 @@ class VaultReader:
             result = {
                 "notes": page,
                 "limit": limit,
-                "next_cursor": self._cursor(query, scope, offset + len(page))
+                "next_cursor": self._cursor(query, scope, offset + len(page), exclude)
                 if matched > offset + len(page)
                 else None,
             }
